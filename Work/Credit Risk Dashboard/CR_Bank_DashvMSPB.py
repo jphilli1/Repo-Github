@@ -580,10 +580,13 @@ FRED_SERIES_TO_FETCH = {
 }
 }
 FDIC_FIELDS_TO_FETCH =list(dict.fromkeys(FDIC_FIELDS_TO_FETCH))
+# ==================================================================================
+#  UPDATED FFIEC LOADER (Replace entire class)
+# ==================================================================================
 class FFIECBulkLoader:
     """
-    Dual-Track Data Engine: Fetches granular 'Private Bank' fields from
-    FFIEC CDR Bulk Data when FDIC API fails.
+    Robust Data Engine: Fetches granular 'Private Bank' fields from
+    FFIEC CDR Bulk Data using a strict ASP.NET WebForms state machine.
     """
 
     def __init__(self, output_dir="data/ffiec_cache"):
@@ -603,123 +606,195 @@ class FFIECBulkLoader:
             'RCFDJ472', 'RCONJ472', 'RCFDJ474', 'RCONJ474'
         ]
 
-    def _extract_all_hidden_fields(self, html):
+    def _parse_hidden_fields(self, html):
         """Parses all <input type='hidden'> fields to ensure valid ViewState."""
         fields = {}
+        # Capture name and value attributes, handling quotes
         matches = re.findall(r'<input[^>]*?type=["\']hidden["\'][^>]*?name=["\']([^"\']+)["\'][^>]*?value=["\']([^"\']*)["\']', html, re.IGNORECASE)
         for name, value in matches:
             fields[name] = value
         return fields
 
-    def _save_debug_html(self, content, tag):
-        try:
-            ts = datetime.now().strftime("%H%M%S")
-            fname = self.debug_dir / f"ffiec_{tag}_{ts}.html"
-            with open(fname, "wb") as f:
-                f.write(content)
-            return str(fname)
-        except Exception:
-            return "Save failed"
+    def _parse_select_options(self, html, control_name_fragment):
+        """
+        Parses <select> options for a control containing the fragment (e.g. 'ListBox1').
+        Returns dict: { value: text_label }
+        """
+        # Find the full name of the control (e.g. ctl00$MainContentHolder$ListBox1)
+        name_match = re.search(r'<select[^>]*name=["\']([^"\']*' + re.escape(control_name_fragment) + r'[^"\']*)["\']', html, re.IGNORECASE)
+        if not name_match:
+            return None, {}
 
-    def _download_with_webforms(self, date_str, report_type="Reports of Condition and Income"):
+        full_name = name_match.group(1)
+
+        # Extract the inner HTML of the select
+        select_block_match = re.search(r'<select[^>]*name=["\']' + re.escape(full_name) + r'["\'][^>]*>(.*?)</select>', html, re.DOTALL | re.IGNORECASE)
+        if not select_block_match:
+            return full_name, {}
+
+        block = select_block_match.group(1)
+        options = {}
+        # Find all options
+        opt_matches = re.findall(r'<option\s+value=["\']([^"\']*)["\'][^>]*>(.*?)</option>', block, re.DOTALL | re.IGNORECASE)
+        for val, txt in opt_matches:
+            options[val] = txt.strip() # Key is Value, Value is Label
+
+        return full_name, options
+
+    def _get_validation_summary(self, html):
+        """Extracts validation error text if present."""
+        if "ValidationSummary1" in html:
+            match = re.search(r'<div[^>]*id=["\'].*ValidationSummary1["\'][^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
+            if match:
+                # simple strip tags
+                return re.sub(r'<[^>]+>', '', match.group(1)).strip()[:300]
+        return None
+
+    def _download_strict(self, date_obj):
         """
-        STRICT 3-STEP FLOW:
-        1. GET Page -> Get Session + State A
-        2. POST Date Selection -> Get State B (CRITICAL MISSING STEP)
-        3. POST Download Button -> Get ZIP
+        Implements the exact 3-step POST sequence for 'ReportingSeriesSinglePeriod'.
         """
-        # Create ONE session per attempt to maintain cookies/ViewState continuity
         session = requests.Session()
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://cdr.ffiec.gov/public/pws/downloadbulkdata.aspx'
+            'Referer': self.base_url,
+            'Origin': 'https://cdr.ffiec.gov'
         })
 
         try:
             # --- STEP 1: INITIAL GET ---
+            logging.info(f"      [FFIEC] Step 1: Initial GET")
             r1 = session.get(self.base_url, timeout=30)
-            if r1.status_code != 200:
-                logging.error(f"      [FFIEC] Step 1 GET failed: {r1.status_code}")
+            if r1.status_code != 200: return None
+
+            hidden = self._parse_hidden_fields(r1.text)
+
+            # Parse ListBox1 (Report Type)
+            lb_name, lb_options = self._parse_select_options(r1.text, 'ListBox1')
+            if not lb_name:
+                logging.error("      [FFIEC] Could not find ListBox1 control.")
                 return None
 
-            fields_step1 = self._extract_all_hidden_fields(r1.text)
-            if '__VIEWSTATE' not in fields_step1:
-                logging.error("      [FFIEC] Failed to parse ViewState from Step 1.")
+            # Target: ReportingSeriesSinglePeriod
+            target_report_value = "ReportingSeriesSinglePeriod"
+            if target_report_value not in lb_options:
+                logging.warning(f"      [FFIEC] {target_report_value} not found in options: {list(lb_options.keys())}")
+                # Fallback check? No, strict mode requested.
                 return None
 
-            # --- STEP 2: SELECT DATE (Prime the Server) ---
-            # We must tell the server "We selected a new date".
-            # This returns a NEW ViewState valid for that date.
-            payload_step2 = fields_step1.copy()
+            # --- STEP 2: POST REPORT TYPE ---
+            logging.info(f"      [FFIEC] Step 2: Select Report Type ({target_report_value})")
+
+            payload_step2 = hidden.copy()
             payload_step2.update({
-                '__EVENTTARGET': 'DatesDropDownList', # The element that triggered the postback
+                '__EVENTTARGET': lb_name, # Trigger postback on ListBox1
                 '__EVENTARGUMENT': '',
-                'ListBox1': report_type,
-                'DatesDropDownList': date_str,
-                'ExportFormatDropDownList': 'TXT'
+                lb_name: target_report_value
+                # Other fields like DatesDropDownList might need to be sent empty or as-is?
+                # Usually ASP.NET requires sending all form fields.
             })
 
-            # This is NOT the download yet, just the UI update
+            # We need to find the name of the Dates dropdown to include it, even if empty
+            dd_name_pre, _ = self._parse_select_options(r1.text, 'DatesDropDownList')
+            if dd_name_pre:
+                payload_step2[dd_name_pre] = ''
+
+            # Export format default
+            ef_name, _ = self._parse_select_options(r1.text, 'ExportFormatDropDownList')
+            if ef_name:
+                payload_step2[ef_name] = 'TXT'
+
             r2 = session.post(self.base_url, data=payload_step2, timeout=30)
-            if r2.status_code != 200:
-                logging.error(f"      [FFIEC] Step 2 POST (Date Select) failed: {r2.status_code}")
+            if r2.status_code != 200: return None
+
+            # Re-parse state
+            hidden = self._parse_hidden_fields(r2.text)
+            dd_name, dd_options = self._parse_select_options(r2.text, 'DatesDropDownList')
+
+            if not dd_name or not dd_options:
+                logging.error("      [FFIEC] DatesDropDownList empty after report selection.")
+                self._save_debug_html(r2.content, "fail_step2_nodates")
                 return None
 
-            fields_step2 = self._extract_all_hidden_fields(r2.text)
-            if '__VIEWSTATE' not in fields_step2:
-                logging.error("      [FFIEC] Failed to parse updated ViewState from Step 2.")
+            # Find matching date value
+            # Match strict MM/DD/YYYY or M/D/YYYY
+            target_date_str_1 = date_obj.strftime("%m/%d/%Y")
+            target_date_str_2 = date_obj.strftime("%-m/%-d/%Y") if sys.platform != 'win32' else date_obj.strftime("%#m/%#d/%Y")
+
+            selected_date_val = None
+            selected_date_label = None
+
+            for val, label in dd_options.items():
+                if target_date_str_1 in label or target_date_str_2 in label:
+                    selected_date_val = val
+                    selected_date_label = label
+                    break
+
+            if not selected_date_val:
+                logging.warning(f"      [FFIEC] Date {target_date_str_1} not found in dropdown.")
                 return None
 
-            # --- STEP 3: CLICK DOWNLOAD ---
-            payload_step3 = fields_step2.copy()
+            # --- STEP 3: POST DATE SELECTION ---
+            logging.info(f"      [FFIEC] Step 3: Select Date ({selected_date_label} -> {selected_date_val})")
+
+            payload_step3 = hidden.copy()
             payload_step3.update({
-                'ListBox1': report_type,
-                'DatesDropDownList': date_str,
-                'ExportFormatDropDownList': 'TXT',
-                'Download_0': 'Download' # The button name
+                '__EVENTTARGET': dd_name, # Trigger postback on Dates
+                '__EVENTARGUMENT': '',
+                lb_name: target_report_value,
+                dd_name: selected_date_val
             })
-            # Remove event target for button clicks
-            if '__EVENTTARGET' in payload_step3: del payload_step3['__EVENTTARGET']
+            if ef_name: payload_step3[ef_name] = 'TXT'
 
-            r3 = session.post(self.base_url, data=payload_step3, stream=True, timeout=120)
+            r3 = session.post(self.base_url, data=payload_step3, timeout=30)
+            if r3.status_code != 200: return None
 
-            if r3.status_code == 200:
-                # Robust ZIP detection
-                is_zip = False
-                if r3.content.startswith(b'PK'): is_zip = True
-                elif 'zip' in r3.headers.get('Content-Type', '').lower(): is_zip = True
-                elif 'octet-stream' in r3.headers.get('Content-Type', '').lower(): is_zip = True
+            hidden = self._parse_hidden_fields(r3.text)
 
-                if is_zip:
-                    return r3
+            # --- STEP 4: DOWNLOAD ---
+            logging.info(f"      [FFIEC] Step 4: Click Download")
+
+            payload_step4 = hidden.copy()
+            payload_step4.update({
+                lb_name: target_report_value,
+                dd_name: selected_date_val
+            })
+            if ef_name: payload_step4[ef_name] = 'TXT' # Ensure TXT is selected
+
+            # Add Download Button (Find name, usually contains 'Download')
+            # The instruction says: ctl00$MainContentHolder$TabStrip1$Download_0
+            # We should try to find it in the HTML to be safe, or try the known ID.
+            download_btn_name = "ctl00$MainContentHolder$TabStrip1$Download_0" # Default from instructions
+            # Verify if it exists in HTML
+            if "Download_0" in r3.text:
+                # Try to extract exact name if regex matches
+                match = re.search(r'name=["\']([^"\']*Download_0)["\']', r3.text)
+                if match: download_btn_name = match.group(1)
+
+            payload_step4[download_btn_name] = 'Download'
+
+            # Remove EVENTTARGET for button click
+            if '__EVENTTARGET' in payload_step4: del payload_step4['__EVENTTARGET']
+
+            r4 = session.post(self.base_url, data=payload_step4, stream=True, timeout=120)
+
+            # Check result
+            if r4.status_code == 200:
+                ct = r4.headers.get('Content-Type', '').lower()
+                if 'zip' in ct or 'octet-stream' in ct or r4.content.startswith(b'PK'):
+                    return r4.content
                 else:
-                    debug_file = self._save_debug_html(r3.content, f"fail_{date_str.replace('/','')}")
-                    logging.warning(f"      [FFIEC] Step 3 returned HTML, not ZIP. Saved to {debug_file}")
+                    validation_msg = self._get_validation_summary(r4.text)
+                    logging.warning(f"      [FFIEC] Received HTML, not ZIP. Validation: {validation_msg}")
+                    self._save_debug_html(r4.content, f"fail_final_{date_obj.strftime('%Y%m%d')}")
+                    return None
             else:
-                logging.error(f"      [FFIEC] Step 3 Download POST failed: {r3.status_code}")
+                logging.error(f"      [FFIEC] Download POST failed: {r4.status_code}")
+                return None
 
         except Exception as e:
             logging.error(f"      [FFIEC] Exception: {e}")
-
-        return None
-
-    def _quarter_needs_patching(self, df_fdic, date_obj):
-        if df_fdic.empty: return True
-        q_data = df_fdic[df_fdic['REPDTE'] == date_obj]
-        if q_data.empty: return False
-
-        # Heuristic: If SBL (RCFD1545) is missing/zero, we need FFIEC
-        check_cols = [c for c in ['RCFD1545', 'LNOTHPCS', 'RCFDJ466'] if c in q_data.columns]
-        if not check_cols: return True
-
-        missing_or_zero = 0
-        total_cells = 0
-        for col in check_cols:
-            vals = q_data[col]
-            missing_or_zero += ((vals.isna()) | (vals == 0)).sum()
-            total_cells += len(vals)
-
-        return (missing_or_zero / total_cells) > 0.5 if total_cells > 0 else True
+            return None
 
     def fetch_quarter_data(self, date_obj, peer_certs):
         date_fmt = date_obj.strftime("%m/%d/%Y")
@@ -730,48 +805,77 @@ class FFIECBulkLoader:
             try:
                 df_cache = pd.read_csv(cache_file)
                 if 'CERT' in df_cache.columns:
-                    # Filter cache by CERT (not IDRSSD)
                     df_cache = df_cache[df_cache['CERT'].isin(peer_certs)]
                     print(f"      [Cache Hit] {date_fmt} ({len(df_cache)} records)")
                     return df_cache
             except Exception:
-                print(f"      [Cache Error] Corrupt file for {date_fmt}, re-downloading.")
+                pass
 
         print(f"      [Downloading] FFIEC Bulk Data for {date_fmt}...")
 
-        # Retry Logic wrapping the strict flow
-        r = None
-        for attempt in range(3):
-            r = self._download_with_webforms(date_fmt)
-            if r: break
-            time.sleep(2)
+        # Use strict download
+        content = self._download_strict(date_obj)
 
-        if not r:
+        if not content:
             return pd.DataFrame()
 
         try:
-            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                target_files = [n for n in z.namelist() if ('Schedule RC-C I' in n or 'Schedule RI-C' in n) and n.endswith('.txt')]
+            with zipfile.ZipFile(io.BytesIO(content)) as z:
+                # Prioritize Schedule RI-C and RC-C
+                target_files = []
+                for n in z.namelist():
+                    if n.lower().endswith('.txt'):
+                        # Looking for "Schedule RI-C" or "Schedule RC-C I"
+                        # But in "Single Period" download, filenames might be "FFIEC CDR Call Schedule RI-C 03312025.txt"
+                        if 'schedule ri-c' in n.lower() or 'schedule rc-c i' in n.lower():
+                            target_files.append(n)
+
+                # If specific schedules not found, try all txt files (fallback)
+                if not target_files:
+                    target_files = [n for n in z.namelist() if n.lower().endswith('.txt') and 'readme' not in n.lower()]
 
                 cert_data_map = {}
 
                 for t_file in target_files:
                     with z.open(t_file) as f:
-                        content = io.TextIOWrapper(f, encoding='latin-1')
-                        _ = content.readline() # Metadata
-                        reader = csv.DictReader(content, delimiter='\t')
+                        # Skip metadata lines logic
+                        wrapper = io.TextIOWrapper(f, encoding='latin-1', errors='replace')
+
+                        # Read until header
+                        pos = 0
+                        header_found = False
+                        while True:
+                            line = wrapper.readline()
+                            if not line: break
+                            # FFIEC headers usually contain "IDRSSD" or "FDIC Certificate Number"
+                            if 'FDIC Certificate Number' in line or 'IDRSSD' in line:
+                                header_found = True
+                                break
+                            pos = wrapper.tell()
+
+                        if not header_found:
+                            continue
+
+                        f.seek(0)
+                        wrapper = io.TextIOWrapper(f, encoding='latin-1', errors='replace')
+                        wrapper.seek(pos)
+
+                        reader = csv.DictReader(wrapper, delimiter='\t')
 
                         for row in reader:
-                            cert_str = row.get('FDIC Certificate Number', '0')
-                            if not cert_str.isdigit(): continue
-                            cert = int(cert_str)
+                            # Parse CERT
+                            cert_str = row.get('FDIC Certificate Number')
+                            if not cert_str: continue
+                            try:
+                                cert = int(cert_str)
+                            except:
+                                continue
 
                             if cert in peer_certs:
                                 if cert not in cert_data_map:
                                     cert_data_map[cert] = {'CERT': cert, 'REPDTE': date_obj}
 
                                 for field in self.target_fields:
-                                    # Strict existence check
                                     if field in row and row[field] is not None and row[field].strip() != '':
                                         try:
                                             cert_data_map[cert][field] = float(row[field].replace(',', ''))
@@ -787,9 +891,26 @@ class FFIECBulkLoader:
 
         return pd.DataFrame()
 
+    def _quarter_needs_patching(self, df_fdic, date_obj):
+        if df_fdic.empty: return True
+        q_data = df_fdic[df_fdic['REPDTE'] == date_obj]
+        if q_data.empty: return False
+
+        check_cols = [c for c in ['RCFD1545', 'LNOTHPCS', 'RCFDJ466'] if c in q_data.columns]
+        if not check_cols: return True
+
+        missing_or_zero = 0
+        total_cells = 0
+        for col in check_cols:
+            vals = q_data[col]
+            missing_or_zero += ((vals.isna()) | (vals == 0)).sum()
+            total_cells += len(vals)
+
+        return (missing_or_zero / total_cells) > 0.5 if total_cells > 0 else True
+
     def heal_dataset(self, df_fdic, peer_certs):
         print("\n" + "="*60)
-        print("DUAL-TRACK DATA RECOVERY: FFIEC BULK API")
+        print("DUAL-TRACK DATA RECOVERY: FFIEC BULK API (STRICT)")
         print("="*60)
 
         if df_fdic.empty: return df_fdic
@@ -811,7 +932,8 @@ class FFIECBulkLoader:
 
         if not ffiec_frames:
             print("      No FFIEC data merged.")
-            df_fdic['FFIEC_RIC_STATUS'] = 'FAILED'
+            df_fdic['RIC_Source_Status'] = 'FFIEC_DOWNLOAD_FAILED'
+            df_fdic['RIC_SOURCE_AVAILABLE'] = 0
             return df_fdic
 
         print("      Merging FFIEC Granular Data...")
@@ -823,19 +945,31 @@ class FFIECBulkLoader:
         df_main = df_fdic.set_index(['CERT', 'REPDTE'])
         df_p = df_patch.set_index(['CERT', 'REPDTE'])
 
-        # Merge: Overwrite NaN, or 0 if FFIEC has data
+        # Merge Logic
         for col in self.target_fields:
             if col in df_p.columns:
                 if col not in df_main.columns:
                     df_main[col] = df_p[col]
                 else:
                     df_main[col] = df_main[col].fillna(df_p[col])
+                    # Fix False Zeros
                     mask_fix = (df_main[col] == 0) & (df_p[col].notna()) & (df_p[col] != 0)
                     if mask_fix.any():
                         df_main.loc[mask_fix, col] = df_p.loc[mask_fix, col]
 
         res = df_main.reset_index()
-        res['FFIEC_RIC_STATUS'] = 'SUCCESS'
+
+        # Tagging Availability
+        # If we have RCFDJ466/RCONJ466 (Construction ACL), we likely have the dataset
+        ric_check_col = 'RCFDJ466' if 'RCFDJ466' in res.columns else 'RCONJ466'
+
+        if ric_check_col in res.columns:
+            res['RIC_SOURCE_AVAILABLE'] = res[ric_check_col].notna().astype(int)
+            res['RIC_Source_Status'] = np.where(res['RIC_SOURCE_AVAILABLE'] == 1, 'SUCCESS', 'MISSING_DATA')
+        else:
+            res['RIC_SOURCE_AVAILABLE'] = 0
+            res['RIC_Source_Status'] = 'FFIEC_DOWNLOAD_FAILED'
+
         return res
 # ==================================================================================
 #  3. HELPER CLASSES
@@ -1416,54 +1550,36 @@ class BankMetricsProcessor:
             return (numerator / denominator).fillna(fill_value)
         except:
             return fill_value
-
+    # ==================================================================================
+    #  UPDATED METRICS PROCESSOR METHOD (Replace create_derived_metrics)
+    # ==================================================================================
     def create_derived_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty: return df
         df_processed = df.copy()
 
-        # [GUARD LOG] Confirm FFIEC data made it this far
-        ric_source_cols = ["RCFDJ469", "RCONJ469", "RCFDJ474", "RCONJ474"]
-        present = [c for c in ric_source_cols if c in df_processed.columns]
-        logging.info(f"[RIC DERIVE] Source cols present at derive-time: {present}")
-
-        # [E] RI-C DISAGGREGATED ALLOWANCE (Robust Logic)
-        # -----------------------------------------------------------------------
-        required_ric = [
-            "RCFDJ466", "RCONJ466", "RCFDJ467", "RCONJ467", "RCFDJ468", "RCONJ468",
-            "RCFDJ469", "RCONJ469", "RCFDJ470", "RCONJ470", "RCFDJ471", "RCONJ471",
-            "RCFDJ472", "RCONJ472", "RCFDJ474", "RCONJ474"
-        ]
-
-        # Check if we actually have data to work with
-        has_ric_data = any(c in df_processed.columns for c in required_ric)
-
-        if not has_ric_data:
-            logging.warning("[RIC DERIVE] No RI-C columns present. Setting all to NaN.")
+        # Ensure availability flags exist
+        if 'RIC_SOURCE_AVAILABLE' not in df_processed.columns:
             df_processed['RIC_SOURCE_AVAILABLE'] = 0
-            for suffix in ['Constr', 'CommRE', 'Resi', 'Comm', 'Card', 'OthCons', 'Unalloc', 'Other']:
-                df_processed[f'RIC_{suffix}_Best'] = np.nan
-        else:
-            df_processed['RIC_SOURCE_AVAILABLE'] = 1
+            df_processed['RIC_Source_Status'] = 'UNKNOWN'
 
-            def best_of(df, cons_col, dom_col):
-                s_cons = df[cons_col] if cons_col in df.columns else pd.Series(np.nan, index=df.index)
-                s_dom  = df[dom_col]  if dom_col  in df.columns else pd.Series(np.nan, index=df.index)
-                return s_cons.fillna(s_dom)
+        def best_of(df, cons_col, dom_col):
+            s_cons = df[cons_col] if cons_col in df.columns else pd.Series(np.nan, index=df.index)
+            s_dom  = df[dom_col]  if dom_col  in df.columns else pd.Series(np.nan, index=df.index)
+            return s_cons.fillna(s_dom)
 
-            df_processed['RIC_Constr_Best']  = best_of(df_processed, 'RCFDJ466', 'RCONJ466')
-            df_processed['RIC_CommRE_Best']  = best_of(df_processed, 'RCFDJ467', 'RCONJ467')
-            df_processed['RIC_Resi_Best']    = best_of(df_processed, 'RCFDJ468', 'RCONJ468')
-            df_processed['RIC_Comm_Best']    = best_of(df_processed, 'RCFDJ469', 'RCONJ469')
-            df_processed['RIC_Card_Best']    = best_of(df_processed, 'RCFDJ470', 'RCONJ470')
-            df_processed['RIC_OthCons_Best'] = best_of(df_processed, 'RCFDJ471', 'RCONJ471')
-            df_processed['RIC_Unalloc_Best'] = best_of(df_processed, 'RCFDJ472', 'RCONJ472')
-            df_processed['RIC_Other_Best']   = best_of(df_processed, 'RCFDJ474', 'RCONJ474')
+        # Raw RI-C Best-Of Mapping
+        df_processed['RIC_Constr_Best']  = best_of(df_processed, 'RCFDJ466', 'RCONJ466')
+        df_processed['RIC_CommRE_Best']  = best_of(df_processed, 'RCFDJ467', 'RCONJ467')
+        df_processed['RIC_Resi_Best']    = best_of(df_processed, 'RCFDJ468', 'RCONJ468')
+        df_processed['RIC_Comm_Best']    = best_of(df_processed, 'RCFDJ469', 'RCONJ469')
+        df_processed['RIC_Card_Best']    = best_of(df_processed, 'RCFDJ470', 'RCONJ470')
+        df_processed['RIC_OthCons_Best'] = best_of(df_processed, 'RCFDJ471', 'RCONJ471')
+        df_processed['RIC_Unalloc_Best'] = best_of(df_processed, 'RCFDJ472', 'RCONJ472')
+        df_processed['RIC_Other_Best']   = best_of(df_processed, 'RCFDJ474', 'RCONJ474')
 
-        # [A] Field Resolution Layer
-        logging.info("Applying Field Resolution Layer...")
+        # [A] Field Resolution
         for field, sources in FDIC_FALLBACK_MAP.items():
             if "FFIEC" in sources: continue
-
             def resolve(row, src=sources, fld=field):
                 if "DERIVED" in src:
                     if fld == "LNCONOTHX": return max(0, row.get('LNCON',0)-row.get('LNAUTO',0)-row.get('LNCRCD',0))
@@ -1472,7 +1588,6 @@ class BankMetricsProcessor:
                     val = row.get(s)
                     if pd.notna(val) and val != 0: return val
                 return 0
-
             df_processed[field] = df_processed.apply(resolve, axis=1)
 
         # [B] YTD -> Quarterly
@@ -1485,7 +1600,7 @@ class BankMetricsProcessor:
                 quarterly_vals.loc[q1_mask] = group.loc[q1_mask, col]
                 df_processed.loc[group.index, f"{col}_Q"] = quarterly_vals
 
-        # [C] Top Level
+        # [C] Top Level Metrics
         df_processed['Total_Nonaccrual'] = self._get_series(df_processed, ['NACI','NARENROT','NARECONS','NARERES','NACON'])
         df_processed['Total_ACL'] = df_processed.get('LNATRES', 0).fillna(0) + \
                                     (df_processed.get('RB2LNRES', 0).fillna(0) - df_processed.get('LNATRES', 0).fillna(0))
@@ -1495,28 +1610,20 @@ class BankMetricsProcessor:
         category_balances = {}
         category_balances['SBL'] = df_processed.get('LNOTHPCS', 0)
         df_processed['SBL_Balance'] = category_balances['SBL']
-
         category_balances['Fund_Finance'] = df_processed.get('LNOTHNONDEP', 0)
         df_processed['Fund_Finance_Balance'] = category_balances['Fund_Finance']
-
         df_processed['Wealth_Resi_Balance'] = self._get_series(df_processed, ['LNRERES', 'LNRELOC'])
         category_balances['Wealth_Resi'] = df_processed['Wealth_Resi_Balance']
-
         df_processed['Consumer_Auto_Balance'] = df_processed.get('LNAUTO', 0)
         category_balances['Consumer_Auto'] = df_processed['Consumer_Auto_Balance']
-
         df_processed['Consumer_Other_Balance'] = df_processed.get('LNCONOTHX', 0) + df_processed.get('LNCRCD', 0)
         category_balances['Consumer_Other'] = df_processed['Consumer_Other_Balance']
-
         df_processed['Corp_CI_Balance'] = df_processed.get('LNCI', 0)
         category_balances['Corp_CI'] = df_processed['Corp_CI_Balance']
-
         df_processed['CRE_OO_Balance'] = df_processed.get('LNRENROW', 0)
         category_balances['CRE_OO'] = df_processed['CRE_OO_Balance']
-
         df_processed['CRE_Investment_Balance'] = self._get_series(df_processed, ['LNRECONS', 'LNREMULT', 'LNRENROT'])
         category_balances['CRE_Investment'] = df_processed['CRE_Investment_Balance']
-
         total_categorized = sum(category_balances.values())
 
         # [F] Ratios
@@ -1534,45 +1641,64 @@ class BankMetricsProcessor:
 
             df_processed.loc[idx, 'Allowance_to_Gross_Loans_Rate'] = self._safe_divide(acl, loans)
             df_processed.loc[idx, 'Nonaccrual_to_Gross_Loans_Rate'] = self._safe_divide(group['Total_Nonaccrual'], loans)
-
             sbl_bal = group['SBL_Balance']
             df_processed.loc[idx, 'Risk_Adj_Allowance_Coverage'] = self._safe_divide(acl, (loans - sbl_bal))
 
             denom_acl = ric_total.loc[idx].replace(0, np.nan)
 
-            df_processed.loc[idx, 'RIC_Constr_ACL_Pct'] = self._safe_divide(group['RIC_Constr_Best'], denom_acl)
-            df_processed.loc[idx, 'RIC_CommRE_ACL_Pct'] = self._safe_divide(group['RIC_CommRE_Best'], denom_acl)
-            df_processed.loc[idx, 'RIC_Resi_ACL_Pct'] = self._safe_divide(group['RIC_Resi_Best'], denom_acl)
-            df_processed.loc[idx, 'RIC_Comm_ACL_Pct'] = self._safe_divide(group['RIC_Comm_Best'], denom_acl)
-            df_processed.loc[idx, 'RIC_CreditCard_ACL_Pct'] = self._safe_divide(group['RIC_Card_Best'], denom_acl)
-            df_processed.loc[idx, 'RIC_OtherCons_ACL_Pct'] = self._safe_divide(group['RIC_OthCons_Best'], denom_acl)
-            df_processed.loc[idx, 'RIC_Other_ACL_Pct'] = self._safe_divide(group['RIC_Other_Best'], denom_acl)
-            df_processed.loc[idx, 'RIC_Unallocated_ACL_Pct'] = self._safe_divide(group['RIC_Unalloc_Best'], denom_acl)
+            # --- CHECK AVAILABILITY ---
+            # Use max() to determine if this bank/date has data (scalar result)
+            is_ric_available = group['RIC_SOURCE_AVAILABLE'].max() == 1
 
-            # Scatter Groups
+            # Additional sanity check: if the calculated denominator is 0/NaN,
+            # treat as unavailable even if flag says yes.
+            has_nonzero_acl = denom_acl.fillna(0) > 0
+
+            if is_ric_available and has_nonzero_acl:
+                # Compute Percentages
+                df_processed.loc[idx, 'RIC_Constr_ACL_Pct'] = self._safe_divide(group['RIC_Constr_Best'], denom_acl)
+                df_processed.loc[idx, 'RIC_CommRE_ACL_Pct'] = self._safe_divide(group['RIC_CommRE_Best'], denom_acl)
+                df_processed.loc[idx, 'RIC_Resi_ACL_Pct'] = self._safe_divide(group['RIC_Resi_Best'], denom_acl)
+                df_processed.loc[idx, 'RIC_Comm_ACL_Pct'] = self._safe_divide(group['RIC_Comm_Best'], denom_acl)
+                df_processed.loc[idx, 'RIC_CreditCard_ACL_Pct'] = self._safe_divide(group['RIC_Card_Best'], denom_acl)
+                df_processed.loc[idx, 'RIC_OtherCons_ACL_Pct'] = self._safe_divide(group['RIC_OthCons_Best'], denom_acl)
+                df_processed.loc[idx, 'RIC_Other_ACL_Pct'] = self._safe_divide(group['RIC_Other_Best'], denom_acl)
+                df_processed.loc[idx, 'RIC_Unallocated_ACL_Pct'] = self._safe_divide(group['RIC_Unalloc_Best'], denom_acl)
+
+                # Compute Group ACL Shares
+                comm_acl = group['RIC_Comm_Best']
+                df_processed.loc[idx, 'Group_Commercial_ACL_Share'] = self._safe_divide(comm_acl, denom_acl)
+                resi_acl = group['RIC_Resi_Best']
+                df_processed.loc[idx, 'Group_Residential_ACL_Share'] = self._safe_divide(resi_acl, denom_acl)
+                cre_acl = group['RIC_Constr_Best'] + group['RIC_CommRE_Best']
+                df_processed.loc[idx, 'Group_CRE_ACL_Share'] = self._safe_divide(cre_acl, denom_acl)
+                other_acl = group['RIC_Other_Best'] + group['RIC_Card_Best'] + group['RIC_OthCons_Best']
+                df_processed.loc[idx, 'Group_OtherSBL_ACL_Share'] = self._safe_divide(other_acl, denom_acl)
+            else:
+                # Force NaNs if data missing or denominator zero
+                cols_to_nan = [
+                    'RIC_Constr_ACL_Pct', 'RIC_CommRE_ACL_Pct', 'RIC_Resi_ACL_Pct',
+                    'RIC_Comm_ACL_Pct', 'RIC_CreditCard_ACL_Pct', 'RIC_OtherCons_ACL_Pct',
+                    'RIC_Other_ACL_Pct', 'RIC_Unallocated_ACL_Pct',
+                    'Group_Commercial_ACL_Share', 'Group_Residential_ACL_Share',
+                    'Group_CRE_ACL_Share', 'Group_OtherSBL_ACL_Share'
+                ]
+                for col in cols_to_nan:
+                    df_processed.loc[idx, col] = np.nan
+
+            # Loan Shares (Source Independent)
             total_loans_bank = total_categorized.loc[idx]
-
             comm_loan = group['Corp_CI_Balance'] + group['Fund_Finance_Balance']
-            comm_acl = group['RIC_Comm_Best']
             df_processed.loc[idx, 'Group_Commercial_Loan_Share'] = self._safe_divide(comm_loan, total_loans_bank)
-            df_processed.loc[idx, 'Group_Commercial_ACL_Share'] = self._safe_divide(comm_acl, denom_acl)
-
             resi_loan = group['Wealth_Resi_Balance']
-            resi_acl = group['RIC_Resi_Best']
             df_processed.loc[idx, 'Group_Residential_Loan_Share'] = self._safe_divide(resi_loan, total_loans_bank)
-            df_processed.loc[idx, 'Group_Residential_ACL_Share'] = self._safe_divide(resi_acl, denom_acl)
-
             cre_loan = group['CRE_OO_Balance'] + group['CRE_Investment_Balance']
-            cre_acl = group['RIC_Constr_Best'] + group['RIC_CommRE_Best']
             df_processed.loc[idx, 'Group_CRE_Loan_Share'] = self._safe_divide(cre_loan, total_loans_bank)
-            df_processed.loc[idx, 'Group_CRE_ACL_Share'] = self._safe_divide(cre_acl, denom_acl)
-
             other_loan = group['SBL_Balance'] + group['Consumer_Auto_Balance'] + group['Consumer_Other_Balance']
-            other_acl = group['RIC_Other_Best'] + group['RIC_Card_Best'] + group['RIC_OthCons_Best']
             df_processed.loc[idx, 'Group_OtherSBL_Loan_Share'] = self._safe_divide(other_loan, total_loans_bank)
-            df_processed.loc[idx, 'Group_OtherSBL_ACL_Share'] = self._safe_divide(other_acl, denom_acl)
 
         return df_processed
+
 
     def calculate_ttm_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty: return df
