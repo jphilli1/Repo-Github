@@ -580,13 +580,39 @@ FRED_SERIES_TO_FETCH = {
 }
 }
 FDIC_FIELDS_TO_FETCH =list(dict.fromkeys(FDIC_FIELDS_TO_FETCH))
+
 # ==================================================================================
-#  UPDATED FFIEC LOADER (Replace entire class)
+#  FFIEC BULK LOADER CLASS
 # ==================================================================================
+# ==================================================================================
+#  FIXED FFIEC BULK LOADER CLASS - v2
+#  Fixes ZIP parsing "I/O operation on closed file" error
+#  Replace the existing FFIECBulkLoader class in CR_Bank_DashvMSPB.py with this
+# ==================================================================================
+
+# ==================================================================================
+#  FIXED FFIEC BULK LOADER CLASS - v3
+#  Fixes IDRSSD vs CERT key mismatch in schedule files
+#  Replace the existing FFIECBulkLoader class in CR_Bank_DashvMSPB.py with this
+# ==================================================================================
+
+# ==================================================================================
+#  FIXED FFIEC BULK LOADER CLASS - v4
+#  Fixes: Quoted column headers ("IDRSSD"), proper row 0/row 1 handling
+#  Replace the existing FFIECBulkLoader class in CR_Bank_DashvMSPB.py with this
+# ==================================================================================
+
 class FFIECBulkLoader:
     """
     Robust Data Engine: Fetches granular 'Private Bank' fields from
     FFIEC CDR Bulk Data using a strict ASP.NET WebForms state machine.
+
+    FIXED v4:
+    - Handles quoted column headers ("IDRSSD" -> IDRSSD)
+    - Row 0 = MDRM column codes (header)
+    - Row 1 = Description row (skipped)
+    - Row 2+ = Data rows
+    - Saves debug extracts when parsing fails
     """
 
     def __init__(self, output_dir="data/ffiec_cache"):
@@ -594,136 +620,316 @@ class FFIECBulkLoader:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.debug_dir = self.output_dir / "debug"
         self.debug_dir.mkdir(parents=True, exist_ok=True)
+        self.zips_dir = self.output_dir / "zips"
+        self.zips_dir.mkdir(parents=True, exist_ok=True)
+        self.extracted_dir = self.output_dir / "extracted"
+        self.extracted_dir.mkdir(parents=True, exist_ok=True)
 
         self.base_url = "https://cdr.ffiec.gov/public/pws/downloadbulkdata.aspx"
 
-        # Critical Private Banking Fields
+        # Critical Private Banking Fields - expanded for RICII
         self.target_fields = [
-            'RCFD1545', 'RCON1545', 'RCFDJ454', 'RCONJ454', # SBL / Fund Finance
-            'RCFDJ466', 'RCONJ466', 'RCFDJ467', 'RCONJ467', # RI-C Real Estate
-            'RCFDJ468', 'RCONJ468', 'RCFDJ469', 'RCONJ469',
-            'RCFDJ470', 'RCONJ470', 'RCFDJ471', 'RCONJ471',
-            'RCFDJ472', 'RCONJ472', 'RCFDJ474', 'RCONJ474'
+            # SBL / Fund Finance (RC-C)
+            'RCFD1545', 'RCON1545',
+            'RCFDJ454', 'RCONJ454',
+
+            # RI-C / RICII ACL Disaggregated Allowance fields
+            'RCFDJ466', 'RCONJ466',
+            'RCFDJ467', 'RCONJ467',
+            'RCFDJ468', 'RCONJ468',
+            'RCFDJ469', 'RCONJ469',
+            'RCFDJ470', 'RCONJ470',
+            'RCFDJ471', 'RCONJ471',
+            'RCFDJ472', 'RCONJ472',
+            'RCFDJ473', 'RCONJ473',
+            'RCFDJ474', 'RCONJ474',
+
+            # RICII fields (JJ04-JJ23 series)
+            'RCFDJJ04', 'RCONJJ04',
+            'RCFDJJ05', 'RCONJJ05',
+            'RCFDJJ06', 'RCONJJ06',
+            'RCFDJJ07', 'RCONJJ07',
+            'RCFDJJ08', 'RCONJJ08',
+            'RCFDJJ09', 'RCONJJ09',
+            'RCFDJJ10', 'RCONJJ10',
+            'RCFDJJ11', 'RCONJJ11',
+            'RCFDJJ12', 'RCONJJ12',
+            'RCFDJJ13', 'RCONJJ13',
+            'RCFDJJ14', 'RCONJJ14',
+            'RCFDJJ15', 'RCONJJ15',
+            'RCFDJJ16', 'RCONJJ16',
+            'RCFDJJ17', 'RCONJJ17',
+            'RCFDJJ18', 'RCONJJ18',
+            'RCFDJJ19', 'RCONJJ19',
+            'RCFDJJ20', 'RCONJJ20',
+            'RCFDJJ21', 'RCONJJ21',
+            'RCFDJJ22', 'RCONJJ22',
+            'RCFDJJ23', 'RCONJJ23',
         ]
 
-    def _parse_hidden_fields(self, html):
-        """Parses all <input type='hidden'> fields to ensure valid ViewState."""
+        # Aliases for key columns (handles variations in FFIEC files)
+        self.cert_aliases = {'CERT', 'FDIC_CERT', 'FDIC CERTIFICATE NUMBER',
+                            'FDICCERT', 'FDIC_CERTIFICATE_NUMBER', 'FDICERT'}
+        self.idrssd_aliases = {'IDRSSD', 'ID_RSSD', 'RSSD', 'RSSDID'}
+
+    def _clean_column_name(self, col: str) -> str:
+        """Removes quotes and whitespace from column names."""
+        if col is None:
+            return ''
+        return col.strip().strip('"').strip("'").strip()
+
+    def _save_debug_html(self, html_content, tag: str) -> str:
+        """Saves HTML content to debug directory."""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"ffiec_fail_{tag}_{timestamp}.html"
+        filepath = self.debug_dir / filename
+
+        try:
+            if isinstance(html_content, bytes):
+                html_content = html_content.decode('utf-8', errors='replace')
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            logging.info(f"      [FFIEC] Debug HTML saved to: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            logging.error(f"      [FFIEC] Failed to save debug HTML: {e}")
+            return ""
+
+    def _save_debug_extract(self, file_text: str, filename: str, date_obj, num_lines: int = 50) -> str:
+        """Saves first N lines of a file for debugging."""
+        try:
+            date_dir = self.extracted_dir / date_obj.strftime('%Y%m%d')
+            date_dir.mkdir(parents=True, exist_ok=True)
+
+            safe_name = re.sub(r'[^\w\-.]', '_', filename)
+            out_path = date_dir / f"{safe_name}_head{num_lines}.txt"
+
+            lines = file_text.split('\n')[:num_lines]
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+
+            logging.info(f"      [FFIEC] Debug extract saved to: {out_path}")
+            return str(out_path)
+        except Exception as e:
+            logging.warning(f"      [FFIEC] Failed to save debug extract: {e}")
+            return ""
+
+    def _save_zip_file(self, zip_bytes: bytes, date_obj, product: str = "bulk", fmt: str = "tsv") -> str:
+        """Saves ZIP bytes to disk."""
+        date_str = date_obj.strftime('%Y%m%d')
+        filename = f"ffiec_{date_str}_{product}_{fmt}.zip"
+        filepath = self.zips_dir / filename
+
+        try:
+            with open(filepath, 'wb') as f:
+                f.write(zip_bytes)
+            logging.info(f"      [FFIEC] ZIP saved to: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            logging.error(f"      [FFIEC] Failed to save ZIP: {e}")
+            return ""
+
+    def _parse_hidden_fields(self, html: str) -> dict:
+        """Parses all <input type='hidden'> fields."""
         fields = {}
-        # Capture name and value attributes, handling quotes
-        matches = re.findall(r'<input[^>]*?type=["\']hidden["\'][^>]*?name=["\']([^"\']+)["\'][^>]*?value=["\']([^"\']*)["\']', html, re.IGNORECASE)
-        for name, value in matches:
-            fields[name] = value
+        patterns = [
+            r'<input[^>]*?type=["\']hidden["\'][^>]*?name=["\']([^"\']+)["\'][^>]*?value=["\']([^"\']*)["\']',
+            r'<input[^>]*?name=["\']([^"\']+)["\'][^>]*?type=["\']hidden["\'][^>]*?value=["\']([^"\']*)["\']',
+            r'<input[^>]*?name=["\']([^"\']+)["\'][^>]*?value=["\']([^"\']*)["\'][^>]*?type=["\']hidden["\']'
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+            for name, value in matches:
+                if name not in fields:
+                    fields[name] = value
         return fields
 
-    def _parse_select_options(self, html, control_name_fragment):
-        """
-        Parses <select> options for a control containing the fragment (e.g. 'ListBox1').
-        Returns dict: { value: text_label }
-        """
-        # Find the full name of the control (e.g. ctl00$MainContentHolder$ListBox1)
-        name_match = re.search(r'<select[^>]*name=["\']([^"\']*' + re.escape(control_name_fragment) + r'[^"\']*)["\']', html, re.IGNORECASE)
+    def _parse_select_options(self, html: str, control_name_fragment: str) -> tuple:
+        """Parses <select> options for a control."""
+        name_match = re.search(
+            r'<select[^>]*name=["\']([^"\']*' + re.escape(control_name_fragment) + r'[^"\']*)["\']',
+            html, re.IGNORECASE
+        )
         if not name_match:
             return None, {}
 
         full_name = name_match.group(1)
-
-        # Extract the inner HTML of the select
-        select_block_match = re.search(r'<select[^>]*name=["\']' + re.escape(full_name) + r'["\'][^>]*>(.*?)</select>', html, re.DOTALL | re.IGNORECASE)
+        select_block_match = re.search(
+            r'<select[^>]*name=["\']' + re.escape(full_name) + r'["\'][^>]*>(.*?)</select>',
+            html, re.DOTALL | re.IGNORECASE
+        )
         if not select_block_match:
             return full_name, {}
 
         block = select_block_match.group(1)
         options = {}
-        # Find all options
-        opt_matches = re.findall(r'<option\s+value=["\']([^"\']*)["\'][^>]*>(.*?)</option>', block, re.DOTALL | re.IGNORECASE)
+        opt_matches = re.findall(
+            r'<option\s+(?:[^>]*\s+)?value=["\']([^"\']*)["\'][^>]*>(.*?)</option>',
+            block, re.DOTALL | re.IGNORECASE
+        )
         for val, txt in opt_matches:
-            options[val] = txt.strip() # Key is Value, Value is Label
+            options[val] = txt.strip()
 
         return full_name, options
 
-    def _get_validation_summary(self, html):
-        """Extracts validation error text if present."""
-        if "ValidationSummary1" in html:
-            match = re.search(r'<div[^>]*id=["\'].*ValidationSummary1["\'][^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
+    def _parse_radio_buttons(self, html: str, name_fragment: str) -> tuple:
+        """Parses radio button groups."""
+        pattern = r'<input[^>]*type=["\']radio["\'][^>]*name=["\']([^"\']*' + re.escape(name_fragment) + r'[^"\']*)["\'][^>]*value=["\']([^"\']*)["\']'
+        matches = re.findall(pattern, html, re.IGNORECASE)
+
+        if not matches:
+            pattern = r'<input[^>]*name=["\']([^"\']*' + re.escape(name_fragment) + r'[^"\']*)["\'][^>]*type=["\']radio["\'][^>]*value=["\']([^"\']*)["\']'
+            matches = re.findall(pattern, html, re.IGNORECASE)
+
+        if not matches:
+            return None, {}
+
+        full_name = matches[0][0]
+        options = {m[1]: m[1] for m in matches}
+        return full_name, options
+
+    def _find_format_controls(self, html: str) -> dict:
+        """Finds file format selection controls."""
+        result = {'type': None, 'name': None, 'options': {}, 'preferred_value': None}
+
+        for fragment in ['ExportFormatDropDownList', 'FormatDropDown', 'FileFormat']:
+            dd_name, dd_options = self._parse_select_options(html, fragment)
+            if dd_name and dd_options:
+                result['type'] = 'dropdown'
+                result['name'] = dd_name
+                result['options'] = dd_options
+                for pref in ['TSV', 'TXT', 'CSV', 'Tab']:
+                    for val, label in dd_options.items():
+                        if pref.lower() in val.lower() or pref.lower() in label.lower():
+                            result['preferred_value'] = val
+                            break
+                    if result['preferred_value']:
+                        break
+                if not result['preferred_value'] and dd_options:
+                    result['preferred_value'] = list(dd_options.keys())[0]
+                return result
+
+        for fragment in ['FormatType', 'RadioButton', 'Format']:
+            rb_name, rb_options = self._parse_radio_buttons(html, fragment)
+            if rb_name and rb_options:
+                result['type'] = 'radio'
+                result['name'] = rb_name
+                result['options'] = rb_options
+                for pref in ['TSV', 'TXT', 'CSV', 'Tab']:
+                    for val in rb_options.keys():
+                        if pref.lower() in val.lower():
+                            result['preferred_value'] = val
+                            break
+                    if result['preferred_value']:
+                        break
+                if not result['preferred_value'] and rb_options:
+                    result['preferred_value'] = list(rb_options.keys())[0]
+                return result
+
+        return result
+
+    def _find_download_button(self, html: str) -> dict:
+        """Finds the download button control."""
+        result = {'name': None, 'type': 'button', 'value': 'Download'}
+
+        patterns = [
+            r'<input[^>]*name=["\']([^"\']*Download[^"\']*)["\'][^>]*type=["\']submit["\'][^>]*value=["\']([^"\']*)["\']',
+            r'<input[^>]*type=["\']submit["\'][^>]*name=["\']([^"\']*Download[^"\']*)["\'][^>]*value=["\']([^"\']*)["\']',
+            r'<input[^>]*name=["\']([^"\']*Download[^"\']*)["\'][^>]*type=["\']image["\']',
+            r'<input[^>]*type=["\']image["\'][^>]*name=["\']([^"\']*Download[^"\']*)["\']',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
             if match:
-                # simple strip tags
-                return re.sub(r'<[^>]+>', '', match.group(1)).strip()[:300]
+                result['name'] = match.group(1)
+                if 'image' in pattern.lower():
+                    result['type'] = 'image'
+                if len(match.groups()) > 1:
+                    result['value'] = match.group(2)
+                return result
+
+        fallback_names = [
+            'ctl00$MainContentHolder$TabStrip1$Download_0',
+            'ctl00$MainContentHolder$Download',
+        ]
+        for name in fallback_names:
+            if name in html:
+                result['name'] = name
+                return result
+
+        return result
+
+    def _get_validation_summary(self, html: str) -> str:
+        """Extracts validation error text if present."""
+        if "ValidationSummary" in html:
+            match = re.search(
+                r'<div[^>]*id=["\'][^"\']*ValidationSummary[^"\']*["\'][^>]*>(.*?)</div>',
+                html, re.DOTALL | re.IGNORECASE
+            )
+            if match:
+                text = re.sub(r'<[^>]+>', ' ', match.group(1))
+                text = re.sub(r'\s+', ' ', text).strip()
+                return text[:300]
         return None
 
-    def _download_strict(self, date_obj):
-        """
-        Implements the exact 3-step POST sequence for 'ReportingSeriesSinglePeriod'.
-        """
+    def _download_strict(self, date_obj) -> tuple:
+        """Downloads FFIEC bulk data ZIP file."""
         session = requests.Session()
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': self.base_url,
-            'Origin': 'https://cdr.ffiec.gov'
+            'Origin': 'https://cdr.ffiec.gov',
         })
 
         try:
-            # --- STEP 1: INITIAL GET ---
             logging.info(f"      [FFIEC] Step 1: Initial GET")
             r1 = session.get(self.base_url, timeout=30)
-            if r1.status_code != 200: return None
+            if r1.status_code != 200:
+                return None, 'INITIAL_GET_FAILED'
 
             hidden = self._parse_hidden_fields(r1.text)
-
-            # Parse ListBox1 (Report Type)
             lb_name, lb_options = self._parse_select_options(r1.text, 'ListBox1')
             if not lb_name:
-                logging.error("      [FFIEC] Could not find ListBox1 control.")
-                return None
+                self._save_debug_html(r1.content, "step1_no_listbox")
+                return None, 'NO_LISTBOX_CONTROL'
 
-            # Target: ReportingSeriesSinglePeriod
             target_report_value = "ReportingSeriesSinglePeriod"
             if target_report_value not in lb_options:
-                logging.warning(f"      [FFIEC] {target_report_value} not found in options: {list(lb_options.keys())}")
-                # Fallback check? No, strict mode requested.
-                return None
+                return None, 'REPORT_TYPE_NOT_FOUND'
 
-            # --- STEP 2: POST REPORT TYPE ---
             logging.info(f"      [FFIEC] Step 2: Select Report Type ({target_report_value})")
+            dd_name_pre, _ = self._parse_select_options(r1.text, 'DatesDropDownList')
+            ef_name_pre, _ = self._parse_select_options(r1.text, 'ExportFormat')
 
             payload_step2 = hidden.copy()
-            payload_step2.update({
-                '__EVENTTARGET': lb_name, # Trigger postback on ListBox1
-                '__EVENTARGUMENT': '',
-                lb_name: target_report_value
-                # Other fields like DatesDropDownList might need to be sent empty or as-is?
-                # Usually ASP.NET requires sending all form fields.
-            })
-
-            # We need to find the name of the Dates dropdown to include it, even if empty
-            dd_name_pre, _ = self._parse_select_options(r1.text, 'DatesDropDownList')
+            payload_step2['__EVENTTARGET'] = lb_name
+            payload_step2['__EVENTARGUMENT'] = ''
+            payload_step2[lb_name] = target_report_value
             if dd_name_pre:
                 payload_step2[dd_name_pre] = ''
-
-            # Export format default
-            ef_name, _ = self._parse_select_options(r1.text, 'ExportFormatDropDownList')
-            if ef_name:
-                payload_step2[ef_name] = 'TXT'
+            if ef_name_pre:
+                payload_step2[ef_name_pre] = ''
 
             r2 = session.post(self.base_url, data=payload_step2, timeout=30)
-            if r2.status_code != 200: return None
+            if r2.status_code != 200:
+                return None, 'REPORT_TYPE_POST_FAILED'
 
-            # Re-parse state
             hidden = self._parse_hidden_fields(r2.text)
             dd_name, dd_options = self._parse_select_options(r2.text, 'DatesDropDownList')
 
             if not dd_name or not dd_options:
-                logging.error("      [FFIEC] DatesDropDownList empty after report selection.")
-                self._save_debug_html(r2.content, "fail_step2_nodates")
-                return None
+                self._save_debug_html(r2.content, "step2_no_dates")
+                return None, 'NO_DATES_AVAILABLE'
 
-            # Find matching date value
-            # Match strict MM/DD/YYYY or M/D/YYYY
             target_date_str_1 = date_obj.strftime("%m/%d/%Y")
-            target_date_str_2 = date_obj.strftime("%-m/%-d/%Y") if sys.platform != 'win32' else date_obj.strftime("%#m/%#d/%Y")
+            try:
+                target_date_str_2 = date_obj.strftime("%-m/%-d/%Y")
+            except ValueError:
+                target_date_str_2 = date_obj.strftime("%#m/%#d/%Y")
 
             selected_date_val = None
             selected_date_label = None
-
             for val, label in dd_options.items():
                 if target_date_str_1 in label or target_date_str_2 in label:
                     selected_date_val = val
@@ -731,189 +937,473 @@ class FFIECBulkLoader:
                     break
 
             if not selected_date_val:
-                logging.warning(f"      [FFIEC] Date {target_date_str_1} not found in dropdown.")
-                return None
+                return None, 'DATE_NOT_AVAILABLE'
 
-            # --- STEP 3: POST DATE SELECTION ---
             logging.info(f"      [FFIEC] Step 3: Select Date ({selected_date_label} -> {selected_date_val})")
-
             payload_step3 = hidden.copy()
-            payload_step3.update({
-                '__EVENTTARGET': dd_name, # Trigger postback on Dates
-                '__EVENTARGUMENT': '',
-                lb_name: target_report_value,
-                dd_name: selected_date_val
-            })
-            if ef_name: payload_step3[ef_name] = 'TXT'
+            payload_step3['__EVENTTARGET'] = dd_name
+            payload_step3['__EVENTARGUMENT'] = ''
+            payload_step3[lb_name] = target_report_value
+            payload_step3[dd_name] = selected_date_val
 
             r3 = session.post(self.base_url, data=payload_step3, timeout=30)
-            if r3.status_code != 200: return None
+            if r3.status_code != 200:
+                return None, 'DATE_POST_FAILED'
 
             hidden = self._parse_hidden_fields(r3.text)
 
-            # --- STEP 4: DOWNLOAD ---
-            logging.info(f"      [FFIEC] Step 4: Click Download")
+            logging.info(f"      [FFIEC] Step 3.5: Select File Format")
+            format_controls = self._find_format_controls(r3.text)
 
-            payload_step4 = hidden.copy()
-            payload_step4.update({
-                lb_name: target_report_value,
-                dd_name: selected_date_val
-            })
-            if ef_name: payload_step4[ef_name] = 'TXT' # Ensure TXT is selected
+            if format_controls['name'] and format_controls['preferred_value']:
+                logging.info(f"      [FFIEC] Found format control: {format_controls['type']} "
+                           f"'{format_controls['name']}' with value '{format_controls['preferred_value']}'")
 
-            # Add Download Button (Find name, usually contains 'Download')
-            # The instruction says: ctl00$MainContentHolder$TabStrip1$Download_0
-            # We should try to find it in the HTML to be safe, or try the known ID.
-            download_btn_name = "ctl00$MainContentHolder$TabStrip1$Download_0" # Default from instructions
-            # Verify if it exists in HTML
-            if "Download_0" in r3.text:
-                # Try to extract exact name if regex matches
-                match = re.search(r'name=["\']([^"\']*Download_0)["\']', r3.text)
-                if match: download_btn_name = match.group(1)
+                payload_step35 = hidden.copy()
+                payload_step35[lb_name] = target_report_value
+                payload_step35[dd_name] = selected_date_val
 
-            payload_step4[download_btn_name] = 'Download'
-
-            # Remove EVENTTARGET for button click
-            if '__EVENTTARGET' in payload_step4: del payload_step4['__EVENTTARGET']
-
-            r4 = session.post(self.base_url, data=payload_step4, stream=True, timeout=120)
-
-            # Check result
-            if r4.status_code == 200:
-                ct = r4.headers.get('Content-Type', '').lower()
-                if 'zip' in ct or 'octet-stream' in ct or r4.content.startswith(b'PK'):
-                    return r4.content
+                if format_controls['type'] == 'dropdown':
+                    payload_step35['__EVENTTARGET'] = format_controls['name']
+                    payload_step35['__EVENTARGUMENT'] = ''
+                    payload_step35[format_controls['name']] = format_controls['preferred_value']
                 else:
-                    validation_msg = self._get_validation_summary(r4.text)
-                    logging.warning(f"      [FFIEC] Received HTML, not ZIP. Validation: {validation_msg}")
-                    self._save_debug_html(r4.content, f"fail_final_{date_obj.strftime('%Y%m%d')}")
-                    return None
-            else:
-                logging.error(f"      [FFIEC] Download POST failed: {r4.status_code}")
-                return None
+                    payload_step35[format_controls['name']] = format_controls['preferred_value']
+                    if '__EVENTTARGET' in payload_step35:
+                        payload_step35['__EVENTTARGET'] = ''
 
+                r35 = session.post(self.base_url, data=payload_step35, timeout=30)
+                if r35.status_code == 200:
+                    hidden = self._parse_hidden_fields(r35.text)
+                    logging.info(f"      [FFIEC] Format selection successful")
+
+            logging.info(f"      [FFIEC] Step 4: Click Download")
+            payload_step4 = hidden.copy()
+            payload_step4[lb_name] = target_report_value
+            payload_step4[dd_name] = selected_date_val
+
+            if format_controls['name'] and format_controls['preferred_value']:
+                payload_step4[format_controls['name']] = format_controls['preferred_value']
+
+            download_btn = self._find_download_button(r3.text)
+
+            if download_btn['name']:
+                payload_step4.pop('__EVENTTARGET', None)
+                payload_step4.pop('__EVENTARGUMENT', None)
+
+                if download_btn['type'] == 'image':
+                    payload_step4[f"{download_btn['name']}.x"] = '10'
+                    payload_step4[f"{download_btn['name']}.y"] = '10'
+                else:
+                    payload_step4[download_btn['name']] = download_btn['value']
+
+                logging.info(f"      [FFIEC] Using download button: {download_btn['name']}")
+            else:
+                payload_step4['ctl00$MainContentHolder$TabStrip1$Download_0'] = 'Download'
+
+            r4 = session.post(self.base_url, data=payload_step4, timeout=120)
+
+            if r4.status_code == 200:
+                zip_bytes = r4.content
+                ct = r4.headers.get('Content-Type', '').lower()
+
+                is_zip = ('zip' in ct or 'octet-stream' in ct or
+                         (len(zip_bytes) >= 2 and zip_bytes[:2] == b'PK'))
+
+                if is_zip:
+                    logging.info(f"      [FFIEC] Download successful - received ZIP file ({len(zip_bytes)} bytes)")
+                    return zip_bytes, 'SUCCESS'
+                else:
+                    html_text = zip_bytes.decode('utf-8', errors='replace')
+                    validation_msg = self._get_validation_summary(html_text)
+                    logging.warning(f"      [FFIEC] Received HTML, not ZIP. Validation: {validation_msg}")
+                    self._save_debug_html(zip_bytes, f"download_fail_{date_obj.strftime('%Y%m%d')}")
+                    return None, 'DOWNLOAD_RETURNED_HTML'
+            else:
+                return None, 'DOWNLOAD_HTTP_ERROR'
+
+        except requests.exceptions.Timeout:
+            return None, 'TIMEOUT'
+        except requests.exceptions.RequestException as e:
+            logging.error(f"      [FFIEC] Request exception: {e}")
+            return None, 'REQUEST_ERROR'
         except Exception as e:
             logging.error(f"      [FFIEC] Exception: {e}")
-            return None
+            return None, 'UNKNOWN_ERROR'
 
-    def fetch_quarter_data(self, date_obj, peer_certs):
+    def _find_key_column(self, columns: list) -> tuple:
+        """
+        Finds the key column (IDRSSD or CERT) in a list of column names.
+        Returns: (column_index, column_type) or (None, None)
+        """
+        for idx, col in enumerate(columns):
+            col_upper = col.upper()
+            if col_upper in self.idrssd_aliases:
+                return idx, 'IDRSSD'
+            if col_upper in self.cert_aliases:
+                return idx, 'CERT'
+        return None, None
+
+    def _build_cert_idrssd_crosswalk(self, zf: zipfile.ZipFile, peer_certs: set, date_obj) -> tuple:
+        """
+        Builds CERT <-> IDRSSD crosswalk from POR or ENT files.
+        """
+        cert_to_idrssd = {}
+        idrssd_to_cert = {}
+
+        # Look for files that might contain both CERT and IDRSSD
+        crosswalk_files = [n for n in zf.namelist()
+                         if ('POR' in n.upper() or 'ENT' in n.upper()) and n.lower().endswith('.txt')]
+
+        logging.info(f"      [FFIEC] Looking for crosswalk in: {crosswalk_files}")
+
+        for xwalk_file in crosswalk_files:
+            try:
+                file_bytes = zf.read(xwalk_file)
+                file_text = file_bytes.decode('latin-1', errors='replace')
+                lines = file_text.split('\n')
+
+                if len(lines) < 3:
+                    continue
+
+                # Row 0 = column headers (MDRM codes)
+                # Row 1 = descriptions (skip)
+                # Row 2+ = data
+                header_line = lines[0]
+                raw_headers = header_line.split('\t')
+                columns = [self._clean_column_name(h) for h in raw_headers]
+
+                logging.info(f"      [FFIEC] {xwalk_file}: First 10 columns: {columns[:10]}")
+
+                # Find CERT and IDRSSD columns
+                cert_col_idx = None
+                idrssd_col_idx = None
+
+                for idx, col in enumerate(columns):
+                    col_upper = col.upper()
+                    if col_upper in self.idrssd_aliases:
+                        idrssd_col_idx = idx
+                    if col_upper in self.cert_aliases:
+                        cert_col_idx = idx
+
+                if cert_col_idx is None or idrssd_col_idx is None:
+                    logging.warning(f"      [FFIEC] {xwalk_file}: Missing CERT or IDRSSD column")
+                    logging.warning(f"      [FFIEC] {xwalk_file}: All columns: {columns[:30]}")
+                    self._save_debug_extract(file_text, xwalk_file, date_obj)
+                    continue
+
+                logging.info(f"      [FFIEC] {xwalk_file}: CERT col={cert_col_idx}, IDRSSD col={idrssd_col_idx}")
+
+                # Parse data rows (skip row 1 = descriptions)
+                for line in lines[2:]:
+                    if not line.strip():
+                        continue
+                    fields = line.split('\t')
+                    if len(fields) <= max(cert_col_idx, idrssd_col_idx):
+                        continue
+
+                    try:
+                        cert_str = fields[cert_col_idx].strip().strip('"')
+                        idrssd_str = fields[idrssd_col_idx].strip().strip('"')
+
+                        cert_val = int(cert_str)
+                        idrssd_val = int(idrssd_str)
+
+                        if cert_val in peer_certs:
+                            cert_to_idrssd[cert_val] = idrssd_val
+                            idrssd_to_cert[idrssd_val] = cert_val
+                    except (ValueError, IndexError):
+                        continue
+
+                if cert_to_idrssd:
+                    logging.info(f"      [FFIEC] Crosswalk built: {len(cert_to_idrssd)} mappings")
+                    sample = dict(list(cert_to_idrssd.items())[:5])
+                    logging.info(f"      [FFIEC] Sample mappings (CERT->IDRSSD): {sample}")
+                    return cert_to_idrssd, idrssd_to_cert
+
+            except Exception as e:
+                logging.warning(f"      [FFIEC] Error reading {xwalk_file}: {e}")
+                continue
+
+        logging.warning(f"      [FFIEC] Could not build crosswalk from POR/ENT files")
+        return cert_to_idrssd, idrssd_to_cert
+
+    def _parse_schedule_file(self, file_text: str, filename: str, date_obj,
+                            peer_certs: set, peer_idrssd: set,
+                            idrssd_to_cert: dict) -> dict:
+        """
+        Parses a schedule file with proper row handling:
+        - Row 0 = MDRM column codes (header)
+        - Row 1 = Descriptions (skip)
+        - Row 2+ = Data
+        """
+        cert_data_map = {}
+        lines = file_text.split('\n')
+
+        if len(lines) < 3:
+            logging.warning(f"      [FFIEC] {filename}: Too few lines ({len(lines)})")
+            return cert_data_map
+
+        # Parse Row 0 as header
+        header_line = lines[0]
+        raw_headers = header_line.split('\t')
+        columns = [self._clean_column_name(h) for h in raw_headers]
+
+        # Log first 5 columns for diagnostics
+        logging.info(f"      [FFIEC] {filename}: Columns (first 5): {columns[:5]}")
+
+        # Find key column
+        key_col_idx, key_col_type = self._find_key_column(columns)
+
+        if key_col_idx is None:
+            logging.warning(f"      [FFIEC] {filename}: No IDRSSD or CERT column found")
+            logging.warning(f"      [FFIEC] {filename}: All columns: {columns[:20]}")
+            self._save_debug_extract(file_text, filename, date_obj)
+            return cert_data_map
+
+        logging.info(f"      [FFIEC] {filename}: Key column = {key_col_type} at index {key_col_idx}")
+
+        # Build column index map for target fields
+        field_col_map = {}
+        columns_upper = [c.upper() for c in columns]
+        for tf in self.target_fields:
+            tf_upper = tf.upper()
+            if tf_upper in columns_upper:
+                field_col_map[tf] = columns_upper.index(tf_upper)
+
+        if field_col_map:
+            logging.info(f"      [FFIEC] {filename}: Target fields found: {list(field_col_map.keys())[:10]}")
+
+        # Parse data rows (skip Row 1 = descriptions)
+        total_rows = 0
+        matched_rows = 0
+        matched_keys = set()
+
+        for line in lines[2:]:  # Start from Row 2
+            if not line.strip():
+                continue
+
+            total_rows += 1
+            fields = line.split('\t')
+
+            if len(fields) <= key_col_idx:
+                continue
+
+            try:
+                key_str = fields[key_col_idx].strip().strip('"')
+                key_val = int(key_str)
+            except (ValueError, AttributeError):
+                continue
+
+            # Determine CERT based on key type
+            cert_val = None
+            if key_col_type == 'IDRSSD':
+                if key_val in peer_idrssd:
+                    cert_val = idrssd_to_cert.get(key_val)
+                    matched_keys.add(key_val)
+            else:  # CERT
+                if key_val in peer_certs:
+                    cert_val = key_val
+                    matched_keys.add(key_val)
+
+            if cert_val is None:
+                continue
+
+            matched_rows += 1
+
+            # Extract target fields
+            if cert_val not in cert_data_map:
+                cert_data_map[cert_val] = {}
+
+            for field, col_idx in field_col_map.items():
+                if col_idx < len(fields):
+                    val_str = fields[col_idx].strip().strip('"')
+                    if val_str and val_str != '':
+                        try:
+                            cert_data_map[cert_val][field] = float(val_str.replace(',', ''))
+                        except ValueError:
+                            pass
+
+        # Log diagnostics
+        logging.info(f"      [FFIEC] {filename}: {total_rows} total rows, {matched_rows} matched, "
+                    f"{len(matched_keys)} unique {key_col_type}s")
+
+        return cert_data_map
+
+    def _parse_zip_content(self, zip_bytes: bytes, date_obj, peer_certs: set) -> pd.DataFrame:
+        """Parses ZIP content and extracts FFIEC data."""
+        zip_path = self._save_zip_file(zip_bytes, date_obj)
+
+        if len(zip_bytes) < 4 or zip_bytes[:2] != b'PK':
+            logging.error(f"      [FFIEC] Invalid ZIP file")
+            return pd.DataFrame()
+
+        logging.info(f"      [FFIEC] Parsing ZIP: {len(zip_bytes)} bytes")
+
+        bio = io.BytesIO(zip_bytes)
+
+        try:
+            with zipfile.ZipFile(bio, 'r') as zf:
+                members = zf.namelist()
+                logging.info(f"      [FFIEC] ZIP contains {len(members)} files")
+                logging.info(f"      [FFIEC] First 25 members: {members[:25]}")
+
+                # Step 1: Build crosswalk
+                cert_to_idrssd, idrssd_to_cert = self._build_cert_idrssd_crosswalk(zf, peer_certs, date_obj)
+
+                if not cert_to_idrssd:
+                    logging.warning(f"      [FFIEC] No crosswalk - will only match CERT-keyed files")
+
+                peer_idrssd = set(cert_to_idrssd.values())
+
+                # Step 2: Identify and prioritize files
+                target_files = [n for n in members
+                               if n.lower().endswith('.txt') and
+                               ('schedule' in n.lower() or 'bulk' in n.lower())]
+
+                # Prioritize RIC/RICII/RCC files
+                priority_keywords = ['RICII', 'RIC ', 'RICI ', 'RCC']
+                priority_files = []
+                other_files = []
+                for f in target_files:
+                    f_upper = f.upper()
+                    if any(kw in f_upper for kw in priority_keywords):
+                        priority_files.append(f)
+                    else:
+                        other_files.append(f)
+
+                target_files = priority_files + other_files
+                logging.info(f"      [FFIEC] Processing {len(target_files)} files "
+                           f"({len(priority_files)} priority)")
+
+                # Step 3: Process each file
+                cert_data_map = {}
+
+                for t_file in target_files:
+                    try:
+                        file_bytes = zf.read(t_file)
+                        file_text = file_bytes.decode('latin-1', errors='replace')
+                    except Exception as e:
+                        logging.warning(f"      [FFIEC] Failed to read {t_file}: {e}")
+                        continue
+
+                    file_data = self._parse_schedule_file(
+                        file_text, t_file, date_obj,
+                        peer_certs, peer_idrssd,
+                        idrssd_to_cert
+                    )
+
+                    # Merge into main data map
+                    for cert, fields in file_data.items():
+                        if cert not in cert_data_map:
+                            cert_data_map[cert] = {'CERT': cert, 'REPDTE': date_obj}
+                        cert_data_map[cert].update(fields)
+
+                # Step 4: Create DataFrame
+                if cert_data_map:
+                    df = pd.DataFrame(list(cert_data_map.values()))
+                    df['FFIEC_PATCH_STATUS'] = 'SUCCESS'
+
+                    # Log field coverage
+                    field_counts = {}
+                    for f in self.target_fields:
+                        if f in df.columns:
+                            non_null = df[f].notna().sum()
+                            if non_null > 0:
+                                field_counts[f] = int(non_null)
+
+                    logging.info(f"      [FFIEC] Extracted {len(df)} banks, "
+                               f"{len(field_counts)}/{len(self.target_fields)} target fields with data")
+
+                    if field_counts:
+                        logging.info(f"      [FFIEC] Field non-null counts: {field_counts}")
+
+                    return df
+                else:
+                    logging.warning(f"      [FFIEC] No matching banks found in ZIP")
+                    return pd.DataFrame()
+
+        except zipfile.BadZipFile as e:
+            logging.error(f"      [FFIEC] Bad ZIP file: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            logging.error(f"      [FFIEC] ZIP parsing exception: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return pd.DataFrame()
+
+    def fetch_quarter_data(self, date_obj, peer_certs) -> pd.DataFrame:
+        """Fetches FFIEC bulk data for a specific quarter."""
         date_fmt = date_obj.strftime("%m/%d/%Y")
         file_date_sig = date_obj.strftime("%Y%m%d")
         cache_file = self.output_dir / f"FFIEC_Bulk_Call_{file_date_sig}.csv"
 
+        # Check cache - only use if it has actual target fields
         if cache_file.exists():
             try:
                 df_cache = pd.read_csv(cache_file)
                 if 'CERT' in df_cache.columns:
                     df_cache = df_cache[df_cache['CERT'].isin(peer_certs)]
-                    print(f"      [Cache Hit] {date_fmt} ({len(df_cache)} records)")
-                    return df_cache
-            except Exception:
-                pass
+                    fields_present = [c for c in self.target_fields if c in df_cache.columns]
+                    if fields_present:
+                        logging.info(f"      [Cache Hit] {date_fmt} ({len(df_cache)} records, "
+                                   f"{len(fields_present)} target fields)")
+                        return df_cache
+            except Exception as e:
+                logging.warning(f"      [Cache] Failed to read: {e}")
 
-        print(f"      [Downloading] FFIEC Bulk Data for {date_fmt}...")
+        logging.info(f"      [Downloading] FFIEC Bulk Data for {date_fmt}...")
 
-        # Use strict download
-        content = self._download_strict(date_obj)
+        zip_bytes, status = self._download_strict(date_obj)
 
-        if not content:
-            return pd.DataFrame()
+        if zip_bytes is None:
+            logging.warning(f"      [Failed] No FFIEC data for {date_obj.date()} (status: {status})")
+            return pd.DataFrame({'FFIEC_PATCH_STATUS': [status], 'REPDTE': [date_obj]})
 
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as z:
-                # Prioritize Schedule RI-C and RC-C
-                target_files = []
-                for n in z.namelist():
-                    if n.lower().endswith('.txt'):
-                        # Looking for "Schedule RI-C" or "Schedule RC-C I"
-                        # But in "Single Period" download, filenames might be "FFIEC CDR Call Schedule RI-C 03312025.txt"
-                        if 'schedule ri-c' in n.lower() or 'schedule rc-c i' in n.lower():
-                            target_files.append(n)
+        df = self._parse_zip_content(zip_bytes, date_obj, set(peer_certs))
 
-                # If specific schedules not found, try all txt files (fallback)
-                if not target_files:
-                    target_files = [n for n in z.namelist() if n.lower().endswith('.txt') and 'readme' not in n.lower()]
+        if df.empty or 'CERT' not in df.columns:
+            logging.warning(f"      [Failed] ZIP parsing produced no data for {date_obj.date()}")
+            return pd.DataFrame({'FFIEC_PATCH_STATUS': ['ZIP_PARSE_FAILED'], 'REPDTE': [date_obj]})
 
-                cert_data_map = {}
+        # Cache only if we have target fields
+        target_cols_present = [c for c in self.target_fields if c in df.columns]
+        if target_cols_present:
+            try:
+                df.to_csv(cache_file, index=False)
+                logging.info(f"      [Cache] Saved to {cache_file}")
+            except Exception as e:
+                logging.warning(f"      [Cache] Failed to save: {e}")
 
-                for t_file in target_files:
-                    with z.open(t_file) as f:
-                        # Skip metadata lines logic
-                        wrapper = io.TextIOWrapper(f, encoding='latin-1', errors='replace')
+        return df
 
-                        # Read until header
-                        pos = 0
-                        header_found = False
-                        while True:
-                            line = wrapper.readline()
-                            if not line: break
-                            # FFIEC headers usually contain "IDRSSD" or "FDIC Certificate Number"
-                            if 'FDIC Certificate Number' in line or 'IDRSSD' in line:
-                                header_found = True
-                                break
-                            pos = wrapper.tell()
-
-                        if not header_found:
-                            continue
-
-                        f.seek(0)
-                        wrapper = io.TextIOWrapper(f, encoding='latin-1', errors='replace')
-                        wrapper.seek(pos)
-
-                        reader = csv.DictReader(wrapper, delimiter='\t')
-
-                        for row in reader:
-                            # Parse CERT
-                            cert_str = row.get('FDIC Certificate Number')
-                            if not cert_str: continue
-                            try:
-                                cert = int(cert_str)
-                            except:
-                                continue
-
-                            if cert in peer_certs:
-                                if cert not in cert_data_map:
-                                    cert_data_map[cert] = {'CERT': cert, 'REPDTE': date_obj}
-
-                                for field in self.target_fields:
-                                    if field in row and row[field] is not None and row[field].strip() != '':
-                                        try:
-                                            cert_data_map[cert][field] = float(row[field].replace(',', ''))
-                                        except: pass
-
-                if cert_data_map:
-                    df_q = pd.DataFrame(list(cert_data_map.values()))
-                    df_q.to_csv(cache_file, index=False)
-                    return df_q
-
-        except Exception as e:
-            logging.error(f"      [Error] Zip processing failed: {e}")
-
-        return pd.DataFrame()
-
-    def _quarter_needs_patching(self, df_fdic, date_obj):
-        if df_fdic.empty: return True
+    def _quarter_needs_patching(self, df_fdic: pd.DataFrame, date_obj) -> bool:
+        """Determines if a quarter needs FFIEC data patching."""
+        if df_fdic.empty:
+            return True
         q_data = df_fdic[df_fdic['REPDTE'] == date_obj]
-        if q_data.empty: return False
+        if q_data.empty:
+            return False
 
-        check_cols = [c for c in ['RCFD1545', 'LNOTHPCS', 'RCFDJ466'] if c in q_data.columns]
-        if not check_cols: return True
+        check_cols = [c for c in ['RCFD1545', 'RCFDJ466', 'RCFDJJ04'] if c in q_data.columns]
+        if not check_cols:
+            return True
 
-        missing_or_zero = 0
-        total_cells = 0
-        for col in check_cols:
-            vals = q_data[col]
-            missing_or_zero += ((vals.isna()) | (vals == 0)).sum()
-            total_cells += len(vals)
-
+        missing_or_zero = sum(
+            ((q_data[col].isna()) | (q_data[col] == 0)).sum()
+            for col in check_cols
+        )
+        total_cells = len(check_cols) * len(q_data)
         return (missing_or_zero / total_cells) > 0.5 if total_cells > 0 else True
 
-    def heal_dataset(self, df_fdic, peer_certs):
+    def heal_dataset(self, df_fdic: pd.DataFrame, peer_certs: set) -> pd.DataFrame:
+        """Heals FDIC data with FFIEC bulk data."""
         print("\n" + "="*60)
-        print("DUAL-TRACK DATA RECOVERY: FFIEC BULK API (STRICT)")
+        print("DUAL-TRACK DATA RECOVERY: FFIEC BULK API (v4)")
         print("="*60)
 
-        if df_fdic.empty: return df_fdic
+        if df_fdic.empty:
+            return df_fdic
 
         dates = sorted(df_fdic['REPDTE'].unique(), reverse=True)[:8]
         ffiec_frames = []
@@ -921,23 +1411,30 @@ class FFIECBulkLoader:
         for dt in dates:
             dt_obj = pd.to_datetime(dt)
             if not self._quarter_needs_patching(df_fdic, dt_obj):
-                print(f"      [Skip] Data sufficient for {dt_obj.strftime('%Y-%m-%d')}")
+                logging.info(f"      [Skip] Data sufficient for {dt_obj.strftime('%Y-%m-%d')}")
                 continue
 
             df_ffiec_q = self.fetch_quarter_data(dt_obj, peer_certs)
-            if not df_ffiec_q.empty:
-                ffiec_frames.append(df_ffiec_q)
-            else:
-                logging.warning(f"      [Failed] No FFIEC data for {dt_obj.date()}")
+
+            if not df_ffiec_q.empty and 'CERT' in df_ffiec_q.columns:
+                target_cols = [c for c in self.target_fields if c in df_ffiec_q.columns]
+                if target_cols:
+                    ffiec_frames.append(df_ffiec_q)
 
         if not ffiec_frames:
             print("      No FFIEC data merged.")
-            df_fdic['RIC_Source_Status'] = 'FFIEC_DOWNLOAD_FAILED'
+            df_fdic['RIC_Source_Status'] = 'FFIEC_NO_TARGET_FIELDS'
             df_fdic['RIC_SOURCE_AVAILABLE'] = 0
             return df_fdic
 
-        print("      Merging FFIEC Granular Data...")
+        print(f"      Merging FFIEC data from {len(ffiec_frames)} quarters...")
         df_patch = pd.concat(ffiec_frames, ignore_index=True)
+        df_patch = df_patch[df_patch['CERT'].notna()]
+
+        if df_patch.empty:
+            df_fdic['RIC_Source_Status'] = 'FFIEC_NO_VALID_DATA'
+            df_fdic['RIC_SOURCE_AVAILABLE'] = 0
+            return df_fdic
 
         df_fdic['REPDTE'] = pd.to_datetime(df_fdic['REPDTE'])
         df_patch['REPDTE'] = pd.to_datetime(df_patch['REPDTE'])
@@ -945,30 +1442,40 @@ class FFIECBulkLoader:
         df_main = df_fdic.set_index(['CERT', 'REPDTE'])
         df_p = df_patch.set_index(['CERT', 'REPDTE'])
 
-        # Merge Logic
+        if 'FFIEC_PATCH_STATUS' in df_p.columns:
+            df_p = df_p.drop(columns=['FFIEC_PATCH_STATUS'])
+
+        merged_fields = 0
         for col in self.target_fields:
             if col in df_p.columns:
                 if col not in df_main.columns:
                     df_main[col] = df_p[col]
+                    merged_fields += 1
                 else:
+                    orig_nulls = df_main[col].isna().sum()
                     df_main[col] = df_main[col].fillna(df_p[col])
-                    # Fix False Zeros
                     mask_fix = (df_main[col] == 0) & (df_p[col].notna()) & (df_p[col] != 0)
                     if mask_fix.any():
                         df_main.loc[mask_fix, col] = df_p.loc[mask_fix, col]
+                    if df_main[col].isna().sum() < orig_nulls:
+                        merged_fields += 1
+
+        logging.info(f"      [Merge] Updated {merged_fields} target fields")
 
         res = df_main.reset_index()
 
-        # Tagging Availability
-        # If we have RCFDJ466/RCONJ466 (Construction ACL), we likely have the dataset
-        ric_check_col = 'RCFDJ466' if 'RCFDJ466' in res.columns else 'RCONJ466'
+        ric_check_cols = ['RCFDJ466', 'RCONJ466', 'RCFDJJ04', 'RCONJJ04']
+        ric_check_col = next((c for c in ric_check_cols if c in res.columns and res[c].notna().any()), None)
 
-        if ric_check_col in res.columns:
+        if ric_check_col:
             res['RIC_SOURCE_AVAILABLE'] = res[ric_check_col].notna().astype(int)
             res['RIC_Source_Status'] = np.where(res['RIC_SOURCE_AVAILABLE'] == 1, 'SUCCESS', 'MISSING_DATA')
         else:
             res['RIC_SOURCE_AVAILABLE'] = 0
-            res['RIC_Source_Status'] = 'FFIEC_DOWNLOAD_FAILED'
+            res['RIC_Source_Status'] = 'FFIEC_NO_RIC_FIELDS'
+
+        success_count = (res['RIC_Source_Status'] == 'SUCCESS').sum()
+        logging.info(f"      [Summary] {success_count}/{len(res)} records with FFIEC data")
 
         return res
 # ==================================================================================
