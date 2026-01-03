@@ -2058,145 +2058,155 @@ class BankMetricsProcessor:
         except:
             return fill_value
     # ==================================================================================
-    #  UPDATED METRICS PROCESSOR METHOD (Replace create_derived_metrics)
+    #  UPDATED METRICS PROCESSOR METHOD (v5: Restored YTD + Granular RI-C)
     # ==================================================================================
     def create_derived_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Derives analytical metrics.
+        v5 Fix: Restores YTD->Quarterly conversion and Legacy Categories while keeping
+        granular RI-C II (Cost/ACL) and RC-N (Risk) mappings.
+        """
         if df.empty: return df
         df_processed = df.copy()
 
-        # Ensure availability flags exist
-        if 'RIC_SOURCE_AVAILABLE' not in df_processed.columns:
-            df_processed['RIC_SOURCE_AVAILABLE'] = 0
-            df_processed['RIC_Source_Status'] = 'UNKNOWN'
+        # --- Helpers ---
+        def best_of(df, primaries, fallbacks=[]):
+            """Returns the first non-null/non-zero series from primaries, else fallbacks."""
+            def check_cols(cols):
+                res = pd.Series(np.nan, index=df.index)
+                for col in cols:
+                    if col in df.columns:
+                        mask_update = (res.isna() | (res == 0)) & (df[col].notna()) & (df[col] != 0)
+                        res.loc[mask_update] = df.loc[mask_update, col]
+                return res
+            return check_cols(primaries).fillna(check_cols(fallbacks)).fillna(0)
 
-        def best_of(df, cons_col, dom_col):
-            s_cons = df[cons_col] if cons_col in df.columns else pd.Series(np.nan, index=df.index)
-            s_dom  = df[dom_col]  if dom_col  in df.columns else pd.Series(np.nan, index=df.index)
-            return s_cons.fillna(s_dom)
+        def sum_cols(df, cols):
+            """Sums columns, treating NaNs as 0."""
+            total = pd.Series(0.0, index=df.index)
+            for col in cols:
+                if col in df.columns:
+                    total = total + df[col].fillna(0)
+            return total
 
-        # Raw RI-C Best-Of Mapping
-        df_processed['RIC_Constr_Best']  = best_of(df_processed, 'RCFDJ466', 'RCONJ466')
-        df_processed['RIC_CommRE_Best']  = best_of(df_processed, 'RCFDJ467', 'RCONJ467')
-        df_processed['RIC_Resi_Best']    = best_of(df_processed, 'RCFDJ468', 'RCONJ468')
-        df_processed['RIC_Comm_Best']    = best_of(df_processed, 'RCFDJ469', 'RCONJ469')
-        df_processed['RIC_Card_Best']    = best_of(df_processed, 'RCFDJ470', 'RCONJ470')
-        df_processed['RIC_OthCons_Best'] = best_of(df_processed, 'RCFDJ471', 'RCONJ471')
-        df_processed['RIC_Unalloc_Best'] = best_of(df_processed, 'RCFDJ472', 'RCONJ472')
-        df_processed['RIC_Other_Best']   = best_of(df_processed, 'RCFDJ474', 'RCONJ474')
+        # ---------------------------------------------------------
+        # [1] RI-C Part II: Volume & Reserves (Cost vs ACL)
+        # ---------------------------------------------------------
+        # A. Residential
+        df_processed['RIC_Resi_ACL'] = best_of(df_processed, ['RCFDJJ14', 'RCONJJ14'], ['RCFDJ468', 'RCONJ468'])
+        df_processed['RIC_Resi_Cost'] = best_of(df_processed, ['RCFDJJ19', 'RCONJJ19'], ['RCFDJ448', 'RCONJ448'])
 
-        # [A] Field Resolution
-        for field, sources in FDIC_FALLBACK_MAP.items():
-            if "FFIEC" in sources: continue
-            def resolve(row, src=sources, fld=field):
-                if "DERIVED" in src:
-                    if fld == "LNCONOTHX": return max(0, row.get('LNCON',0)-row.get('LNAUTO',0)-row.get('LNCRCD',0))
-                    return 0
-                for s in src:
-                    val = row.get(s)
-                    if pd.notna(val) and val != 0: return val
-                return 0
-            df_processed[field] = df_processed.apply(resolve, axis=1)
+        # B. Commercial RE (CRE)
+        df_processed['RIC_CommRE_ACL'] = best_of(df_processed, ['RCFDJJ07', 'RCONJJ07'], ['RCFDJ467', 'RCONJ467'])
+        df_processed['RIC_CommRE_Cost'] = best_of(df_processed, ['RCFDJJ06', 'RCONJJ06'], [])
+        if df_processed['RIC_CommRE_Cost'].sum() == 0:
+             df_processed['RIC_CommRE_Cost'] = sum_cols(df_processed, ['RCFDJ451','RCONJ451','RCFDJ454','RCONJ454'])
 
-        # [B] YTD -> Quarterly
-        ytd_fields = [col for col in df_processed.columns if col.startswith('NT') or 'EINTEXP' in col]
+        # C. C&I (Commercial)
+        df_processed['RIC_Comm_ACL'] = best_of(df_processed, ['RCFDJJ13', 'RCONJJ13'], ['RCFDJ469', 'RCONJ469'])
+        df_processed['RIC_Comm_Cost'] = best_of(df_processed, ['RCFDJJ12', 'RCONJJ12'], ['RCFDJ449','RCONJ449'])
+
+        # D. Construction
+        df_processed['RIC_Constr_ACL'] = best_of(df_processed, ['RCFDJJ03', 'RCONJJ03'], ['RCFDJ466', 'RCONJ466'])
+        df_processed['RIC_Constr_Cost'] = best_of(df_processed, ['RCFDJJ02', 'RCONJJ02'], ['RCFDJ453','RCONJ453'])
+
+        # E. Credit Cards
+        df_processed['RIC_Card_ACL'] = best_of(df_processed, ['RCFDJJ15', 'RCONJJ15'], ['RCFDJ470', 'RCONJ470'])
+        df_processed['RIC_Card_Cost'] = best_of(df_processed, ['RCFDJJ10', 'RCONJJ10'], [])
+
+        # F. Other Consumer (Auto + Other)
+        df_processed['RIC_OthCons_ACL'] = sum_cols(df_processed, ['RCFDJJ17','RCONJJ17','RCFDJJ00','RCONJJ00'])
+        if df_processed['RIC_OthCons_ACL'].sum() == 0:
+             df_processed['RIC_OthCons_ACL'] = best_of(df_processed, [], ['RCFDJ471', 'RCONJ471'])
+        df_processed['RIC_OthCons_Cost'] = sum_cols(df_processed, ['RCFDJ452','RCONJ452','RCFDK137','RCONK137'])
+
+        # ---------------------------------------------------------
+        # [2] RC-N: Risk Status Segmentation (Nonaccrual & Past Due)
+        # ---------------------------------------------------------
+        # A. Residential Risk
+        df_processed['RIC_Resi_Nonaccrual'] = sum_cols(df_processed, ['NARERES', 'NARELOC'])
+        df_processed['RIC_Resi_PastDue'] = sum_cols(df_processed, ['P3RENRES', 'P3RELOC'])
+
+        # B. Commercial RE Risk
+        df_processed['RIC_CommRE_Nonaccrual'] = sum_cols(df_processed, ['NARENROT', 'NARENROW', 'NAREMULT'])
+        df_processed['RIC_CommRE_PastDue'] = sum_cols(df_processed, ['P3RENROT', 'P3RENROW', 'P3REMULT'])
+
+        # C. C&I Risk
+        df_processed['RIC_Comm_Nonaccrual'] = best_of(df_processed, ['NACI'], [])
+        df_processed['RIC_Comm_PastDue'] = best_of(df_processed, ['P3CI'], [])
+
+        # D. Construction Risk
+        df_processed['RIC_Constr_Nonaccrual'] = best_of(df_processed, ['NARECONS'], [])
+        df_processed['RIC_Constr_PastDue'] = best_of(df_processed, ['P3RECONS'], [])
+
+        # E. Credit Card Risk
+        df_processed['RIC_Card_Nonaccrual'] = best_of(df_processed, ['NACRCD'], [])
+        df_processed['RIC_Card_PastDue'] = best_of(df_processed, ['P3CRCD'], [])
+
+        # F. Other Consumer Risk
+        df_processed['RIC_OthCons_Nonaccrual'] = sum_cols(df_processed, ['NAAUTO', 'NACONOTH'])
+        df_processed['RIC_OthCons_PastDue'] = sum_cols(df_processed, ['P3AUTO', 'P3CONOTH'])
+
+        # ---------------------------------------------------------
+        # [3] RESTORED: Standard Calculations & Categories
+        # ---------------------------------------------------------
+        # Top Level Metrics
+        df_processed['Total_ACL'] = df_processed.get('LNATRES', 0).fillna(0) + \
+                                    (df_processed.get('RB2LNRES', 0).fillna(0) - df_processed.get('LNATRES', 0).fillna(0))
+
+        # Capital
+        df_processed['Total_Capital'] = df_processed.get('RBCT1J', 0) + df_processed.get('RBCT2', 0)
+
+        # Legacy Categories (Required for SBL/Fund Finance Composition)
+        df_processed['SBL_Balance'] = df_processed.get('LNOTHPCS', 0)
+        df_processed['Fund_Finance_Balance'] = df_processed.get('LNOTHNONDEP', 0)
+        df_processed['Wealth_Resi_Balance'] = sum_cols(df_processed, ['LNRERES', 'LNRELOC'])
+        df_processed['Consumer_Auto_Balance'] = df_processed.get('LNAUTO', 0)
+        df_processed['Consumer_Other_Balance'] = df_processed.get('LNCONOTHX', 0) + df_processed.get('LNCRCD', 0)
+        df_processed['Corp_CI_Balance'] = df_processed.get('LNCI', 0)
+        df_processed['CRE_OO_Balance'] = df_processed.get('LNRENROW', 0)
+        df_processed['CRE_Investment_Balance'] = sum_cols(df_processed, ['LNRECONS', 'LNREMULT', 'LNRENROT'])
+
+        # Total for Shares
+        total_categorized = (df_processed['SBL_Balance'] + df_processed['Fund_Finance_Balance'] +
+                             df_processed['Wealth_Resi_Balance'] + df_processed['Consumer_Auto_Balance'] +
+                             df_processed['Consumer_Other_Balance'] + df_processed['Corp_CI_Balance'] +
+                             df_processed['CRE_OO_Balance'] + df_processed['CRE_Investment_Balance'])
+
+        # ---------------------------------------------------------
+        # [4] RESTORED: YTD -> Quarterly Conversion (CRITICAL FIX)
+        # ---------------------------------------------------------
+        # Finds all 'NT' (Net Charge-off) and 'EINTEXP' fields and converts accumulative YTD to discrete Quarterly
+        ytd_fields = [col for col in df_processed.columns if (col.startswith('NT') or 'EINTEXP' in col) and col not in ['NT']]
+
         for cert, group in df_processed.groupby('CERT'):
             group = group.sort_values('REPDTE')
             for col in ytd_fields:
                 quarterly_vals = group[col].diff()
+                # Reset Q1 (Quarter 1 is just the YTD value)
                 q1_mask = group['REPDTE'].dt.quarter == 1
                 quarterly_vals.loc[q1_mask] = group.loc[q1_mask, col]
+                # Assign back using index alignment
                 df_processed.loc[group.index, f"{col}_Q"] = quarterly_vals
 
-        # [C] Top Level Metrics
-        df_processed['Total_Nonaccrual'] = self._get_series(df_processed, ['NACI','NARENROT','NARECONS','NARERES','NACON'])
-        df_processed['Total_ACL'] = df_processed.get('LNATRES', 0).fillna(0) + \
-                                    (df_processed.get('RB2LNRES', 0).fillna(0) - df_processed.get('LNATRES', 0).fillna(0))
-        df_processed['Total_Capital'] = df_processed.get('RBCT1J', 0) + df_processed.get('RBCT2', 0)
-
-        # [D] Categories
-        category_balances = {}
-        category_balances['SBL'] = df_processed.get('LNOTHPCS', 0)
-        df_processed['SBL_Balance'] = category_balances['SBL']
-        category_balances['Fund_Finance'] = df_processed.get('LNOTHNONDEP', 0)
-        df_processed['Fund_Finance_Balance'] = category_balances['Fund_Finance']
-        df_processed['Wealth_Resi_Balance'] = self._get_series(df_processed, ['LNRERES', 'LNRELOC'])
-        category_balances['Wealth_Resi'] = df_processed['Wealth_Resi_Balance']
-        df_processed['Consumer_Auto_Balance'] = df_processed.get('LNAUTO', 0)
-        category_balances['Consumer_Auto'] = df_processed['Consumer_Auto_Balance']
-        df_processed['Consumer_Other_Balance'] = df_processed.get('LNCONOTHX', 0) + df_processed.get('LNCRCD', 0)
-        category_balances['Consumer_Other'] = df_processed['Consumer_Other_Balance']
-        df_processed['Corp_CI_Balance'] = df_processed.get('LNCI', 0)
-        category_balances['Corp_CI'] = df_processed['Corp_CI_Balance']
-        df_processed['CRE_OO_Balance'] = df_processed.get('LNRENROW', 0)
-        category_balances['CRE_OO'] = df_processed['CRE_OO_Balance']
-        df_processed['CRE_Investment_Balance'] = self._get_series(df_processed, ['LNRECONS', 'LNREMULT', 'LNRENROT'])
-        category_balances['CRE_Investment'] = df_processed['CRE_Investment_Balance']
-        total_categorized = sum(category_balances.values())
-
-        # [F] Ratios
-        ric_targets = ['RIC_Constr_Best', 'RIC_CommRE_Best', 'RIC_Resi_Best', 'RIC_Comm_Best',
-                       'RIC_Card_Best', 'RIC_OthCons_Best', 'RIC_Unalloc_Best', 'RIC_Other_Best']
-
-        ric_total = pd.Series(0.0, index=df_processed.index)
-        for col in ric_targets:
-            ric_total += df_processed[col].fillna(0)
+        # ---------------------------------------------------------
+        # [5] Aggregates & Ratios (Using Granular Data)
+        # ---------------------------------------------------------
+        df_processed['RIC_Calculated_Sum'] = sum_cols(df_processed,
+            ['RIC_Resi_ACL', 'RIC_CommRE_ACL', 'RIC_Comm_ACL', 'RIC_Constr_ACL', 'RIC_Card_ACL', 'RIC_OthCons_ACL'])
 
         for cert, group in df_processed.groupby('CERT'):
             idx = group.index
-            loans = group['LNLS'].fillna(0)
-            acl = group['Total_ACL'].fillna(0)
+            denom_total_acl = group['RIC_Calculated_Sum'].replace(0, np.nan)
+            total_loans_bank = total_categorized.loc[idx].replace(0, np.nan)
 
-            df_processed.loc[idx, 'Allowance_to_Gross_Loans_Rate'] = self._safe_divide(acl, loans)
-            df_processed.loc[idx, 'Nonaccrual_to_Gross_Loans_Rate'] = self._safe_divide(group['Total_Nonaccrual'], loans)
-            sbl_bal = group['SBL_Balance']
-            df_processed.loc[idx, 'Risk_Adj_Allowance_Coverage'] = self._safe_divide(acl, (loans - sbl_bal))
+            # --- ACL SHARES ---
+            df_processed.loc[idx, 'Group_Residential_ACL_Share'] = self._safe_divide(group['RIC_Resi_ACL'], denom_total_acl)
+            df_processed.loc[idx, 'Group_Commercial_ACL_Share'] = self._safe_divide(group['RIC_Comm_ACL'], denom_total_acl)
+            df_processed.loc[idx, 'Group_CRE_ACL_Share'] = self._safe_divide(group['RIC_CommRE_ACL'] + group['RIC_Constr_ACL'], denom_total_acl)
+            df_processed.loc[idx, 'Group_OtherSBL_ACL_Share'] = self._safe_divide(group['RIC_OthCons_ACL'] + group['RIC_Card_ACL'], denom_total_acl)
 
-            denom_acl = ric_total.loc[idx].replace(0, np.nan)
-
-            # --- CHECK AVAILABILITY ---
-            # Use max() to determine if this bank/date has data (scalar result)
-            is_ric_available = group['RIC_SOURCE_AVAILABLE'].max() == 1
-
-            # Additional sanity check: if the calculated denominator is 0/NaN,
-            # treat as unavailable even if flag says yes.
-            # [FIX] Added .any() to resolve ValueError.
-            # (denom_acl > 0) returns a Series; we need a scalar to check if ANY row has data.
-            has_nonzero_acl = (denom_acl.fillna(0) > 0).any()
-
-            if is_ric_available and has_nonzero_acl:
-                # Compute Percentages
-                df_processed.loc[idx, 'RIC_Constr_ACL_Pct'] = self._safe_divide(group['RIC_Constr_Best'], denom_acl)
-                df_processed.loc[idx, 'RIC_CommRE_ACL_Pct'] = self._safe_divide(group['RIC_CommRE_Best'], denom_acl)
-                df_processed.loc[idx, 'RIC_Resi_ACL_Pct'] = self._safe_divide(group['RIC_Resi_Best'], denom_acl)
-                df_processed.loc[idx, 'RIC_Comm_ACL_Pct'] = self._safe_divide(group['RIC_Comm_Best'], denom_acl)
-                df_processed.loc[idx, 'RIC_CreditCard_ACL_Pct'] = self._safe_divide(group['RIC_Card_Best'], denom_acl)
-                df_processed.loc[idx, 'RIC_OtherCons_ACL_Pct'] = self._safe_divide(group['RIC_OthCons_Best'], denom_acl)
-                df_processed.loc[idx, 'RIC_Other_ACL_Pct'] = self._safe_divide(group['RIC_Other_Best'], denom_acl)
-                df_processed.loc[idx, 'RIC_Unallocated_ACL_Pct'] = self._safe_divide(group['RIC_Unalloc_Best'], denom_acl)
-
-                # Compute Group ACL Shares
-                comm_acl = group['RIC_Comm_Best']
-                df_processed.loc[idx, 'Group_Commercial_ACL_Share'] = self._safe_divide(comm_acl, denom_acl)
-                resi_acl = group['RIC_Resi_Best']
-                df_processed.loc[idx, 'Group_Residential_ACL_Share'] = self._safe_divide(resi_acl, denom_acl)
-                cre_acl = group['RIC_Constr_Best'] + group['RIC_CommRE_Best']
-                df_processed.loc[idx, 'Group_CRE_ACL_Share'] = self._safe_divide(cre_acl, denom_acl)
-                other_acl = group['RIC_Other_Best'] + group['RIC_Card_Best'] + group['RIC_OthCons_Best']
-                df_processed.loc[idx, 'Group_OtherSBL_ACL_Share'] = self._safe_divide(other_acl, denom_acl)
-            else:
-                # Force NaNs if data missing or denominator zero
-                cols_to_nan = [
-                    'RIC_Constr_ACL_Pct', 'RIC_CommRE_ACL_Pct', 'RIC_Resi_ACL_Pct',
-                    'RIC_Comm_ACL_Pct', 'RIC_CreditCard_ACL_Pct', 'RIC_OtherCons_ACL_Pct',
-                    'RIC_Other_ACL_Pct', 'RIC_Unallocated_ACL_Pct',
-                    'Group_Commercial_ACL_Share', 'Group_Residential_ACL_Share',
-                    'Group_CRE_ACL_Share', 'Group_OtherSBL_ACL_Share'
-                ]
-                for col in cols_to_nan:
-                    df_processed.loc[idx, col] = np.nan
-
-            # Loan Shares (Source Independent)
-            total_loans_bank = total_categorized.loc[idx]
+            # --- LOAN SHARES (Legacy Bases) ---
             comm_loan = group['Corp_CI_Balance'] + group['Fund_Finance_Balance']
             df_processed.loc[idx, 'Group_Commercial_Loan_Share'] = self._safe_divide(comm_loan, total_loans_bank)
             resi_loan = group['Wealth_Resi_Balance']
@@ -2206,8 +2216,37 @@ class BankMetricsProcessor:
             other_loan = group['SBL_Balance'] + group['Consumer_Auto_Balance'] + group['Consumer_Other_Balance']
             df_processed.loc[idx, 'Group_OtherSBL_Loan_Share'] = self._safe_divide(other_loan, total_loans_bank)
 
-        return df_processed
+            # --- COVERAGE METRICS (ACL / Cost) ---
+            df_processed.loc[idx, 'RIC_Resi_ACL_Coverage'] = self._safe_divide(group['RIC_Resi_ACL'], group['RIC_Resi_Cost'])
+            df_processed.loc[idx, 'RIC_Comm_ACL_Coverage'] = self._safe_divide(group['RIC_Comm_ACL'], group['RIC_Comm_Cost'])
+            df_processed.loc[idx, 'RIC_CommRE_ACL_Coverage'] = self._safe_divide(group['RIC_CommRE_ACL'], group['RIC_CommRE_Cost'])
+            df_processed.loc[idx, 'RIC_Constr_ACL_Coverage'] = self._safe_divide(group['RIC_Constr_ACL'], group['RIC_Constr_Cost'])
 
+            # --- RISK METRICS (Nonaccrual / Cost) ---
+            df_processed.loc[idx, 'RIC_Resi_Nonaccrual_Rate'] = self._safe_divide(group['RIC_Resi_Nonaccrual'], group['RIC_Resi_Cost'])
+            df_processed.loc[idx, 'RIC_Comm_Nonaccrual_Rate'] = self._safe_divide(group['RIC_Comm_Nonaccrual'], group['RIC_Comm_Cost'])
+            df_processed.loc[idx, 'RIC_CommRE_Nonaccrual_Rate'] = self._safe_divide(group['RIC_CommRE_Nonaccrual'], group['RIC_CommRE_Cost'])
+
+            # ---------------------------------------------------------
+            # [6] Integrity Check
+            # ---------------------------------------------------------
+            diff = group['Total_ACL'] - group['RIC_Calculated_Sum']
+            pct_diff = self._safe_divide(diff, group['Total_ACL'])
+
+            df_processed.loc[idx, 'ACL_Integrity_Status'] = np.where(
+                abs(pct_diff) < 0.05, "MATCH",
+                np.where(diff > 0, "UNDER (Missing Segments?)", "OVER (Double Count?)")
+            )
+
+        # [7] Backwards Compatibility
+        df_processed['RIC_Resi_Best'] = df_processed['RIC_Resi_ACL']
+        df_processed['RIC_Comm_Best'] = df_processed['RIC_Comm_ACL']
+        df_processed['RIC_CommRE_Best'] = df_processed['RIC_CommRE_ACL']
+        df_processed['Total_Nonaccrual'] = sum_cols(df_processed,
+            ['RIC_Resi_Nonaccrual', 'RIC_CommRE_Nonaccrual', 'RIC_Comm_Nonaccrual',
+             'RIC_Constr_Nonaccrual', 'RIC_Card_Nonaccrual', 'RIC_OthCons_Nonaccrual'])
+
+        return df_processed
 
     def calculate_ttm_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty: return df
