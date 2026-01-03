@@ -2159,7 +2159,9 @@ class BankMetricsProcessor:
 
             # Additional sanity check: if the calculated denominator is 0/NaN,
             # treat as unavailable even if flag says yes.
-            has_nonzero_acl = denom_acl.fillna(0) > 0
+            # [FIX] Added .any() to resolve ValueError.
+            # (denom_acl > 0) returns a Series; we need a scalar to check if ANY row has data.
+            has_nonzero_acl = (denom_acl.fillna(0) > 0).any()
 
             if is_ric_available and has_nonzero_acl:
                 # Compute Percentages
