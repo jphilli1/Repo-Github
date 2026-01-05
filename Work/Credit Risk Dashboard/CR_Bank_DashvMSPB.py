@@ -119,6 +119,18 @@ FDIC_FIELDS_TO_FETCH = [
 
     # --- Reserves & Funding ---
     "LNATRES", "OTHBOR", "MUTUAL", "FREPP",
+    # --- INCOME & PROFITABILITY (Corrected Series) ---
+    "ILNDOM",   # Int Inc Loans (Domestic)
+    "ILNFOR",   # Int Inc Loans (Foreign)
+    "EDEPDOM",  # Int Exp Deposits (Domestic)
+    "EDEPFOR",  # Int Exp Deposits (Foreign)
+    "ELNATR",   # Provision for Credit Losses (YTD)
+    "EINTEXP",  # Total Interest Expense (YTD)
+
+    # --- TOP HOUSE DELINQUENCY ---
+    "P3LNLS",   # PD 30-89 Total
+    "P9LNLS",   # PD 90+ Total
+
 
     # --- LOAN BALANCES (Authoritative) ---
     "LNLS", "LNLSNET",
@@ -146,10 +158,8 @@ FDIC_FIELDS_TO_FETCH = [
     # --- NET CHARGE-OFFS ---
     "NTLNLS", "NCLNLS",
     "NTCI",
-    "NTRECONS", "NTREMULT", "NTRENROT", "NTREAG", "NTRENRES",
-    "NTRERES", "NTRELOC",
-    "NTCON", "NTCRCD", "NTAUTO", "NTLS", "NTOTHER", "NTAG",
-    "NTCONOTH", # Other Consumer NCO
+    "NTRECONS", "NTREMULT", "NTRENROT", "NTRENROW", "NTREAG", "NTRENRES", # <--- Added NTRENROW
+    "NTRERES", "NTRELOC", # Other Consumer NCO
 
     # --- PAST DUE 30-89 ---
     "P3LNLS", "P3CI",
@@ -378,8 +388,209 @@ FDIC_FIELD_DESCRIPTIONS = {
     "NAAUTO":   {"short": "Auto Nonaccrual", "long": "Automobile Loans on Nonaccrual Status."},
     "NAOTHLN":  {"short": "Other Loans Nonaccrual", "long": "Other Loans on Nonaccrual Status."},
     "NALS":     {"short": "Leases Nonaccrual", "long": "Leases on Nonaccrual Status."},
-    "NAAG":     {"short": "Agricultural Nonaccrual", "long": "Agricultural Loans on Nonaccrual Status."}
-}
+    "NAAG":     {"short": "Agricultural Nonaccrual", "long": "Agricultural Loans on Nonaccrual Status."},
+    # Allowance totals
+    "RCFD1545": {
+        "short": "Loans for purchasing/carrying securities (Consolidated)",
+        "long": "Loans for purchasing or carrying securities, including margin loans (Column A: Consolidated Bank)."
+    },
+    "RCON1545": {
+        "short": "Loans for purchasing/carrying securities (Domestic)",
+        "long": "Loans for purchasing or carrying securities, including margin loans (Column B: Domestic Offices)."
+    },
+
+    "RCFDJ454": {
+        "short": "Loans to nondepository financial institutions (Consolidated)",
+        "long": "Loans to nondepository financial institutions (Column A: Consolidated Bank)."
+    },
+    "RCONJ454": {
+        "short": "Loans to nondepository financial institutions (Domestic)",
+        "long": "Loans to nondepository financial institutions (Column B: Domestic Offices)."
+    },
+
+    # These two DO exist in your ZIP, but they are deposit-size captions (not ACL)
+    "RCONJ473": {
+        "short": "Total time deposits $100k–$250k (Domestic)",
+        "long": "Total time deposits of $100,000 through $250,000 (Domestic Offices)."
+    },
+    "RCONJ474": {
+        "short": "Total time deposits >$250k (Domestic)",
+        "long": "Total time deposits of more than $250,000 (Domestic Offices)."
+    },
+
+    # RI-C II (RIC-9 table in taxonomy): Amortized cost (Col A) and Allowance balance (Col B)
+    "RCFDJJ04": {"short": "Construction loans – Amortized cost", "long": "Amortized cost for construction loans (Column A: Amortized Cost)."},
+    "RCFDJJ05": {"short": "Commercial real estate loans – Amortized cost", "long": "Amortized cost for commercial real estate loans (Column A: Amortized Cost)."},
+    "RCFDJJ06": {"short": "Residential real estate loans – Amortized cost", "long": "Amortized cost for residential real estate loans (Column A: Amortized Cost)."},
+    "RCFDJJ07": {"short": "Commercial loans – Amortized cost", "long": "Amortized cost for commercial loans (Column A: Amortized Cost)."},
+    "RCFDJJ08": {"short": "Credit cards – Amortized cost", "long": "Amortized cost for credit cards (Column A: Amortized Cost)."},
+    "RCFDJJ09": {"short": "Other consumer loans – Amortized cost", "long": "Amortized cost for other consumer loans (Column A: Amortized Cost)."},
+    "RCFDJJ11": {"short": "Total (items 1.a–5) – Amortized cost", "long": "Amortized cost for total (sum of items 1.a. through 5) (Column A: Amortized Cost)."},
+
+    "RCFDJJ12": {"short": "Construction loans – Allowance balance", "long": "Allowance balance for construction loans (Column B: Allowance Balance)."},
+    "RCFDJJ13": {"short": "Commercial real estate loans – Allowance balance", "long": "Allowance balance for commercial real estate loans (Column B: Allowance Balance)."},
+    "RCFDJJ14": {"short": "Residential real estate loans – Allowance balance", "long": "Allowance balance for residential real estate loans (Column B: Allowance Balance)."},
+    "RCFDJJ15": {"short": "Commercial loans – Allowance balance", "long": "Allowance balance for commercial loans (Column B: Allowance Balance)."},
+    "RCFDJJ16": {"short": "Credit cards – Allowance balance", "long": "Allowance balance for credit cards (Column B: Allowance Balance)."},
+    "RCFDJJ17": {"short": "Other consumer loans – Allowance balance", "long": "Allowance balance for other consumer loans (Column B: Allowance Balance)."},
+    "RCFDJJ19": {"short": "Total (items 1.a–5) – Allowance balance", "long": "Allowance balance for total (sum of items 1.a. through 5) (Column B: Allowance Balance)."},
+
+    "RCFDJJ20": {"short": "Construction loans – ACL % of amortized cost", "long": "ACL as a percent of amortized cost for construction loans (Column C: Allowance as a percent of amortized cost)."},
+    "RCFDJJ21": {"short": "Commercial real estate loans – ACL % of amortized cost", "long": "ACL as a percent of amortized cost for commercial real estate loans (Column C: Allowance as a percent of amortized cost)."},
+    "RCFDJJ23": {"short": "Residential real estate loans – ACL % of amortized cost", "long": "ACL as a percent of amortized cost for residential real estate loans (Column C: Allowance as a percent of amortized cost)."},
+    # 1. RI-C II: Amortized Cost (Denominator)
+    # -------------------------------------------------------------------------
+    "RIC_Constr_Cost": {
+        "short": "Construction – Amortized Cost",
+        "long": "Total amortized cost of construction and land development loans (Source: JJ04)."
+    },
+    "RIC_CRE_Cost": {
+        "short": "CRE – Amortized Cost",
+        "long": "Total amortized cost of commercial real estate loans (Source: JJ05)."
+    },
+    "RIC_Resi_Cost": {
+        "short": "Residential – Amortized Cost",
+        "long": "Total amortized cost of residential real estate loans (Source: JJ06)."
+    },
+    "RIC_Comm_Cost": {
+        "short": "C&I – Amortized Cost",
+        "long": "Total amortized cost of commercial and industrial loans (Source: JJ07)."
+    },
+    "RIC_Card_Cost": {
+        "short": "Credit Card – Amortized Cost",
+        "long": "Total amortized cost of credit card loans (Source: JJ08)."
+    },
+    "RIC_OthCons_Cost": {
+        "short": "Other Consumer – Amortized Cost",
+        "long": "Total amortized cost of other consumer loans (Source: JJ09)."
+    },
+
+    # -------------------------------------------------------------------------
+    # 2. RI-C II: Allowance for Credit Losses (Numerator)
+    # -------------------------------------------------------------------------
+    "RIC_Constr_ACL": {
+        "short": "Construction – ACL Balance",
+        "long": "Allowance for credit losses allocated to construction loans (Source: JJ12)."
+    },
+    "RIC_CRE_ACL": {
+        "short": "CRE – ACL Balance",
+        "long": "Allowance for credit losses allocated to CRE loans (Source: JJ13)."
+    },
+    "RIC_Resi_ACL": {
+        "short": "Residential – ACL Balance",
+        "long": "Allowance for credit losses allocated to residential loans (Source: JJ14)."
+    },
+    "RIC_Comm_ACL": {
+        "short": "C&I – ACL Balance",
+        "long": "Allowance for credit losses allocated to C&I loans (Source: JJ15)."
+    },
+    "RIC_Card_ACL": {
+        "short": "Credit Card – ACL Balance",
+        "long": "Allowance for credit losses allocated to credit cards (Source: JJ16)."
+    },
+    "RIC_OthCons_ACL": {
+        "short": "Other Consumer – ACL Balance",
+        "long": "Allowance for credit losses allocated to other consumer loans (Source: JJ17)."
+    },
+
+    # -------------------------------------------------------------------------
+    # 3. Risk Status (Nonaccrual, Past Due) - The "Risk Stack"
+    # -------------------------------------------------------------------------
+    "RIC_CRE_Nonaccrual": {
+        "short": "CRE – Nonaccrual",
+        "long": "Nonaccrual loans secured by CRE. Uses Row-Wise Max resolution: Max(Total Reported, Sum of Subcomponents) to handle reporting differences."
+    },
+    "RIC_CRE_PD30": {
+        "short": "CRE – Past Due 30-89 Days",
+        "long": "Loans secured by CRE past due 30-89 days and still accruing."
+    },
+    "RIC_CRE_PD90": {
+        "short": "CRE – Past Due 90+ Days",
+        "long": "Loans secured by CRE past due 90+ days and still accruing."
+    },
+    # (Repeat pattern for other segments if explicit tagging is required,
+    # but the logic applies universally)
+
+    # -------------------------------------------------------------------------
+    # 4. Net Charge-Offs (TTM) - The "Velocity"
+    # -------------------------------------------------------------------------
+    "RIC_Constr_NCO_TTM": {
+        "short": "Construction – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for construction loans (Calculated from quarterly flows)."
+    },
+    "RIC_CRE_NCO_TTM": {
+        "short": "CRE – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for CRE loans. Resolves granularity differences row-by-row."
+    },
+    "RIC_Resi_NCO_TTM": {
+        "short": "Residential – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for residential loans."
+    },
+    "RIC_Comm_NCO_TTM": {
+        "short": "C&I – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for C&I loans."
+    },
+    "RIC_Card_NCO_TTM": {
+        "short": "Credit Card – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for credit cards."
+    },
+    "RIC_OthCons_NCO_TTM": {
+        "short": "Other Consumer – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for other consumer loans."
+    },
+
+    # -------------------------------------------------------------------------
+    # 5. Advanced Risk Ratios (The "So What")
+    # -------------------------------------------------------------------------
+
+    # A. Risk-Adjusted Coverage
+    "RIC_CRE_Risk_Adj_Coverage": {
+        "short": "CRE – Risk-Adj Coverage (x)",
+        "long": "Ratio of ACL to Nonaccrual Loans. Indicates how many dollars of reserves exist for every dollar of currently bad loans. Target > 1.0x."
+    },
+    "RIC_Resi_Risk_Adj_Coverage": {
+        "short": "Residential – Risk-Adj Coverage (x)",
+        "long": "Ratio of ACL to Nonaccrual Loans for residential portfolio."
+    },
+    "RIC_Comm_Risk_Adj_Coverage": {
+        "short": "C&I – Risk-Adj Coverage (x)",
+        "long": "Ratio of ACL to Nonaccrual Loans for C&I portfolio."
+    },
+
+    # B. Burn Rate (Years of Reserves)
+    "RIC_CRE_Years_of_Reserves": {
+        "short": "CRE – Years of Reserves",
+        "long": "Theoretical duration reserves would last at current loss rates (ACL / TTM NCOs). Higher is better."
+    },
+    "RIC_Card_Years_of_Reserves": {
+        "short": "Card – Years of Reserves",
+        "long": "Theoretical duration reserves would last at current loss rates (ACL / TTM NCOs)."
+    },
+
+    # C. Mismatches (Allocation & Risk)
+    "RIC_CRE_Alloc_Mismatch": {
+        "short": "CRE – Allocation Mismatch (%)",
+        "long": "Difference between Share of Total ACL and Share of Total Loans. Positive = Over-reserved relative to volume."
+    },
+    "RIC_CRE_Risk_Mismatch": {
+        "short": "CRE – Risk Mismatch (%)",
+        "long": "Difference between Share of Total ACL and Share of Total Nonaccruals. Positive = Conservative (Reserves > Risk Share); Negative = Exposed."
+    },
+
+    # D. Standard Rates
+    "RIC_CRE_NCO_Rate": {
+        "short": "CRE – NCO Rate (TTM) %",
+        "long": "Trailing 12-Month Net Charge-Offs divided by current Amortized Cost."
+    },
+    "RIC_CRE_Nonaccrual_Rate": {
+        "short": "CRE – Nonaccrual Rate %",
+        "long": "Nonaccrual loans divided by Amortized Cost."
+    },
+    "RIC_CRE_Delinquency_Rate": {
+        "short": "CRE – Total Delinquency %",
+        "long": "Total Past Due (30-89 days + 90+ days) divided by Amortized Cost."
+    }}
+
 from enum import Enum
 
 # =============================================================================
@@ -396,7 +607,7 @@ PEER_GROUPS = {
         "name": "Core Private Bank Peers",
         "short_name": "Core PB",
         "description": "True private banking comparables - SBL, wealth management, UHNW focus",
-        "certs": [34221, 33124, 57565],  # MSPBNA, GS, UBS
+        "certs": [ 33124, 57565],  # GS, UBS
         "use_case": "Best for SBL/wealth product comparisons, NCO benchmarking",
         "display_order": 1
     },
@@ -404,7 +615,7 @@ PEER_GROUPS = {
         "name": "Morgan Stanley + Extended Wealth",
         "short_name": "MS+Wealth",
         "description": "MS sister bank plus wealth management peers",
-        "certs": [34221, 32992, 33124, 57565, 57450, 17281],  # MS banks + Schwab + City National
+        "certs": [32992, 33124, 57565],  # MS banks + City National
         "use_case": "Internal MS comparison plus broader wealth industry view",
         "display_order": 2
     },
@@ -412,7 +623,7 @@ PEER_GROUPS = {
         "name": "Full Peer Universe",
         "short_name": "Full Peer Set",
         "description": "Complete peer set including G-SIBs for size/scale context",
-        "certs": [34221, 32992, 33124, 57565, 57450, 17281, 628, 3511, 7213, 3510],
+        "certs": [ 32992, 33124, 57565,   628, 3511, 7213, 3510],# 17281 remove City National
         "use_case": "Regulatory comparison, market share analysis, full industry context",
         "display_order": 3
     }
@@ -581,20 +792,6 @@ FRED_SERIES_TO_FETCH = {
 }
 FDIC_FIELDS_TO_FETCH =list(dict.fromkeys(FDIC_FIELDS_TO_FETCH))
 
-# ==================================================================================
-#  FFIEC BULK LOADER CLASS
-# ==================================================================================
-# ==================================================================================
-#  FIXED FFIEC BULK LOADER CLASS - v2
-#  Fixes ZIP parsing "I/O operation on closed file" error
-#  Replace the existing FFIECBulkLoader class in CR_Bank_DashvMSPB.py with this
-# ==================================================================================
-
-# ==================================================================================
-#  FIXED FFIEC BULK LOADER CLASS - v3
-#  Fixes IDRSSD vs CERT key mismatch in schedule files
-#  Replace the existing FFIECBulkLoader class in CR_Bank_DashvMSPB.py with this
-# ==================================================================================
 
 # ==================================================================================
 #  FIXED FFIEC BULK LOADER CLASS - v4
@@ -1405,7 +1602,7 @@ class FFIECBulkLoader:
         if df_fdic.empty:
             return df_fdic
 
-        dates = sorted(df_fdic['REPDTE'].unique(), reverse=True)[:8]
+        dates = sorted(df_fdic['REPDTE'].unique(), reverse=True)[:30]
         ffiec_frames = []
 
         for dt in dates:
@@ -2058,31 +2255,70 @@ class BankMetricsProcessor:
         except:
             return fill_value
     # ==================================================================================
-    #  UPDATED METRICS PROCESSOR METHOD (v5: Restored YTD + Granular RI-C)
+    #  UPDATED METRICS PROCESSOR (v30: Restores Income/Provision TTM Logic)
     # ==================================================================================
     def create_derived_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Derives analytical metrics.
-        v5 Fix: Restores YTD->Quarterly conversion and Legacy Categories while keeping
-        granular RI-C II (Cost/ACL) and RC-N (Risk) mappings.
+        Derives analytical metrics for Credit Risk Dashboard.
+
+        v30 FIXES:
+        - Restored Income/Provision TTM calculations (solves 'KeyError: Provision_Exp_TTM').
+        - Unified Time-Series loop handles both NCOs and Income Statement flows.
+        - Retains v29 crash-proofing and v28 forensic CRE logic.
         """
         if df.empty: return df
         df_processed = df.copy()
 
-        # --- Helpers ---
+        # --- Helper: Compute Quarterly Flow from YTD ---
+        def compute_quarterly_from_ytd(df_in, col_name):
+            """
+            Converts YTD cumulative series to discrete quarterly flows.
+            Logic: If Q1, Flow = YTD. Else, Flow = YTD_Current - YTD_Prev.
+            """
+            if col_name not in df_in.columns:
+                return pd.Series(0.0, index=df_in.index)
+
+            # Group by CERT to ensure we don't diff across banks
+            q_flows = []
+            for cert, group in df_in.groupby('CERT'):
+                group = group.sort_values('REPDTE')
+
+                # Calculate diff
+                diffs = group[col_name].diff()
+
+                # Fix Q1: In Q1, the flow is the YTD value itself (no subtraction)
+                is_q1 = group['REPDTE'].dt.quarter == 1
+                diffs.loc[is_q1] = group.loc[is_q1, col_name]
+
+                # Handle cases where diff is negative (accounting adjustments)
+                # or fill NaN (first record)
+                diffs = diffs.fillna(group[col_name]) # First record fallback
+
+                q_flows.append(diffs)
+
+            return pd.concat(q_flows).reindex(df_in.index).fillna(0)
+
+        # --- Helper: Vectorized Best-Of ---
         def best_of(df, primaries, fallbacks=[]):
-            """Returns the first non-null/non-zero series from primaries, else fallbacks."""
-            def check_cols(cols):
-                res = pd.Series(np.nan, index=df.index)
-                for col in cols:
+            res = pd.Series(np.nan, index=df.index)
+            for col in primaries:
+                if col in df.columns:
+                    mask = (res.isna()) | (res == 0)
+                    if mask.any():
+                        vals = df[col]
+                        update_mask = mask & (vals.notna()) & (vals != 0)
+                        res.loc[update_mask] = vals.loc[update_mask]
+            if fallbacks:
+                for col in fallbacks:
                     if col in df.columns:
-                        mask_update = (res.isna() | (res == 0)) & (df[col].notna()) & (df[col] != 0)
-                        res.loc[mask_update] = df.loc[mask_update, col]
-                return res
-            return check_cols(primaries).fillna(check_cols(fallbacks)).fillna(0)
+                        mask = (res.isna()) | (res == 0)
+                        if not mask.any(): break
+                        vals = df[col]
+                        update_mask = mask & (vals.notna()) & (vals != 0)
+                        res.loc[update_mask] = vals.loc[update_mask]
+            return res.fillna(0)
 
         def sum_cols(df, cols):
-            """Sums columns, treating NaNs as 0."""
             total = pd.Series(0.0, index=df.index)
             for col in cols:
                 if col in df.columns:
@@ -2090,256 +2326,540 @@ class BankMetricsProcessor:
             return total
 
         # ---------------------------------------------------------
-        # [1] RI-C Part II: Volume & Reserves (Cost vs ACL)
+        # [1] DATA MAPPING (Balances & Risk Stack)
         # ---------------------------------------------------------
-        # A. Residential
-        df_processed['RIC_Resi_ACL'] = best_of(df_processed, ['RCFDJJ14', 'RCONJJ14'], ['RCFDJ468', 'RCONJ468'])
-        df_processed['RIC_Resi_Cost'] = best_of(df_processed, ['RCFDJJ19', 'RCONJJ19'], ['RCFDJ448', 'RCONJ448'])
 
-        # B. Commercial RE (CRE)
-        df_processed['RIC_CommRE_ACL'] = best_of(df_processed, ['RCFDJJ07', 'RCONJJ07'], ['RCFDJ467', 'RCONJ467'])
-        df_processed['RIC_CommRE_Cost'] = best_of(df_processed, ['RCFDJJ06', 'RCONJJ06'], [])
-        if df_processed['RIC_CommRE_Cost'].sum() == 0:
-             df_processed['RIC_CommRE_Cost'] = sum_cols(df_processed, ['RCFDJ451','RCONJ451','RCFDJ454','RCONJ454'])
+        # A. Construction
+        df_processed['RIC_Constr_Cost']       = best_of(df_processed, ['RCFDJJ04', 'RCONJJ04'])
+        df_processed['RIC_Constr_ACL']        = best_of(df_processed, ['RCFDJJ12', 'RCONJJ12'])
+        df_processed['RIC_Constr_Nonaccrual'] = sum_cols(df_processed, ['NARECONS'])
+        df_processed['RIC_Constr_PD30']       = sum_cols(df_processed, ['P3RECONS'])
+        df_processed['RIC_Constr_PD90']       = sum_cols(df_processed, ['P9RECONS'])
 
-        # C. C&I (Commercial)
-        df_processed['RIC_Comm_ACL'] = best_of(df_processed, ['RCFDJJ13', 'RCONJJ13'], ['RCFDJ469', 'RCONJ469'])
-        df_processed['RIC_Comm_Cost'] = best_of(df_processed, ['RCFDJJ12', 'RCONJJ12'], ['RCFDJ449','RCONJ449'])
+        # B. CRE (Components)
+        df_processed['RIC_CRE_Cost']       = best_of(df_processed, ['RCFDJJ05', 'RCONJJ05'])
+        df_processed['RIC_CRE_ACL']        = best_of(df_processed, ['RCFDJJ13', 'RCONJJ13'])
 
-        # D. Construction
-        df_processed['RIC_Constr_ACL'] = best_of(df_processed, ['RCFDJJ03', 'RCONJJ03'], ['RCFDJ466', 'RCONJ466'])
-        df_processed['RIC_Constr_Cost'] = best_of(df_processed, ['RCFDJJ02', 'RCONJJ02'], ['RCFDJ453','RCONJ453'])
+        # Risk Stack (Resolved)
+        def resolve_cre_metric(df, prefix):
+            c_mf  = f'{prefix}REMULT'
+            c_row = f'{prefix}RENROW'
+            c_res = f'{prefix}RENRES'
+            c_rot = f'{prefix}RENROT'
+            mf  = df[c_mf].fillna(0)  if c_mf  in df.columns else 0.0
+            row = df[c_row].fillna(0) if c_row in df.columns else 0.0
+            res = df[c_res].fillna(0) if c_res in df.columns else 0.0
+            rot = df[c_rot].fillna(0) if c_rot in df.columns else 0.0
+            return mf + np.maximum(rot, row + res)
+
+        df_processed['RIC_CRE_Nonaccrual'] = resolve_cre_metric(df_processed, 'NA')
+        df_processed['RIC_CRE_PD30']       = resolve_cre_metric(df_processed, 'P3')
+        df_processed['RIC_CRE_PD90']       = resolve_cre_metric(df_processed, 'P9')
+
+        # C. Residential
+        df_processed['RIC_Resi_Cost']       = best_of(df_processed, ['RCFDJJ06', 'RCONJJ06'])
+        df_processed['RIC_Resi_ACL']        = best_of(df_processed, ['RCFDJJ14', 'RCONJJ14'])
+        df_processed['RIC_Resi_Nonaccrual'] = sum_cols(df_processed, ['NARERES', 'NARELOC'])
+        df_processed['RIC_Resi_PD30']       = sum_cols(df_processed, ['P3RERES', 'P3RELOC'])
+        df_processed['RIC_Resi_PD90']       = sum_cols(df_processed, ['P9RERES', 'P9RELOC'])
+
+        # D. C&I
+        df_processed['RIC_Comm_Cost']       = best_of(df_processed, ['RCFDJJ07', 'RCONJJ07'])
+        df_processed['RIC_Comm_ACL']        = best_of(df_processed, ['RCFDJJ15', 'RCONJJ15'])
+        df_processed['RIC_Comm_Nonaccrual'] = sum_cols(df_processed, ['NACI'])
+        df_processed['RIC_Comm_PD30']       = sum_cols(df_processed, ['P3CI'])
+        df_processed['RIC_Comm_PD90']       = sum_cols(df_processed, ['P9CI'])
 
         # E. Credit Cards
-        df_processed['RIC_Card_ACL'] = best_of(df_processed, ['RCFDJJ15', 'RCONJJ15'], ['RCFDJ470', 'RCONJ470'])
-        df_processed['RIC_Card_Cost'] = best_of(df_processed, ['RCFDJJ10', 'RCONJJ10'], [])
+        df_processed['RIC_Card_Cost']       = best_of(df_processed, ['RCFDJJ08', 'RCONJJ08'])
+        df_processed['RIC_Card_ACL']        = best_of(df_processed, ['RCFDJJ16', 'RCONJJ16'])
+        df_processed['RIC_Card_Nonaccrual'] = sum_cols(df_processed, ['NACRCD'])
+        df_processed['RIC_Card_PD30']       = sum_cols(df_processed, ['P3CRCD'])
+        df_processed['RIC_Card_PD90']       = sum_cols(df_processed, ['P9CRCD'])
 
-        # F. Other Consumer (Auto + Other)
-        df_processed['RIC_OthCons_ACL'] = sum_cols(df_processed, ['RCFDJJ17','RCONJJ17','RCFDJJ00','RCONJJ00'])
-        if df_processed['RIC_OthCons_ACL'].sum() == 0:
-             df_processed['RIC_OthCons_ACL'] = best_of(df_processed, [], ['RCFDJ471', 'RCONJ471'])
-        df_processed['RIC_OthCons_Cost'] = sum_cols(df_processed, ['RCFDJ452','RCONJ452','RCFDK137','RCONK137'])
-
-        # ---------------------------------------------------------
-        # [2] RC-N: Risk Status Segmentation (Nonaccrual & Past Due)
-        # ---------------------------------------------------------
-        # A. Residential Risk
-        df_processed['RIC_Resi_Nonaccrual'] = sum_cols(df_processed, ['NARERES', 'NARELOC'])
-        df_processed['RIC_Resi_PastDue'] = sum_cols(df_processed, ['P3RENRES', 'P3RELOC'])
-
-        # B. Commercial RE Risk
-        df_processed['RIC_CommRE_Nonaccrual'] = sum_cols(df_processed, ['NARENROT', 'NARENROW', 'NAREMULT'])
-        df_processed['RIC_CommRE_PastDue'] = sum_cols(df_processed, ['P3RENROT', 'P3RENROW', 'P3REMULT'])
-
-        # C. C&I Risk
-        df_processed['RIC_Comm_Nonaccrual'] = best_of(df_processed, ['NACI'], [])
-        df_processed['RIC_Comm_PastDue'] = best_of(df_processed, ['P3CI'], [])
-
-        # D. Construction Risk
-        df_processed['RIC_Constr_Nonaccrual'] = best_of(df_processed, ['NARECONS'], [])
-        df_processed['RIC_Constr_PastDue'] = best_of(df_processed, ['P3RECONS'], [])
-
-        # E. Credit Card Risk
-        df_processed['RIC_Card_Nonaccrual'] = best_of(df_processed, ['NACRCD'], [])
-        df_processed['RIC_Card_PastDue'] = best_of(df_processed, ['P3CRCD'], [])
-
-        # F. Other Consumer Risk
+        # F. Other Consumer
+        df_processed['RIC_OthCons_Cost']       = best_of(df_processed, ['RCFDJJ09', 'RCONJJ09'])
+        df_processed['RIC_OthCons_ACL']        = best_of(df_processed, ['RCFDJJ17', 'RCONJJ17'])
         df_processed['RIC_OthCons_Nonaccrual'] = sum_cols(df_processed, ['NAAUTO', 'NACONOTH'])
-        df_processed['RIC_OthCons_PastDue'] = sum_cols(df_processed, ['P3AUTO', 'P3CONOTH'])
+        df_processed['RIC_OthCons_PD30']       = sum_cols(df_processed, ['P3AUTO', 'P3CONOTH'])
+        df_processed['RIC_OthCons_PD90']       = sum_cols(df_processed, ['P9AUTO', 'P9CONOTH'])
+
+        # G. Top-House Delinquency & Profitability Series
+        df_processed['TopHouse_PD30'] = best_of(df_processed, ['P3LNLS'])
+        df_processed['TopHouse_PD90'] = best_of(df_processed, ['P9LNLS'])
+
+        # Income / Exp / Provision (YTD)
+        df_processed['Int_Inc_Loans_YTD'] = sum_cols(df_processed, ['ILNDOM', 'ILNFOR'])
+        df_processed['Int_Exp_Dep_YTD'] = sum_cols(df_processed, ['EDEPDOM', 'EDEPFOR'])
+        df_processed['Provision_Exp_YTD'] = best_of(df_processed, ['ELNATR'])
+        df_processed['Total_Int_Exp_YTD'] = best_of(df_processed, ['EINTEXP'])
+
+        # H. Total Nonaccrual
+        df_processed['Total_Nonaccrual'] = sum_cols(df_processed,
+            ['RIC_Constr_Nonaccrual', 'RIC_CRE_Nonaccrual', 'RIC_Resi_Nonaccrual',
+             'RIC_Comm_Nonaccrual', 'RIC_Card_Nonaccrual', 'RIC_OthCons_Nonaccrual',
+             'NAREAG', 'NAAG', 'NALS', 'NAOTHLN'])
 
         # ---------------------------------------------------------
-        # [3] RESTORED: Standard Calculations & Categories
+        # [2] FORENSIC TIME SERIES CALCULATION (NCOs & Income)
         # ---------------------------------------------------------
-        # Top Level Metrics
-        df_processed['Total_ACL'] = df_processed.get('LNATRES', 0).fillna(0) + \
-                                    (df_processed.get('RB2LNRES', 0).fillna(0) - df_processed.get('LNATRES', 0).fillna(0))
 
-        # Capital
-        df_processed['Total_Capital'] = df_processed.get('RBCT1J', 0) + df_processed.get('RBCT2', 0)
+        # 1. DEFINE & INIT COLUMNS
+        # Explicitly list all flow columns we need to transform
 
-        # Legacy Categories (Required for SBL/Fund Finance Composition)
-        df_processed['SBL_Balance'] = df_processed.get('LNOTHPCS', 0)
-        df_processed['Fund_Finance_Balance'] = df_processed.get('LNOTHNONDEP', 0)
-        df_processed['Wealth_Resi_Balance'] = sum_cols(df_processed, ['LNRERES', 'LNRELOC'])
-        df_processed['Consumer_Auto_Balance'] = df_processed.get('LNAUTO', 0)
-        df_processed['Consumer_Other_Balance'] = df_processed.get('LNCONOTHX', 0) + df_processed.get('LNCRCD', 0)
-        df_processed['Corp_CI_Balance'] = df_processed.get('LNCI', 0)
-        df_processed['CRE_OO_Balance'] = df_processed.get('LNRENROW', 0)
-        df_processed['CRE_Investment_Balance'] = sum_cols(df_processed, ['LNRECONS', 'LNREMULT', 'LNRENROT'])
+        # A) Net Charge-Offs
+        nco_cols = [
+            'NTLNLS', 'NTCI',
+            'NTRECONS', 'NTREMULT', 'NTRENROW', 'NTRENROT',
+            'NTRERES', 'NTRELOC',
+            'NTCRCD', 'NTAUTO', 'NTCONOTH'
+        ]
 
-        # Total for Shares
-        total_categorized = (df_processed['SBL_Balance'] + df_processed['Fund_Finance_Balance'] +
-                             df_processed['Wealth_Resi_Balance'] + df_processed['Consumer_Auto_Balance'] +
-                             df_processed['Consumer_Other_Balance'] + df_processed['Corp_CI_Balance'] +
-                             df_processed['CRE_OO_Balance'] + df_processed['CRE_Investment_Balance'])
+        # B) Income Statement (These are YTD too!)
+        income_cols = [
+            'Int_Inc_Loans_YTD',
+            'Int_Exp_Dep_YTD',
+            'Provision_Exp_YTD',
+            'Total_Int_Exp_YTD'
+        ]
 
-        # ---------------------------------------------------------
-        # [4] RESTORED: YTD -> Quarterly Conversion (CRITICAL FIX)
-        # ---------------------------------------------------------
-        # Finds all 'NT' (Net Charge-off) and 'EINTEXP' fields and converts accumulative YTD to discrete Quarterly
-        ytd_fields = [col for col in df_processed.columns if (col.startswith('NT') or 'EINTEXP' in col) and col not in ['NT']]
+        # Ensure existence
+        all_flow_cols = nco_cols + income_cols
+        for col in all_flow_cols:
+            if col not in df_processed.columns:
+                df_processed[col] = 0.0
 
+        # 2. Compute Quarterly Flows (YTD -> Q)
+        # We calculate _Q for everything in the list
+        for col in all_flow_cols:
+            q_col = col.replace('_YTD', '_Q') if '_YTD' in col else f"{col}_Q"
+            df_processed[q_col] = compute_quarterly_from_ytd(df_processed, col)
+
+        # 3. Aggregate Quarterly Flows into Segments (Forensic Logic)
+        # CRE
+        cre_q_nco = df_processed['NTREMULT_Q'] + np.maximum(
+            df_processed['NTRENROT_Q'],
+            (df_processed.get('NTRENROW_Q', 0) + df_processed.get('NTRENRES_Q', 0))
+        )
+        df_processed['RIC_CRE_NCO_Q'] = cre_q_nco
+
+        # Other Segments
+        df_processed['RIC_Constr_NCO_Q'] = df_processed['NTRECONS_Q']
+        df_processed['RIC_Resi_NCO_Q']   = df_processed['NTRERES_Q'] + df_processed['NTRELOC_Q']
+        df_processed['RIC_Comm_NCO_Q']   = df_processed['NTCI_Q']
+        df_processed['RIC_Card_NCO_Q']   = df_processed['NTCRCD_Q']
+        df_processed['RIC_OthCons_NCO_Q']= df_processed['NTCONOTH_Q'] + df_processed['NTAUTO_Q']
+
+        # 4. Calculate TTM (Rolling 4Q Sum)
+        # We map the Q columns to their target TTM columns
+        ttm_map = {
+            # NCO Segments
+            'RIC_CRE_NCO_Q':     'RIC_CRE_NCO_TTM',
+            'RIC_Constr_NCO_Q':  'RIC_Constr_NCO_TTM',
+            'RIC_Resi_NCO_Q':    'RIC_Resi_NCO_TTM',
+            'RIC_Comm_NCO_Q':    'RIC_Comm_NCO_TTM',
+            'RIC_Card_NCO_Q':    'RIC_Card_NCO_TTM',
+            'RIC_OthCons_NCO_Q': 'RIC_OthCons_NCO_TTM',
+
+            # Income Statement TTMs (The Fix!)
+            'Provision_Exp_YTD_Q': 'Provision_Exp_TTM',
+            'Int_Inc_Loans_YTD_Q': 'Int_Inc_Loans_TTM',
+            'Total_Int_Exp_YTD_Q': 'Total_Int_Exp_TTM'
+        }
+
+        # Note: compute_quarterly_from_ytd creates 'Provision_Exp_YTD_Q' from 'Provision_Exp_YTD'
+
+        temp_ttm_frames = []
         for cert, group in df_processed.groupby('CERT'):
             group = group.sort_values('REPDTE')
-            for col in ytd_fields:
-                quarterly_vals = group[col].diff()
-                # Reset Q1 (Quarter 1 is just the YTD value)
-                q1_mask = group['REPDTE'].dt.quarter == 1
-                quarterly_vals.loc[q1_mask] = group.loc[q1_mask, col]
-                # Assign back using index alignment
-                df_processed.loc[group.index, f"{col}_Q"] = quarterly_vals
+
+            # Rolling Sums
+            for q_col, ttm_col in ttm_map.items():
+                if q_col in group.columns:
+                    group[ttm_col] = group[q_col].rolling(window=4, min_periods=1).sum()
+
+            # Lagged Metrics
+            group['Delta_Nonaccrual'] = group['Total_Nonaccrual'].diff()
+
+            # Check for Provision Q col name (it was generated by the loop above)
+            prov_q = 'Provision_Exp_YTD_Q'
+            if prov_q in group.columns:
+                group['Delta_Provision'] = group[prov_q].diff()
+            else:
+                group['Delta_Provision'] = 0.0
+
+            # CRE Specific Velocity
+            cre_pd_total = group['RIC_CRE_PD30'] + group['RIC_CRE_PD90']
+            group['Delta_CRE_Nonaccrual'] = group['RIC_CRE_Nonaccrual'].diff()
+            group['Lagged_CRE_Total_PD'] = cre_pd_total.shift(1)
+
+            temp_ttm_frames.append(group)
+
+        if temp_ttm_frames:
+            df_processed = pd.concat(temp_ttm_frames)
 
         # ---------------------------------------------------------
-        # [5] Aggregates & Ratios (Using Granular Data)
+        # [3] TOTALS & DENOMINATORS
         # ---------------------------------------------------------
-        df_processed['RIC_Calculated_Sum'] = sum_cols(df_processed,
-            ['RIC_Resi_ACL', 'RIC_CommRE_ACL', 'RIC_Comm_ACL', 'RIC_Constr_ACL', 'RIC_Card_ACL', 'RIC_OthCons_ACL'])
+        df_processed['SBL_Balance'] = best_of(df_processed, ['RCFD1545', 'RCON1545'])
+        df_processed['Fund_Finance_Balance'] = best_of(df_processed, ['RCFDJ454', 'RCONJ454'])
+        df_processed['RIC_Unalloc_ACL'] = best_of(df_processed, ['RCFDJJ22', 'RCONJJ22'])
 
-        for cert, group in df_processed.groupby('CERT'):
-            idx = group.index
-            denom_total_acl = group['RIC_Calculated_Sum'].replace(0, np.nan)
-            total_loans_bank = total_categorized.loc[idx].replace(0, np.nan)
+        df_processed['RIC_Calculated_ACL'] = (
+            df_processed['RIC_Constr_ACL'] + df_processed['RIC_CRE_ACL'] + df_processed['RIC_Resi_ACL'] +
+            df_processed['RIC_Comm_ACL'] + df_processed['RIC_Card_ACL'] + df_processed['RIC_OthCons_ACL'] +
+            df_processed['RIC_Unalloc_ACL']
+        )
+        df_processed['RIC_Calculated_Cost'] = (
+            df_processed['RIC_Constr_Cost'] + df_processed['RIC_CRE_Cost'] + df_processed['RIC_Resi_Cost'] +
+            df_processed['RIC_Comm_Cost'] + df_processed['RIC_Card_Cost'] + df_processed['RIC_OthCons_Cost']
+        )
 
-            # --- ACL SHARES ---
-            df_processed.loc[idx, 'Group_Residential_ACL_Share'] = self._safe_divide(group['RIC_Resi_ACL'], denom_total_acl)
-            df_processed.loc[idx, 'Group_Commercial_ACL_Share'] = self._safe_divide(group['RIC_Comm_ACL'], denom_total_acl)
-            df_processed.loc[idx, 'Group_CRE_ACL_Share'] = self._safe_divide(group['RIC_CommRE_ACL'] + group['RIC_Constr_ACL'], denom_total_acl)
-            df_processed.loc[idx, 'Group_OtherSBL_ACL_Share'] = self._safe_divide(group['RIC_OthCons_ACL'] + group['RIC_Card_ACL'], denom_total_acl)
+        df_processed['Total_ACL'] = df_processed.get('LNATRES', 0).fillna(0)
+        df_processed['Total_Reg_ACL'] = df_processed.get('RB2LNRES', 0).fillna(0)
+        df_processed['Gross_Loans'] = df_processed.get('LNLS', 0)
 
-            # --- LOAN SHARES (Legacy Bases) ---
-            comm_loan = group['Corp_CI_Balance'] + group['Fund_Finance_Balance']
-            df_processed.loc[idx, 'Group_Commercial_Loan_Share'] = self._safe_divide(comm_loan, total_loans_bank)
-            resi_loan = group['Wealth_Resi_Balance']
-            df_processed.loc[idx, 'Group_Residential_Loan_Share'] = self._safe_divide(resi_loan, total_loans_bank)
-            cre_loan = group['CRE_OO_Balance'] + group['CRE_Investment_Balance']
-            df_processed.loc[idx, 'Group_CRE_Loan_Share'] = self._safe_divide(cre_loan, total_loans_bank)
-            other_loan = group['SBL_Balance'] + group['Consumer_Auto_Balance'] + group['Consumer_Other_Balance']
-            df_processed.loc[idx, 'Group_OtherSBL_Loan_Share'] = self._safe_divide(other_loan, total_loans_bank)
+        # Denominators
+        df_processed['RIC_Used_Total_ACL'] = np.where(df_processed['Total_ACL'] > 0, df_processed['Total_ACL'], df_processed['RIC_Calculated_ACL'])
+        df_processed['RIC_Used_Total_Cost'] = np.where(df_processed['Gross_Loans'] > 0, df_processed['Gross_Loans'], df_processed['RIC_Calculated_Cost'])
+        df_processed['RIC_Used_Total_NA'] = df_processed['Total_Nonaccrual']
 
-            # --- COVERAGE METRICS (ACL / Cost) ---
-            df_processed.loc[idx, 'RIC_Resi_ACL_Coverage'] = self._safe_divide(group['RIC_Resi_ACL'], group['RIC_Resi_Cost'])
-            df_processed.loc[idx, 'RIC_Comm_ACL_Coverage'] = self._safe_divide(group['RIC_Comm_ACL'], group['RIC_Comm_Cost'])
-            df_processed.loc[idx, 'RIC_CommRE_ACL_Coverage'] = self._safe_divide(group['RIC_CommRE_ACL'], group['RIC_CommRE_Cost'])
-            df_processed.loc[idx, 'RIC_Constr_ACL_Coverage'] = self._safe_divide(group['RIC_Constr_ACL'], group['RIC_Constr_Cost'])
+        # ---------------------------------------------------------
+        # [4] ANALYTICAL METRICS (Vectorized)
+        # ---------------------------------------------------------
+        new_cols = {}
+        def safe_div(n, d):
+            return np.where(d != 0, n / d, 0)
 
-            # --- RISK METRICS (Nonaccrual / Cost) ---
-            df_processed.loc[idx, 'RIC_Resi_Nonaccrual_Rate'] = self._safe_divide(group['RIC_Resi_Nonaccrual'], group['RIC_Resi_Cost'])
-            df_processed.loc[idx, 'RIC_Comm_Nonaccrual_Rate'] = self._safe_divide(group['RIC_Comm_Nonaccrual'], group['RIC_Comm_Cost'])
-            df_processed.loc[idx, 'RIC_CommRE_Nonaccrual_Rate'] = self._safe_divide(group['RIC_CommRE_Nonaccrual'], group['RIC_CommRE_Cost'])
+        # --- A. Top-Level Ratios ---
+        top_house_pd = df_processed['TopHouse_PD30'] + df_processed['TopHouse_PD90']
+        new_cols['Top_House_Delinquency_Rate'] = safe_div(top_house_pd, df_processed['Gross_Loans'])
 
-            # ---------------------------------------------------------
-            # [6] Integrity Check
-            # ---------------------------------------------------------
-            diff = group['Total_ACL'] - group['RIC_Calculated_Sum']
-            pct_diff = self._safe_divide(diff, group['Total_ACL'])
+        new_cols['Nonaccrual_to_Gross_Loans_Rate'] = safe_div(df_processed['Total_Nonaccrual'], df_processed['Gross_Loans'])
+        new_cols['Allowance_to_Gross_Loans_Rate'] = safe_div(df_processed['Total_ACL'], df_processed['Gross_Loans'])
+        new_cols['Risk_Adj_Allowance_Coverage'] = safe_div(df_processed['Total_ACL'], (df_processed['Gross_Loans'] - df_processed['SBL_Balance']))
 
-            df_processed.loc[idx, 'ACL_Integrity_Status'] = np.where(
-                abs(pct_diff) < 0.05, "MATCH",
-                np.where(diff > 0, "UNDER (Missing Segments?)", "OVER (Double Count?)")
-            )
+        new_cols['SBL_Composition'] = safe_div(df_processed['SBL_Balance'], df_processed['Gross_Loans'])
+        new_cols['Fund_Finance_Composition'] = safe_div(df_processed['Fund_Finance_Balance'], df_processed['Gross_Loans'])
 
-        # [7] Backwards Compatibility
-        df_processed['RIC_Resi_Best'] = df_processed['RIC_Resi_ACL']
-        df_processed['RIC_Comm_Best'] = df_processed['RIC_Comm_ACL']
-        df_processed['RIC_CommRE_Best'] = df_processed['RIC_CommRE_ACL']
-        df_processed['Total_Nonaccrual'] = sum_cols(df_processed,
-            ['RIC_Resi_Nonaccrual', 'RIC_CommRE_Nonaccrual', 'RIC_Comm_Nonaccrual',
-             'RIC_Constr_Nonaccrual', 'RIC_Card_Nonaccrual', 'RIC_OthCons_Nonaccrual'])
+        # --- B. Profitability & Efficiency ---
+        # Ensure TTM columns exist (default to 0 if rolling calc failed due to sparse data)
+        prov_ttm = df_processed.get('Provision_Exp_TTM', pd.Series(0, index=df_processed.index))
+        inc_ttm = df_processed.get('Int_Inc_Loans_TTM', pd.Series(0, index=df_processed.index))
 
-        return df_processed
+        new_cols['Provision_to_Loans_Rate'] = safe_div(prov_ttm, df_processed['Gross_Loans'])
+        loan_yield = safe_div(inc_ttm, df_processed['Gross_Loans'])
+        new_cols['Loan_Yield_Proxy'] = loan_yield
+        new_cols['Provision_Elasticity'] = safe_div(df_processed['Delta_Provision'], df_processed['Delta_Nonaccrual'])
 
+        # --- C. Segment Ratios ---
+        segments = {
+            'Constr':  ('RIC_Constr_ACL', 'RIC_Constr_Cost', 'RIC_Constr_NCO_TTM', 'RIC_Constr_Nonaccrual', 'RIC_Constr_PD30', 'RIC_Constr_PD90'),
+            'CRE':     ('RIC_CRE_ACL',    'RIC_CRE_Cost',    'RIC_CRE_NCO_TTM',    'RIC_CRE_Nonaccrual',    'RIC_CRE_PD30',    'RIC_CRE_PD90'),
+            'Resi':    ('RIC_Resi_ACL',   'RIC_Resi_Cost',   'RIC_Resi_NCO_TTM',   'RIC_Resi_Nonaccrual',   'RIC_Resi_PD30',   'RIC_Resi_PD90'),
+            'Comm':    ('RIC_Comm_ACL',   'RIC_Comm_Cost',   'RIC_Comm_NCO_TTM',   'RIC_Comm_Nonaccrual',   'RIC_Comm_PD30',   'RIC_Comm_PD90'),
+            'Card':    ('RIC_Card_ACL',   'RIC_Card_Cost',   'RIC_Card_NCO_TTM',   'RIC_Card_Nonaccrual',   'RIC_Card_PD30',   'RIC_Card_PD90'),
+            'OthCons': ('RIC_OthCons_ACL','RIC_OthCons_Cost', 'RIC_OthCons_NCO_TTM', 'RIC_OthCons_Nonaccrual', 'RIC_OthCons_PD30', 'RIC_OthCons_PD90')
+        }
+
+        denom_acl = df_processed['RIC_Used_Total_ACL']
+        denom_cost = df_processed['RIC_Used_Total_Cost']
+        denom_na = df_processed['RIC_Used_Total_NA']
+
+        for seg_name, (acl_col, cost_col, nco_ttm_col, na_col, pd30_col, pd90_col) in segments.items():
+            s_acl = df_processed[acl_col].fillna(0)
+            s_cost = df_processed[cost_col].fillna(0)
+            s_nco_ttm = df_processed.get(nco_ttm_col, pd.Series(0, index=df_processed.index)).fillna(0)
+            s_na = df_processed[na_col].fillna(0)
+            s_pd30 = df_processed[pd30_col].fillna(0)
+            s_pd90 = df_processed[pd90_col].fillna(0)
+
+            # Metrics
+            new_cols[f'RIC_{seg_name}_ACL_Coverage'] = safe_div(s_acl, s_cost)
+            new_cols[f'RIC_{seg_name}_Risk_Adj_Coverage'] = safe_div(s_acl, s_na)
+
+            # Years of Reserves
+            years_res = np.where(s_nco_ttm > 0, s_acl / s_nco_ttm, np.nan)
+            new_cols[f'RIC_{seg_name}_Years_of_Reserves'] = np.where(years_res > 100, 100, years_res)
+
+            nco_rate = safe_div(s_nco_ttm, s_cost)
+            new_cols[f'RIC_{seg_name}_NCO_Rate'] = nco_rate
+            new_cols[f'RIC_{seg_name}_Nonaccrual_Rate'] = safe_div(s_na, s_cost)
+            new_cols[f'RIC_{seg_name}_Delinquency_Rate'] = safe_div((s_pd30 + s_pd90), s_cost)
+
+            # Advanced
+            new_cols[f'RIC_{seg_name}_Loss_Adj_Yield'] = loan_yield - nco_rate
+            new_cols[f'RIC_{seg_name}_ACL_Efficiency'] = safe_div(s_nco_ttm, s_acl)
+            new_cols[f'RIC_{seg_name}_Migration_Ratio'] = safe_div((s_pd30 + s_pd90), s_na)
+
+            # Shares
+            share_acl = safe_div(s_acl, denom_acl)
+            share_loan = safe_div(s_cost, denom_cost)
+
+            new_cols[f'RIC_{seg_name}_ACL_Share'] = share_acl
+            new_cols[f'RIC_{seg_name}_Loan_Share'] = share_loan
+            new_cols[f'RIC_{seg_name}_Alloc_Mismatch'] = share_acl - share_loan
+            new_cols[f'RIC_{seg_name}_Risk_Mismatch'] = share_acl - safe_div(s_na, denom_na)
+
+        # D. Advanced Velocity (Specific for CRE)
+        new_cols['RIC_CRE_Conversion_Velocity'] = safe_div(df_processed['Delta_CRE_Nonaccrual'], df_processed['Lagged_CRE_Total_PD'])
+
+        # Legacy Groups
+        new_cols['Group_CRE_ACL_Share'] = new_cols['RIC_CRE_ACL_Share'] + new_cols['RIC_Constr_ACL_Share']
+        new_cols['Group_Commercial_ACL_Share'] = new_cols['RIC_Comm_ACL_Share']
+        new_cols['Group_Residential_ACL_Share'] = new_cols['RIC_Resi_ACL_Share']
+        new_cols['Group_OtherSBL_ACL_Share'] = new_cols['RIC_OthCons_ACL_Share'] + new_cols['RIC_Card_ACL_Share']
+
+        # Integrity
+        diff = df_processed['Total_ACL'] - df_processed['RIC_Calculated_ACL']
+        pct_diff = safe_div(diff, df_processed['Total_ACL'])
+
+        conds = [
+            (df_processed['CERT'] > 90000),
+            (np.abs(pct_diff) < 0.05),
+            (diff > 0)
+        ]
+        choices = ["NO_BENCHMARK", "MATCH", "UNDER (Missing Segments?)"]
+        new_cols['ACL_Integrity_Status'] = np.select(conds, choices, default="OVER (Double Count?)")
+
+        reg_diff = df_processed['Total_Reg_ACL'] - df_processed['Total_ACL']
+        new_cols['ACL_Reg_Divergence'] = safe_div(reg_diff, df_processed['Total_ACL'])
+
+        # Final Merge
+        df_final = pd.concat([df_processed, pd.DataFrame(new_cols, index=df_processed.index)], axis=1)
+
+        df_final['RIC_Resi_Best'] = df_final['RIC_Resi_ACL']
+        df_final['RIC_Comm_Best'] = df_final['RIC_Comm_ACL']
+        df_final['RIC_CommRE_Best'] = df_final['RIC_CRE_ACL']
+
+        return df_final
+
+
+    # ==================================================================================
+    #  UPDATED 8Q AGGREGATOR (v31: Peak Stress Logic for Nonaccruals)
+    # ==================================================================================
+    def calculate_8q_averages(self, proc_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculates 8-quarter averages for Peer Comparison Scatter Plots.
+
+        v31 UPDATES (Nonaccrual Logic):
+        - Implements "Peak Stress" logic for Nonaccrual Rates.
+        - Instead of mean(rates), calculates Max(Balance) / Mean(Cost).
+        - Prevents lumpy CRE nonaccruals from washing out to zero.
+        - Adds 'RIC_CRE_Ever_NA_Flag' to highlight banks with any recent stress.
+        """
+        if proc_df.empty: return pd.DataFrame()
+
+        # Identify numeric columns for standard averaging
+        metrics = proc_df.select_dtypes(include=np.number).columns.tolist()
+        if 'CERT' in metrics: metrics.remove('CERT')
+
+        results = []
+
+        # Segments to apply "Peak Stress" logic to
+        segments = ['Constr', 'CRE', 'Resi', 'Comm', 'Card', 'OthCons']
+
+        for cert, group in proc_df.groupby('CERT'):
+            if len(group) < 1: continue # Need at least some data
+
+            # Sort by date to ensure rolling window is correct
+            group = group.sort_values('REPDTE')
+
+            # 1. Standard Averages (Baseline)
+            # We take the mean of the last 8 periods (or fewer if <8 available)
+            # min_periods=1 ensures we get data even for new banks
+            avgs = group[metrics].rolling(window=8, min_periods=1).mean().iloc[-1].to_dict()
+
+            # 2. OVERRIDE: Peak Stress Logic for Nonaccruals
+            # Problem: Averaging quarterly NA rates (often 0%) dilutes signal.
+            # Solution: Max(Nonaccrual Balance) / Mean(Cost Balance) over 8Q.
+
+            for seg in segments:
+                na_col = f'RIC_{seg}_Nonaccrual'
+                cost_col = f'RIC_{seg}_Cost'
+                rate_col = f'RIC_{seg}_Nonaccrual_Rate'
+
+                if na_col in group.columns and cost_col in group.columns:
+                    # Rolling Max of the numerator (Did they have a problem?)
+                    na_max = group[na_col].rolling(window=8, min_periods=1).max().iloc[-1]
+                    # Rolling Mean of the denominator (Average portfolio size)
+                    cost_mean = group[cost_col].rolling(window=8, min_periods=1).mean().iloc[-1]
+
+                    # Recalculate the rate based on Peak Stress
+                    if cost_mean > 0:
+                        avgs[rate_col] = na_max / cost_mean
+                    else:
+                        avgs[rate_col] = 0.0
+
+            # 3. New Metric: "Ever Nonaccrual" Flag (Option B)
+            # Useful for coloring scatter plots (0=Clean, 1=Stressed)
+            if 'RIC_CRE_Nonaccrual' in group.columns:
+                cre_max = group['RIC_CRE_Nonaccrual'].rolling(window=8, min_periods=1).max().iloc[-1]
+                avgs['RIC_CRE_Ever_NA_Flag'] = 1.0 if cre_max > 0 else 0.0
+
+            # Metadata
+            rec = {"CERT": cert, "NAME": group['NAME'].iloc[-1]}
+            rec.update(avgs)
+            results.append(rec)
+
+        return pd.DataFrame(results).set_index('CERT') if results else pd.DataFrame()
+    # ==================================================================================
+    #  UPDATED TTM CALCULATOR (v26: Growth & Top-House Metrics)
+    # ==================================================================================
     def calculate_ttm_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculates trailing 12-month (TTM) and Year-Over-Year (YoY) Growth metrics.
+
+        v26 UPDATES:
+        - Targets new 'RIC_' segments for Growth calculations.
+        - Calculates 'TTM_NCO_Rate' (Bank-wide) using 4Q Sum / 4Q Avg Loans.
+        - Calculates 'TTM_Past_Due_Rate' (Smoothed 4Q Average).
+        """
         if df.empty: return df
 
-        # [FIX] Safe Growth that handles 0 -> 0 case
-        def calc_safe_growth(curr, prev):
-            if pd.isna(curr) or pd.isna(prev): return np.nan
-            if prev == 0:
-                return 0.0 if curr == 0 else np.nan # 0->0 is 0%
-            return (curr - prev) / abs(prev) * 100
-
         all_banks_data = []
+
+        # Define targets for Growth Calculation (Metric Name Prefix : Column Name)
+        growth_targets = {
+            # 1. New RI-C II Segments
+            'Constr':  'RIC_Constr_Cost',
+            'CRE':     'RIC_CRE_Cost',
+            'Resi':    'RIC_Resi_Cost',
+            'Comm':    'RIC_Comm_Cost',
+            'Card':    'RIC_Card_Cost',
+            'OthCons': 'RIC_OthCons_Cost',
+
+            # 2. Special Portfolios
+            'SBL':          'SBL_Balance',
+            'Fund_Finance': 'Fund_Finance_Balance',
+
+            # 3. Top of House
+            'Total_Loans':  'LNLS',
+            'Assets':       'ASSET',
+            'Deposits':     'DEP'
+        }
+
         for cert, group in df.groupby('CERT'):
             bank_df = group.sort_values("REPDTE").copy()
 
-            if len(bank_df) >= 4:
-                avg_loans = bank_df['LNLS'].rolling(4).mean()
+            # We need at least 1 row, but for TTM we prefer 4.
+            # Rolling ops handle <4 gracefully if min_periods set, but growth needs offset.
 
-                # TTM Growth
-                for cat in LOAN_CATEGORIES.keys():
-                    col_bal = f'{cat}_Balance'
-                    if col_bal in bank_df.columns:
-                        prev_bal = bank_df[col_bal].shift(4)
-                        bank_df[f'{cat}_Growth_TTM'] = bank_df.apply(
-                            lambda row: calc_safe_growth(row[col_bal], prev_bal.loc[row.name])
-                            if row.name in prev_bal.index else np.nan, axis=1
-                        )
+            # 4-Quarter Moving Average of Loans (Denominator for TTM Rates)
+            avg_loans = bank_df['LNLS'].rolling(window=4, min_periods=1).mean()
 
-                # Granular TTM Nonaccrual Rates
-                for cat_name, cat_details in LOAN_CATEGORIES.items():
-                    col_bal = f'{cat_name}_Balance'
-                    col_na = f'{cat_name}_NA_Balance' # Ensure these exist or use mapped fields
-                    # (Mapping handled in derivation if needed, usually NA cols are direct)
+            # -----------------------------------------------------
+            # 1. Calculate YoY (4Q) Growth
+            # -----------------------------------------------------
+            for prefix, col_name in growth_targets.items():
+                if col_name in bank_df.columns:
+                    # Get 4-quarter lag
+                    curr_vals = bank_df[col_name]
+                    prev_vals = bank_df[col_name].shift(4)
 
-                    # For V6, we often map NA cols directly. If specific _NA_Balance cols
-                    # aren't created, skip this or adapt.
-                    # Assuming standard NA cols exist from previous steps:
-                    pass
+                    # Safe Growth Calculation (Vectorized)
+                    # Logic: (Curr - Prev) / |Prev|. If Prev=0, return 0 if Curr=0 else NaN
+                    diff = curr_vals - prev_vals
 
-                # Standard TTM Metrics
-                bank_df['TTM_NCO_Rate'] = self._safe_divide(bank_df['NTLNLS_Q'].rolling(4).sum(), avg_loans)
-                bank_df['TTM_Past_Due_Rate'] = self._safe_divide(
-                    (bank_df.get('P3LNLS', 0) + bank_df.get('P9LNLS', 0)).rolling(4).mean(),
-                    avg_loans
-                )
+                    growth = np.where(
+                        prev_vals != 0,
+                        diff / prev_vals.abs(),
+                        np.where(curr_vals == 0, 0.0, np.nan)
+                    )
+
+                    bank_df[f'{prefix}_Growth_TTM'] = growth
+
+            # -----------------------------------------------------
+            # 2. Top-House TTM NCO Rate
+            # -----------------------------------------------------
+            # NTLNLS_Q is created in create_derived_metrics (from NTLNLS YTD)
+            if 'NTLNLS_Q' in bank_df.columns:
+                ttm_nco = bank_df['NTLNLS_Q'].rolling(window=4, min_periods=1).sum()
+                # Standard Definition: TTM NCO / Average Loans
+                bank_df['TTM_NCO_Rate'] = ttm_nco / avg_loans
+
+            # -----------------------------------------------------
+            # 3. Top-House TTM Past Due Rate (Smoothed)
+            # -----------------------------------------------------
+            # Uses TopHouse_PD30/90 created in create_derived_metrics
+            if 'TopHouse_PD30' in bank_df.columns and 'TopHouse_PD90' in bank_df.columns:
+                total_pd = bank_df['TopHouse_PD30'].fillna(0) + bank_df['TopHouse_PD90'].fillna(0)
+                # Quarterly Rate
+                pd_rate = total_pd / bank_df['LNLS']
+                # Smoothed (Average of last 4 quarters)
+                bank_df['TTM_Past_Due_Rate'] = pd_rate.rolling(window=4, min_periods=1).mean()
 
             all_banks_data.append(bank_df)
 
         return pd.concat(all_banks_data, ignore_index=True) if all_banks_data else df
 
-
-    def calculate_8q_averages(self, proc_df: pd.DataFrame) -> pd.DataFrame:
-        if proc_df.empty: return pd.DataFrame()
-        metrics = proc_df.select_dtypes(include=np.number).columns.tolist()
-        if 'CERT' in metrics: metrics.remove('CERT')
-        results = []
-        for cert, group in proc_df.groupby('CERT'):
-            if len(group) < 8: continue
-            group = group.sort_values('REPDTE')
-            avgs = group[metrics].rolling(8).mean().iloc[-1]
-            rec = {"CERT": cert, "NAME": group['NAME'].iloc[-1]}
-            rec.update(avgs.to_dict())
-            results.append(rec)
-        return pd.DataFrame(results).set_index('CERT') if results else pd.DataFrame()
-
     def create_latest_snapshot(self, proc_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Creates a snapshot of the most recent data for the Summary Dashboard.
+
+        UPDATES:
+        - Filters out intermediate YTD and Quarterly NCO columns.
+        - Only exports the final TTM (Trailing 12-Month) metrics.
+        """
         if proc_df.empty: return pd.DataFrame()
-        latest = proc_df[proc_df['REPDTE'] == proc_df['REPDTE'].max()].copy()
+
+        latest_date = proc_df['REPDTE'].max()
+        latest = proc_df[proc_df['REPDTE'] == latest_date].copy()
+
         snapshot = latest[['CERT', 'NAME', 'REPDTE']].copy()
 
         # 1. Base Metrics
-        for m in ['LNLS', 'Total_ACL', 'Total_Capital', 'Allowance_to_Gross_Loans_Rate', 'TTM_NCO_Rate']:
-             snapshot[m] = latest.get(m, np.nan)
+        base_metrics = [
+            'ASSET', 'LNLS', 'Total_ACL', 'Total_Capital',
+            'Allowance_to_Gross_Loans_Rate', 'Nonaccrual_to_Gross_Loans_Rate',
+            'Risk_Adj_Allowance_Coverage',
+            'TTM_NCO_Rate', 'TTM_Past_Due_Rate', 'ACL_Integrity_Status'
+        ]
+        for m in base_metrics:
+            if m in latest.columns:
+                snapshot[m] = latest[m]
 
-        # 2. V6 Segment Metrics
-        for cat in LOAN_CATEGORIES.keys():
-            snapshot[f'{cat}_TTM_NA_Rate'] = latest.get(f'{cat}_TTM_NA_Rate', np.nan)
-            snapshot[f'{cat}_Composition'] = latest.get(f'{cat}_Composition', np.nan)
+        # 2. Special Portfolios
+        special_metrics = [
+            'SBL_Balance', 'SBL_Growth_TTM',
+            'Fund_Finance_Balance', 'Fund_Finance_Growth_TTM'
+        ]
+        for m in special_metrics:
+            if m in latest.columns:
+                snapshot[m] = latest[m]
 
-        # 3. Scatter Plot Metrics (Group ACL Share vs Loan Share)
-        groups = ['Commercial', 'Residential', 'CRE', 'OtherSBL']
-        for g in groups:
-            snapshot[f'Group_{g}_ACL_Share'] = latest.get(f'Group_{g}_ACL_Share', np.nan) * 100 # Convert to %
-            snapshot[f'Group_{g}_Loan_Share'] = latest.get(f'Group_{g}_Loan_Share', np.nan) * 100 # Convert to %
-
-        # 4. RRI Metrics
-        for rri in ['RRI_Commercial', 'RRI_Residential', 'RRI_CRE', 'RRI_Other_SBL']:
-            snapshot[rri] = latest.get(rri, np.nan)
-
-        # 5. Raw RI-C Pcts (Optional, for reference)
+        # 3. Dynamic RI-C II Segment Metrics
         for col in latest.columns:
-            if col.startswith('RIC_'):
-                snapshot[col] = latest[col] * 100
+            if not col.startswith('RIC_'): continue
+
+            # EXCLUSION: Do not export intermediate YTD or Q columns
+            if '_YTD' in col or '_Q' in col:
+                continue
+
+            # A. Dollar Columns (Cost, ACL, NCO_TTM) -> Keep raw values
+            if any(x in col for x in ['_Cost', '_ACL', '_NCO_TTM', '_Balance', '_Nonaccrual', '_PD30', '_PD90']):
+                # Ensure we don't accidentally grab rates that contain these strings
+                if '_Rate' not in col and '_Share' not in col and '_Coverage' not in col:
+                    snapshot[col] = latest[col]
+                    continue
+
+            # B. Ratios & Rates -> Keep decimal
+            if any(x in col for x in ['_Rate', '_Share', '_Coverage', '_Mismatch', '_Pct']):
+                snapshot[col] = latest[col]
+                continue
+
+            # C. Integers / Years
+            if '_Years_of_Reserves' in col:
+                snapshot[col] = latest[col]
+                continue
+
+            # D. Catch-all (Status flags, etc.)
+            snapshot[col] = latest[col]
+
+        # 4. Growth Metrics
+        for col in latest.columns:
+            if '_Growth_TTM' in col:
+                snapshot[col] = latest[col]
 
         return snapshot.set_index('CERT')
 
@@ -3832,6 +4352,17 @@ class BankPerformanceDashboard:
             # Dollars in $000 → display $M (scale 1e-3)
             {"MetricCode":"ASSET", "Display":"Assets",                      "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":0, "Basis":"level"},
             {"MetricCode":"LNLS",  "Display":"Gross Loans",                 "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":0, "Basis":"level"},
+            # --- NEW: Risk-Adjusted Coverage (Ratio, e.g. 1.5x) ---
+            {"MetricCode":"RIC_CRE_Risk_Adj_Coverage", "Display":"CRE Risk-Adj Coverage", "DisplayUnit":"x", "Scale":1.0, "Fmt":"ratio", "Decimals":2, "Basis":"ratio"},
+            {"MetricCode":"RIC_Resi_Risk_Adj_Coverage", "Display":"Resi Risk-Adj Coverage", "DisplayUnit":"x", "Scale":1.0, "Fmt":"ratio", "Decimals":2, "Basis":"ratio"},
+            {"MetricCode":"RIC_Comm_Risk_Adj_Coverage", "Display":"C&I Risk-Adj Coverage", "DisplayUnit":"x", "Scale":1.0, "Fmt":"ratio", "Decimals":2, "Basis":"ratio"},
+
+            # --- NEW: Burn Rate (Years) ---
+            {"MetricCode":"RIC_CRE_Years_of_Reserves", "Display":"CRE Years of Reserves", "DisplayUnit":"Yrs", "Scale":1.0, "Fmt":"number", "Decimals":1, "Basis":"ratio"},
+
+            # --- NEW: Growth Rates (Percent) ---
+            {"MetricCode":"CRE_Growth_TTM", "Display":"CRE Growth (YoY)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"percent"},
+            {"MetricCode":"SBL_Growth_TTM", "Display":"SBL Growth (YoY)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"percent"},
 
             # Ratios: mark as 'percent' (already %) OR 'fraction' (0–1) depending on your upstream
             # Given your HTML shows 8.86% (too big), your upstream is ALREADY percent → use Basis='percent' and Scale=1.0
