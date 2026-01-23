@@ -1,0 +1,3217 @@
+#CHUNK ONE:
+
+# Master Prompt: AI-Native Split-RAG System Build v2.1
+## Microsoft Corporate Environment — Production-Grade Specification
+
+**Document Version:** 2.1  
+**Target Audience:** Code-generation AI models  
+**Specification Type:** Deterministic implementation contract  
+**Revision Note:** Fixes spec inconsistencies in v2.0 (import lists, artifact completeness, Docling contract)
+
+---
+
+## SECTION 0: EXECUTION PROTOCOL FOR CODE-GENERATION AI
+
+### 0.1 Spec Canonicalization Rules (Binding — Resolves Ambiguity)
+
+```
+CANON_001: Python standard library is ALWAYS permitted unless explicitly listed in "Forbidden Imports".
+CANON_002: For Tier-2 (Copilot Studio sandbox), the ONLY external dependency is pandas. All stdlib is allowed.
+CANON_003: Configuration files use JSON format. PyYAML is NOT a dependency.
+CANON_004: When a section is marked [TEMPLATE], the AI must complete it using patterns from [EXACT] blocks.
+CANON_005: If two sections conflict, the LOWER section number takes precedence (Section 0 > Section 1 > Section 2...).
+CANON_006: extractor.py is assembled from Section 3 templates + Section 5.6 skeleton. It is NOT provided verbatim.
+```
+
+### 0.2 Interpretation Rules (Binding)
+
+```
+RULE_001: Treat all code blocks labeled [EXACT] as copy-paste implementations. Do not modify.
+RULE_002: Treat all code blocks labeled [TEMPLATE] as structural guidance requiring completion.
+RULE_003: When multiple approaches exist, select the one explicitly marked [PREFERRED].
+RULE_004: If a requirement conflicts with another, the lower section number takes precedence.
+RULE_005: All function signatures shown are contracts. Match exactly: name, parameters, return type.
+RULE_006: Comments starting with #REQUIRED indicate mandatory implementation details.
+RULE_007: Comments starting with #OPTIONAL indicate features that may be omitted in v1.0.
+RULE_008: All paths use forward slashes internally; bootstrap.bat converts for Windows.
+```
+
+### 0.3 Verification Checkpoints
+
+After generating each file, the AI must mentally verify:
+
+| Checkpoint | Verification Question | Failure Action |
+|------------|----------------------|----------------|
+| CP-001 | Does every function have explicit return type hints? | Add type hints |
+| CP-002 | Does every try block have specific exception types? (Exception allowed ONLY at library boundaries with immediate rethrow as custom error) | Specify exceptions or document boundary |
+| CP-003 | Are all string literals using raw strings where paths are involved? | Convert to r"" or Path() |
+| CP-004 | Does the code import only from the approved library list? | Remove unauthorized imports |
+| CP-005 | Are all magic numbers defined as named constants? | Extract to config or constants |
+
+### 0.4 Output Artifact Checklist
+
+The AI must produce exactly these 7 files in this order:
+
+```
+□ 1. bootstrap.bat              (Section 5.1 — [EXACT])
+□ 2. config.json                (Section 5.2 — [EXACT], replaces config.yaml)
+□ 3. rules.json                 (Section 5.3 — [EXACT], replaces rules.yaml)
+□ 4. requirements.txt           (Section 5.4 — [EXACT])
+□ 5. schema_v1.py               (Section 5.5 — [EXACT])
+□ 6. extractor.py               (Section 5.6 — [ASSEMBLED from Section 3 templates])
+□ 7. copilot_tier2.py           (Section 4.1 — [EXACT])
+```
+
+**Assembly instruction for extractor.py:**
+```
+extractor.py = 
+    Section 2.3 (ID generation functions — [EXACT]) +
+    Section 3.1 (main control flow — [TEMPLATE], complete per spec) +
+    Section 3.2 (file discovery — [EXACT]) +
+    Section 3.3 (manifest management — [EXACT]) +
+    Section 3.4 (Docling extraction — [TEMPLATE], complete per 3.4.1 mapping) +
+    Section 3.5 (pdfplumber fallback — [TEMPLATE], complete per spec) +
+    Section 3.6 (Office native — [TEMPLATE], complete per spec) +
+    Section 3.7 (table conversion — [EXACT]) +
+    Section 3.8 (chunking — [EXACT]) +
+    Section 3.9 (image filtering — [EXACT]) +
+    Section 3.10 (confidence scoring — [EXACT]) +
+    Section 5.6 (skeleton imports, argparse, __main__ — [EXACT])
+```
+
+---
+
+## SECTION 1: AUTHORITATIVE ENVIRONMENT CONSTRAINTS
+
+### 1.1 Tier 1 Environment (Local Anaconda)
+
+```json
+{
+  "python_version": "3.11.x",
+  "platform": "Windows 10/11 x64",
+  "shell": "cmd.exe via bootstrap.bat",
+  "working_directory": "{USER_PROVIDED_PATH}",
+  "config_format": "JSON (not YAML)"
+}
+```
+
+#### 1.1.1 Approved Import Statements (Exhaustive List)
+
+```python
+# [EXACT] — Only these imports are permitted in Tier 1 code
+
+# === AI/Extraction ===
+from docling.document_converter import DocumentConverter
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+import pdfplumber
+
+# === Validation ===
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import ValidationError
+from typing import Optional, Literal, Any
+
+# === Data Processing ===
+import pandas as pd
+import numpy as np
+
+# === Office/XML Parsing ===
+import openpyxl
+from openpyxl import load_workbook
+from lxml import etree
+import zipfile
+import xml.etree.ElementTree as ET
+
+# === Imaging ===
+from PIL import Image, ImageFilter
+
+# === Standard Library (always available per CANON_001) ===
+import argparse
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import re
+import sys
+import io
+import csv
+import time
+from pathlib import Path
+from datetime import datetime, timezone
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Tuple, Optional, Union, Literal, Any, Generator, Set
+from collections import defaultdict
+from functools import lru_cache
+
+# === Progress/HTTP (optional features) ===
+from tqdm import tqdm
+import aiohttp
+import requests
+```
+
+#### 1.1.2 Forbidden Imports (Will Cause Runtime Failure)
+
+```python
+# [EXACT] — These imports MUST NOT appear anywhere in Tier 1 code
+import fitz           # FORBIDDEN: pymupdf not available
+import pymupdf        # FORBIDDEN: alias for fitz
+import torch          # FORBIDDEN: not needed, heavy dependency
+import transformers   # FORBIDDEN: not in approved list
+import openai         # FORBIDDEN: no external API calls
+import anthropic      # FORBIDDEN: no external API calls
+import langchain      # FORBIDDEN: not approved
+import llama_index    # FORBIDDEN: not approved
+import yaml           # FORBIDDEN: use JSON configs instead (CANON_003)
+import PyYAML         # FORBIDDEN: alias, same reason
+```
+
+### 1.2 Tier 2 Environment (Copilot Studio Sandbox)
+
+```json
+{
+  "python_version": "3.10.x or 3.11.x (Microsoft-controlled)",
+  "execution_model": "Stateless per-invocation",
+  "filesystem_access": "Read-only to SharePoint-mounted paths",
+  "network_access": "None",
+  "max_execution_time": "30 seconds",
+  "max_memory": "256 MB",
+  "external_dependencies": ["pandas"],
+  "stdlib_policy": "All standard library modules permitted"
+}
+```
+
+#### 1.2.1 Tier 2 Approved Imports (Complete List)
+
+```python
+# [EXACT] — These imports are available in Copilot Studio sandbox
+
+# === External (ONLY pandas) ===
+import pandas as pd
+
+# === Standard Library (all permitted per CANON_001/CANON_002) ===
+import json
+import re
+import sys
+import io
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime
+from collections import defaultdict
+```
+
+#### 1.2.2 Tier 2 Forbidden (Will Cause Import Error)
+
+```python
+# These will crash the sandbox — do not attempt
+from pydantic import *      # FORBIDDEN: external lib
+import docling              # FORBIDDEN: external lib
+import pdfplumber           # FORBIDDEN: external lib
+import openpyxl             # FORBIDDEN: external lib
+import numpy as np          # FORBIDDEN: external lib (not guaranteed)
+from PIL import Image       # FORBIDDEN: external lib
+import requests             # FORBIDDEN: external lib
+import aiohttp              # FORBIDDEN: external lib
+import yaml                 # FORBIDDEN: external lib
+```
+
+---
+
+## SECTION 1.3: ARTIFACT RESTATEMENT (AI Verification Block)
+
+Before proceeding, the AI must confirm understanding by mentally verifying:
+
+### Import Verification
+
+**Tier 1 — I WILL import:**
+- docling (DocumentConverter, PdfPipelineOptions, TableFormerMode)
+- pdfplumber
+- pydantic (BaseModel, Field, validators)
+- pandas, numpy
+- openpyxl, lxml, zipfile
+- PIL (Image, ImageFilter)
+- All Python stdlib (json, re, pathlib, logging, hashlib, datetime, typing, collections, dataclasses, argparse, time, io, sys, os, csv, asyncio, functools)
+- tqdm, aiohttp, requests (optional features)
+
+**Tier 1 — I will NOT import:**
+- yaml/PyYAML (configs are JSON)
+- fitz/pymupdf
+- torch, transformers
+- openai, anthropic, langchain, llama_index
+
+**Tier 2 — I WILL import:**
+- pandas (only external dependency)
+- All Python stdlib needed (json, re, typing, datetime, collections, pathlib, sys, io)
+
+**Tier 2 — I will NOT import:**
+- Any external library except pandas
+
+### Artifact Verification
+
+**I will produce exactly 7 files:**
+
+| # | Filename | Source | Type |
+|---|----------|--------|------|
+| 1 | `bootstrap.bat` | Section 5.1 | [EXACT] copy |
+| 2 | `config.json` | Section 5.2 | [EXACT] copy |
+| 3 | `rules.json` | Section 5.3 | [EXACT] copy |
+| 4 | `requirements.txt` | Section 5.4 | [EXACT] copy |
+| 5 | `schema_v1.py` | Section 5.5 | [EXACT] copy |
+| 6 | `extractor.py` | Sections 2.3 + 3.x + 5.6 | [ASSEMBLED] |
+| 7 | `copilot_tier2.py` | Section 4.1 | [EXACT] copy |
+
+### Config Format Verification
+
+- Configuration files are **JSON** (not YAML)
+- `config.json` replaces `config.yaml`
+- `rules.json` replaces `rules.yaml`
+- No PyYAML dependency required
+
+---
+
+*End of Chunk 1 — Sections 0 and 1 Complete*
+
+*Next: Chunk 2 will contain Section 2 (Data Contract) and Section 3 (Tier 1 Extraction Algorithms)*
+# Split-RAG Specification v2.1 — Chunk 2
+## Section 2: Data Contract + Section 3: Tier 1 Extraction Algorithms
+
+---
+
+## SECTION 2: DATA CONTRACT — Context Graph Schema v1.0
+
+### 2.1 Output File Naming Convention
+
+```python
+# [EXACT] Naming function
+def get_output_filename(input_path: Path) -> str:
+    """
+    Input:  /input/Q3_2024_Loan_Tape.pdf
+    Output: Q3_2024_Loan_Tape.json
+    
+    Input:  /input/Board Report (Final).docx
+    Output: Board Report (Final).json
+    """
+    return f"{input_path.stem}.json"
+```
+
+### 2.2 Complete JSON Schema (With Examples)
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "context_graph_v1.0",
+  "type": "object",
+  "required": ["schema_version", "document", "nodes"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "document": {
+      "type": "object",
+      "required": ["id", "name", "type", "source_path", "page_count", "file_md5", "processed_at", "status"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$",
+          "description": "MD5 hash of file bytes"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Original filename with extension"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["pdf", "docx", "xlsx"]
+        },
+        "source_path": {
+          "type": "string",
+          "description": "Path relative to working directory"
+        },
+        "page_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "file_md5": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "processed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 with timezone: 2025-01-22T10:30:00+00:00"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["processed", "skipped", "failed", "partial"]
+        },
+        "status_reason": {
+          "type": ["string", "null"]
+        },
+        "extractor_used": {
+          "type": "string",
+          "enum": ["docling", "pdfplumber", "office_native"],
+          "description": "Which extraction path succeeded"
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["chunk_id", "parent_section_id", "parent_section_title", "content_type", "content", "confidence_interval", "verified_content", "metadata"],
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{8}_[a-z_]+_[a-f0-9]{12}$",
+            "description": "Format: {doc_id[:8]}_{content_type}_{source_chunk_id[:12]}"
+          },
+          "parent_section_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{16}$"
+          },
+          "parent_section_title": {
+            "type": "string",
+            "minLength": 1,
+            "default": "UNSPECIFIED"
+          },
+          "content_type": {
+            "type": "string",
+            "enum": ["header", "text", "table", "image_caption"]
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "confidence_interval": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "verified_content": {
+            "type": "boolean",
+            "default": false
+          },
+          "metadata": {
+            "type": "object",
+            "required": ["page_number", "source_chunk_id"],
+            "properties": {
+              "page_number": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "1-indexed for PDFs, 0 for non-paginated formats"
+              },
+              "bbox": {
+                "type": ["array", "null"],
+                "items": {"type": "number"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "[x0, y0, x1, y1] in points from top-left"
+              },
+              "is_data_image": {
+                "type": ["boolean", "null"]
+              },
+              "edge_density": {
+                "type": ["number", "null"],
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "table_shape": {
+                "type": ["object", "null"],
+                "properties": {
+                  "rows": {"type": "integer", "minimum": 0},
+                  "cols": {"type": "integer", "minimum": 0}
+                }
+              },
+              "source_chunk_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{32}$"
+              },
+              "char_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "extraction_warnings": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "processing_stats": {
+      "type": "object",
+      "properties": {
+        "total_nodes": {"type": "integer"},
+        "nodes_by_type": {
+          "type": "object",
+          "additionalProperties": {"type": "integer"}
+        },
+        "total_chars": {"type": "integer"},
+        "extraction_duration_ms": {"type": "integer"},
+        "validation_errors_count": {"type": "integer"}
+      }
+    }
+  }
+}
+```
+
+### 2.3 Deterministic ID Generation (Exact Algorithm)
+
+```python
+# [EXACT] — Copy these functions verbatim
+
+import hashlib
+from pathlib import Path
+
+def compute_file_md5(file_path: Path, chunk_size: int = 8192) -> str:
+    """
+    Compute MD5 hash of file contents using chunked reading.
+    
+    REQUIRED: Use chunked reading to handle large files without memory issues.
+    REQUIRED: Return lowercase hex string, always 32 characters.
+    
+    Example:
+        Input: Path("input/report.pdf") containing bytes b"Hello World"
+        Output: "b10a8db164e0754105b7a99be72e3fe5"
+    """
+    md5_hash = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            md5_hash.update(chunk)
+    return md5_hash.hexdigest().lower()
+
+
+def compute_document_id(file_md5: str) -> str:
+    """
+    Document ID is simply the file MD5.
+    
+    Example:
+        Input: "b10a8db164e0754105b7a99be72e3fe5"
+        Output: "b10a8db164e0754105b7a99be72e3fe5"
+    """
+    return file_md5
+
+
+def compute_parent_section_id(source_path: str, section_title: str) -> str:
+    """
+    Generate stable section ID from path + title.
+    
+    REQUIRED: Normalize section_title (strip whitespace, lowercase) before hashing.
+    REQUIRED: Return first 16 characters of hex digest.
+    
+    Example:
+        Input: source_path="input/report.pdf", section_title="Credit Quality Metrics"
+        Normalized: "input/report.pdf|credit quality metrics"
+        Output: "a3f2b1c4d5e6f7a8" (first 16 chars of MD5)
+    """
+    normalized_title = section_title.strip().lower()
+    content = f"{source_path}|{normalized_title}"
+    return hashlib.md5(content.encode("utf-8")).hexdigest()[:16].lower()
+
+
+def compute_source_chunk_id(
+    source_path: str,
+    parent_section_title: str,
+    content_type: str,
+    content: str
+) -> str:
+    """
+    Generate stable chunk content hash.
+    
+    REQUIRED: Include all four components in hash input.
+    REQUIRED: Normalize content (strip leading/trailing whitespace only).
+    REQUIRED: Return full 32-character hex digest.
+    
+    Example:
+        Input: 
+            source_path="input/report.pdf"
+            parent_section_title="Summary"
+            content_type="text"
+            content="The portfolio performed well in Q3."
+        Hash input: "input/report.pdf|Summary|text|The portfolio performed well in Q3."
+        Output: "7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f"
+    """
+    content_normalized = content.strip()
+    hash_input = f"{source_path}|{parent_section_title}|{content_type}|{content_normalized}"
+    return hashlib.md5(hash_input.encode("utf-8")).hexdigest().lower()
+
+
+def compute_chunk_id(
+    document_id: str,
+    content_type: str,
+    source_chunk_id: str
+) -> str:
+    """
+    Generate human-readable chunk ID.
+    
+    Format: {document_id[:8]}_{content_type}_{source_chunk_id[:12]}
+    
+    REQUIRED: content_type must be lowercase with underscores (no spaces).
+    
+    Example:
+        Input:
+            document_id="b10a8db164e0754105b7a99be72e3fe5"
+            content_type="table"
+            source_chunk_id="7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f"
+        Output: "b10a8db1_table_7c8d9e0f1a2b"
+    """
+    content_type_clean = content_type.lower().replace(" ", "_")
+    return f"{document_id[:8]}_{content_type_clean}_{source_chunk_id[:12]}"
+```
+
+---
+
+## SECTION 3: TIER 1 EXTRACTION ENGINE — DETAILED ALGORITHMS
+
+### 3.0 Extracted Element Data Class
+
+```python
+# [EXACT] — Intermediate representation used by all extractors
+
+from dataclasses import dataclass, field
+from typing import List, Tuple, Optional
+
+@dataclass
+class ExtractedElement:
+    """Intermediate representation before chunking."""
+    content_type: str  # "header" | "text" | "table" | "image_caption"
+    content: str
+    page_number: int
+    section_title: str
+    bbox: Optional[Tuple[float, float, float, float]] = None
+    table_shape: Optional[Tuple[int, int]] = None  # (rows, cols)
+    confidence: float = 0.95
+    warnings: List[str] = field(default_factory=list)
+```
+
+### 3.1 Master Control Flow (extractor.py Main Function)
+
+```python
+# [TEMPLATE] — Main execution flow. Complete using patterns from other sections.
+
+def main(working_dir: Path) -> int:
+    """
+    Main entry point for extraction.
+    
+    Returns:
+        0 = success (all files processed or skipped)
+        1 = partial success (some files failed)
+        2 = total failure (no files processed)
+    
+    REQUIRED execution order:
+    1. Load configuration (config.json, rules.json)
+    2. Initialize logging
+    3. Load/create manifest
+    4. Discover input files
+    5. For each file:
+       a. Check manifest (skip if unchanged)
+       b. Compute MD5
+       c. Extract with primary method (Docling for PDF, native for Office)
+       d. If primary fails, use fallback (pdfplumber for PDF)
+       e. Process images (edge density filter) — OPTIONAL v1
+       f. Chunk content (Section 3.8)
+       g. Generate IDs (Section 2.3)
+       h. Validate with Pydantic (schema_v1.py)
+       i. Write JSON output
+       j. Update manifest
+    6. Write final manifest
+    7. Log summary statistics
+    """
+    # Implementation assembles from Sections 3.2-3.10
+    pass
+```
+
+### 3.2 File Discovery Algorithm
+
+```python
+# [EXACT] — File discovery function
+
+from pathlib import Path
+from typing import List, Set
+
+SUPPORTED_EXTENSIONS: Set[str] = {".pdf", ".docx", ".xlsx"}
+
+def discover_input_files(input_dir: Path) -> List[Path]:
+    """
+    Find all processable files in input directory.
+    
+    REQUIRED: Non-recursive (only top-level files).
+    REQUIRED: Case-insensitive extension matching.
+    REQUIRED: Skip hidden files (starting with .).
+    REQUIRED: Skip temporary files (starting with ~).
+    REQUIRED: Return sorted list for deterministic ordering.
+    
+    Example:
+        input_dir contains:
+            - report.pdf
+            - data.XLSX
+            - .hidden.pdf
+            - ~temp.docx
+            - notes.txt
+        
+        Returns: [Path("input/data.XLSX"), Path("input/report.pdf")]
+        (sorted alphabetically, hidden/temp/unsupported excluded)
+    """
+    files = []
+    for item in input_dir.iterdir():
+        if not item.is_file():
+            continue
+        if item.name.startswith(".") or item.name.startswith("~"):
+            continue
+        if item.suffix.lower() in SUPPORTED_EXTENSIONS:
+            files.append(item)
+    
+    return sorted(files, key=lambda p: p.name.lower())
+```
+
+### 3.3 Manifest Management
+
+```python
+# [EXACT] — Manifest schema and operations
+
+from dataclasses import dataclass, asdict, field
+from typing import Dict, Optional
+import json
+from pathlib import Path
+from datetime import datetime, timezone
+
+@dataclass
+class ManifestEntry:
+    md5: str
+    status: str  # "processed" | "failed" | "skipped" | "partial"
+    processed_at: str  # ISO-8601
+    output_file: Optional[str] = None
+    error_message: Optional[str] = None
+
+@dataclass
+class Manifest:
+    schema_version: str = "1.0.0"
+    files: Dict[str, ManifestEntry] = field(default_factory=dict)
+
+
+def load_manifest(manifest_path: Path) -> Manifest:
+    """
+    Load existing manifest or create new one.
+    
+    REQUIRED: Handle missing file gracefully.
+    REQUIRED: Handle corrupted JSON gracefully (return empty manifest).
+    """
+    if not manifest_path.exists():
+        return Manifest()
+    
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        files = {}
+        for path, entry_data in data.get("files", {}).items():
+            files[path] = ManifestEntry(**entry_data)
+        
+        return Manifest(
+            schema_version=data.get("schema_version", "1.0.0"),
+            files=files
+        )
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return Manifest()
+
+
+def save_manifest(manifest: Manifest, manifest_path: Path) -> None:
+    """
+    Atomically save manifest to disk.
+    
+    REQUIRED: Write to temp file first, then rename (atomic on Windows with same drive).
+    """
+    temp_path = manifest_path.with_suffix(".tmp")
+    
+    data = {
+        "schema_version": manifest.schema_version,
+        "files": {k: asdict(v) for k, v in manifest.files.items()}
+    }
+    
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    
+    temp_path.replace(manifest_path)
+
+
+def should_process_file(file_path: Path, file_md5: str, manifest: Manifest, config: dict) -> bool:
+    """
+    Determine if file needs processing.
+    
+    Returns True if:
+        - File not in manifest
+        - File MD5 has changed
+        - Previous status was "failed" (retry if configured)
+    
+    Returns False if:
+        - File in manifest with same MD5 and status "processed"
+    """
+    key = str(file_path.relative_to(file_path.parent.parent))  # Use relative path for portability
+    
+    if key not in manifest.files:
+        return True
+    
+    entry = manifest.files[key]
+    
+    if entry.md5 != file_md5:
+        return True
+    
+    if entry.status == "failed" and config.get("processing", {}).get("retry_failed", True):
+        return True
+    
+    return False
+```
+
+### 3.4 Primary Extraction: Docling
+
+#### 3.4.1 Docling Field Mapping Contract (BINDING)
+
+```
+# [EXACT] — This mapping is deterministic and must be followed precisely.
+# If a Docling field is missing, use the specified fallback.
+
+DOCLING RESULT STRUCTURE:
+    result = converter.convert(file_path)
+    result.document  → ConversionResult.document
+
+DOCUMENT-LEVEL FIELDS:
+    Field: result.document.pages
+    Type: List[Page] or None
+    Use: len(result.document.pages) → page_count
+    Fallback if missing: page_count = 0
+
+ELEMENT ITERATION:
+    Method: result.document.iterate_items()
+    Yields: Tuple[item, level] where item has .label and content
+
+ELEMENT TYPE MAPPING (item.label → content_type):
+    "title"           → "header"
+    "section_header"  → "header"  
+    "heading"         → "header"
+    "paragraph"       → "text"
+    "text"            → "text"
+    "list_item"       → "text"
+    "table"           → "table"
+    "picture"         → skip (or "image_caption" if caption exists)
+    "caption"         → "image_caption"
+    "formula"         → "text"
+    "code"            → "text"
+    "footnote"        → "text"
+    (unknown)         → "text"
+
+CONTENT EXTRACTION BY TYPE:
+    For text-like items (paragraph, text, list_item, etc.):
+        content = item.text if hasattr(item, 'text') else str(item)
+    
+    For tables:
+        if hasattr(item, 'export_to_markdown'):
+            content = item.export_to_markdown()
+        elif hasattr(item, 'to_dataframe'):
+            df = item.to_dataframe()
+            content = table_to_markdown(df.values.tolist())  # Use Section 3.7
+        else:
+            content = str(item)
+        
+        # Table shape
+        rows = content.count('\n')
+        cols = content.split('\n')[0].count('|') - 1 if '|' in content else 0
+
+PAGE NUMBER EXTRACTION:
+    if hasattr(item, 'prov') and item.prov:
+        page_number = item.prov[0].page_no if item.prov[0].page_no else 1
+    else:
+        page_number = 1  # Fallback
+
+BOUNDING BOX EXTRACTION:
+    if hasattr(item, 'prov') and item.prov and hasattr(item.prov[0], 'bbox'):
+        bbox = (item.prov[0].bbox.l, item.prov[0].bbox.t, 
+                item.prov[0].bbox.r, item.prov[0].bbox.b)
+    else:
+        bbox = None
+
+SECTION TITLE TRACKING:
+    Maintain current_section = "UNSPECIFIED"
+    When content_type == "header":
+        current_section = content
+    Assign current_section to all subsequent elements until next header
+```
+
+#### 3.4.2 Docling Extraction Implementation
+
+```python
+# [TEMPLATE] — Complete using the mapping contract in 3.4.1
+
+from pathlib import Path
+from typing import List, Tuple
+
+def extract_with_docling(
+    file_path: Path,
+    config: dict
+) -> Tuple[List[ExtractedElement], int, str]:
+    """
+    Primary extraction using Docling library.
+    
+    Args:
+        file_path: Path to PDF file
+        config: Configuration dictionary with Docling settings
+    
+    Returns:
+        Tuple of:
+            - List of ExtractedElement objects
+            - Page count (int)
+            - Extractor name ("docling")
+    
+    Raises:
+        ExtractionError: If Docling fails to process the document
+    
+    IMPLEMENTATION REQUIREMENTS:
+    1. Import DocumentConverter from docling.document_converter
+    2. Create converter instance
+    3. Call converter.convert(str(file_path))
+    4. Iterate result.document.iterate_items()
+    5. Map each item using the contract in Section 3.4.1
+    6. Track current_section for parent_section_title
+    7. Return elements, page_count, "docling"
+    
+    EXCEPTION HANDLING (per CP-002):
+    - Catch specific docling exceptions if known
+    - At library boundary, catch Exception and rethrow as ExtractionError
+    """
+    try:
+        from docling.document_converter import DocumentConverter
+    except ImportError as e:
+        raise ExtractionError(f"Docling import failed: {e}") from e
+    
+    elements: List[ExtractedElement] = []
+    current_section = "UNSPECIFIED"
+    page_count = 0
+    
+    try:
+        converter = DocumentConverter()
+        result = converter.convert(str(file_path))
+        
+        # Get page count
+        if hasattr(result, 'document') and hasattr(result.document, 'pages'):
+            page_count = len(result.document.pages) if result.document.pages else 0
+        
+        # Type mapping per 3.4.1
+        LABEL_TO_TYPE = {
+            "title": "header",
+            "section_header": "header",
+            "heading": "header",
+            "paragraph": "text",
+            "text": "text",
+            "list_item": "text",
+            "table": "table",
+            "caption": "image_caption",
+            "formula": "text",
+            "code": "text",
+            "footnote": "text",
+        }
+        
+        # Iterate elements
+        if hasattr(result, 'document') and hasattr(result.document, 'iterate_items'):
+            for item, level in result.document.iterate_items():
+                # Get label
+                label = getattr(item, 'label', 'text').lower() if hasattr(item, 'label') else 'text'
+                
+                # Skip pictures without captions
+                if label == 'picture':
+                    continue
+                
+                # Map to content_type
+                content_type = LABEL_TO_TYPE.get(label, "text")
+                
+                # Extract content
+                if label == 'table':
+                    if hasattr(item, 'export_to_markdown'):
+                        content = item.export_to_markdown()
+                    elif hasattr(item, 'to_dataframe'):
+                        df = item.to_dataframe()
+                        content = table_to_markdown(df.values.tolist())
+                    else:
+                        content = str(item)
+                    
+                    # Calculate table shape
+                    lines = content.strip().split('\n')
+                    rows = max(0, len(lines) - 1)  # Exclude separator
+                    cols = lines[0].count('|') - 1 if lines and '|' in lines[0] else 0
+                    table_shape = (rows, cols)
+                else:
+                    content = item.text if hasattr(item, 'text') else str(item)
+                    table_shape = None
+                
+                # Skip empty content
+                if not content or not content.strip():
+                    continue
+                
+                # Extract page number
+                page_number = 1
+                if hasattr(item, 'prov') and item.prov:
+                    prov = item.prov[0] if isinstance(item.prov, list) else item.prov
+                    if hasattr(prov, 'page_no') and prov.page_no:
+                        page_number = prov.page_no
+                
+                # Extract bbox
+                bbox = None
+                if hasattr(item, 'prov') and item.prov:
+                    prov = item.prov[0] if isinstance(item.prov, list) else item.prov
+                    if hasattr(prov, 'bbox') and prov.bbox:
+                        b = prov.bbox
+                        bbox = (b.l, b.t, b.r, b.b) if hasattr(b, 'l') else None
+                
+                # Update section tracking
+                if content_type == "header":
+                    current_section = content.strip()
+                
+                # Create element
+                elements.append(ExtractedElement(
+                    content_type=content_type,
+                    content=content.strip(),
+                    page_number=page_number,
+                    section_title=current_section,
+                    bbox=bbox,
+                    table_shape=table_shape,
+                    confidence=0.95,
+                    warnings=[]
+                ))
+        
+        return elements, page_count, "docling"
+    
+    except Exception as e:
+        # Library boundary exception handling per CP-002
+        raise ExtractionError(f"Docling extraction failed: {str(e)}") from e
+
+
+class ExtractionError(Exception):
+    """Raised when primary extraction fails."""
+    pass
+```
+
+### 3.5 Fallback Extraction: pdfplumber
+
+```python
+# [TEMPLATE] — pdfplumber fallback for PDFs
+
+import pdfplumber
+import re
+from pathlib import Path
+from typing import List, Tuple
+
+def extract_with_pdfplumber(
+    file_path: Path,
+    config: dict,
+    rules: dict
+) -> Tuple[List[ExtractedElement], int, str]:
+    """
+    Fallback PDF extraction using pdfplumber.
+    
+    REQUIRED: Extract both text and tables from each page.
+    REQUIRED: Attempt to detect section headers using heuristics from rules.json.
+    REQUIRED: Preserve page numbers for all elements.
+    """
+    elements = []
+    page_count = 0
+    current_section = "UNSPECIFIED"
+    
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            page_count = len(pdf.pages)
+            
+            for page_num, page in enumerate(pdf.pages, start=1):
+                # Extract text
+                text = page.extract_text() or ""
+                
+                # Accumulate lines into paragraphs
+                paragraph_lines = []
+                
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        # Flush paragraph on empty line
+                        if paragraph_lines:
+                            para_text = " ".join(paragraph_lines)
+                            if not should_skip_content(para_text, rules):
+                                elements.append(ExtractedElement(
+                                    content_type="text",
+                                    content=para_text,
+                                    page_number=page_num,
+                                    section_title=current_section,
+                                    confidence=0.85
+                                ))
+                            paragraph_lines = []
+                        continue
+                    
+                    if is_header_line(line, rules):
+                        # Flush pending paragraph
+                        if paragraph_lines:
+                            para_text = " ".join(paragraph_lines)
+                            if not should_skip_content(para_text, rules):
+                                elements.append(ExtractedElement(
+                                    content_type="text",
+                                    content=para_text,
+                                    page_number=page_num,
+                                    section_title=current_section,
+                                    confidence=0.85
+                                ))
+                            paragraph_lines = []
+                        
+                        current_section = line
+                        elements.append(ExtractedElement(
+                            content_type="header",
+                            content=line,
+                            page_number=page_num,
+                            section_title=current_section,
+                            confidence=0.75  # Lower for heuristic detection
+                        ))
+                    else:
+                        paragraph_lines.append(line)
+                
+                # Flush final paragraph
+                if paragraph_lines:
+                    para_text = " ".join(paragraph_lines)
+                    if not should_skip_content(para_text, rules):
+                        elements.append(ExtractedElement(
+                            content_type="text",
+                            content=para_text,
+                            page_number=page_num,
+                            section_title=current_section,
+                            confidence=0.85
+                        ))
+                
+                # Extract tables
+                tables = page.extract_tables()
+                for table in tables:
+                    if table and len(table) > 0:
+                        markdown_table = table_to_markdown(table)
+                        if markdown_table:
+                            elements.append(ExtractedElement(
+                                content_type="table",
+                                content=markdown_table,
+                                page_number=page_num,
+                                section_title=current_section,
+                                table_shape=(len(table), len(table[0]) if table[0] else 0),
+                                confidence=0.85
+                            ))
+        
+        return elements, page_count, "pdfplumber"
+    
+    except Exception as e:
+        raise ExtractionError(f"pdfplumber extraction failed: {str(e)}") from e
+
+
+def is_header_line(line: str, rules: dict) -> bool:
+    """
+    Determine if a line is likely a section header.
+    
+    Heuristics (configurable via rules.json):
+        1. ALL_CAPS and short (<=100 chars)
+        2. Matches numbered heading pattern
+        3. Matches additional patterns from config
+    """
+    header_rules = rules.get("header_detection", {})
+    max_len = header_rules.get("max_len", 100)
+    min_len = header_rules.get("min_len", 3)
+    all_caps_ratio = header_rules.get("all_caps_ratio", 0.8)
+    numbered_pattern = header_rules.get("numbered_heading_regex", r"^\d+\.[\d.]*\s+")
+    additional_patterns = header_rules.get("additional_patterns", [])
+    
+    line = line.strip()
+    
+    if len(line) < min_len or len(line) > max_len:
+        return False
+    
+    # Check ALL CAPS
+    alpha_chars = [c for c in line if c.isalpha()]
+    if alpha_chars:
+        upper_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
+        if upper_ratio >= all_caps_ratio:
+            return True
+    
+    # Check numbered heading
+    if re.match(numbered_pattern, line):
+        return True
+    
+    # Check additional patterns
+    for pattern in additional_patterns:
+        if re.match(pattern, line, re.IGNORECASE):
+            return True
+    
+    return False
+
+
+def should_skip_content(text: str, rules: dict) -> bool:
+    """Check if content should be skipped based on filtering rules."""
+    filtering_rules = rules.get("content_filtering", {})
+    min_length = filtering_rules.get("min_text_length", 10)
+    skip_patterns = filtering_rules.get("skip_patterns", [])
+    
+    text = text.strip()
+    
+    if len(text) < min_length:
+        return True
+    
+    for pattern in skip_patterns:
+        if re.match(pattern, text, re.IGNORECASE):
+            return True
+    
+    return False
+```
+
+### 3.6 Fallback Extraction: Office Native (DOCX/XLSX)
+
+```python
+# [TEMPLATE] — Office native extraction
+
+import zipfile
+from lxml import etree
+import openpyxl
+from openpyxl import load_workbook
+from pathlib import Path
+from typing import List, Tuple
+
+# DOCX XML namespaces
+DOCX_NS = {
+    'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+}
+
+def extract_paragraph_text(para_element, ns: dict) -> str:
+    """Extract text from a DOCX paragraph element."""
+    texts = []
+    for text_elem in para_element.iter(f"{{{ns['w']}}}t"):
+        if text_elem.text:
+            texts.append(text_elem.text)
+    return "".join(texts)
+
+
+def get_paragraph_style(para_element, ns: dict) -> str:
+    """Get style name from a DOCX paragraph element."""
+    pPr = para_element.find(f"{{{ns['w']}}}pPr", ns)
+    if pPr is not None:
+        pStyle = pPr.find(f"{{{ns['w']}}}pStyle", ns)
+        if pStyle is not None:
+            return pStyle.get(f"{{{ns['w']}}}val", "")
+    return ""
+
+
+def extract_table_from_docx_element(table_element, ns: dict) -> List[List[str]]:
+    """Extract table data from a DOCX table element."""
+    rows = []
+    for tr in table_element.iter(f"{{{ns['w']}}}tr"):
+        row = []
+        for tc in tr.iter(f"{{{ns['w']}}}tc"):
+            cell_texts = []
+            for para in tc.iter(f"{{{ns['w']}}}p"):
+                cell_texts.append(extract_paragraph_text(para, ns))
+            row.append(" ".join(cell_texts))
+        if row:
+            rows.append(row)
+    return rows
+
+
+def extract_docx_native(
+    file_path: Path,
+    config: dict,
+    rules: dict
+) -> Tuple[List[ExtractedElement], int, str]:
+    """
+    Extract content from DOCX using zipfile + lxml.
+    
+    REQUIRED: Parse word/document.xml for text content.
+    REQUIRED: Detect headings via style names (Heading1, Heading2, etc.).
+    REQUIRED: Extract tables from w:tbl elements.
+    REQUIRED: Set page_number=0 (DOCX doesn't have true pages).
+    """
+    elements = []
+    current_section = "UNSPECIFIED"
+    
+    try:
+        with zipfile.ZipFile(file_path, 'r') as docx:
+            with docx.open('word/document.xml') as doc_xml:
+                tree = etree.parse(doc_xml)
+                root = tree.getroot()
+                
+                ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                body = root.find('.//w:body', ns)
+                
+                if body is None:
+                    return elements, 0, "office_native"
+                
+                for element in body:
+                    tag = element.tag.split('}')[-1] if '}' in element.tag else element.tag
+                    
+                    if tag == 'p':
+                        text = extract_paragraph_text(element, DOCX_NS)
+                        style = get_paragraph_style(element, DOCX_NS)
+                        
+                        if not text.strip():
+                            continue
+                        
+                        if style and style.lower().startswith("heading"):
+                            current_section = text.strip()
+                            elements.append(ExtractedElement(
+                                content_type="header",
+                                content=text.strip(),
+                                page_number=0,
+                                section_title=current_section,
+                                confidence=0.95
+                            ))
+                        elif not should_skip_content(text, rules):
+                            elements.append(ExtractedElement(
+                                content_type="text",
+                                content=text.strip(),
+                                page_number=0,
+                                section_title=current_section,
+                                confidence=0.95
+                            ))
+                    
+                    elif tag == 'tbl':
+                        table_data = extract_table_from_docx_element(element, DOCX_NS)
+                        if table_data:
+                            markdown = table_to_markdown(table_data)
+                            if markdown:
+                                elements.append(ExtractedElement(
+                                    content_type="table",
+                                    content=markdown,
+                                    page_number=0,
+                                    section_title=current_section,
+                                    table_shape=(len(table_data), len(table_data[0]) if table_data[0] else 0),
+                                    confidence=0.95
+                                ))
+        
+        return elements, 0, "office_native"
+    
+    except Exception as e:
+        raise ExtractionError(f"DOCX extraction failed: {str(e)}") from e
+
+
+def extract_xlsx_native(
+    file_path: Path,
+    config: dict,
+    rules: dict
+) -> Tuple[List[ExtractedElement], int, str]:
+    """
+    Extract content from XLSX using openpyxl.
+    
+    REQUIRED: Process each sheet as a separate section.
+    REQUIRED: Convert tables to Markdown format.
+    """
+    elements = []
+    
+    try:
+        wb = load_workbook(file_path, read_only=True, data_only=True)
+        
+        for sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            current_section = f"Sheet: {sheet_name}"
+            
+            elements.append(ExtractedElement(
+                content_type="header",
+                content=current_section,
+                page_number=0,
+                section_title=current_section,
+                confidence=1.0
+            ))
+            
+            data = []
+            for row in sheet.iter_rows(values_only=True):
+                if any(cell is not None for cell in row):
+                    data.append([str(cell) if cell is not None else "" for cell in row])
+            
+            if data and len(data) > 1:
+                markdown = table_to_markdown(data)
+                if markdown:
+                    table_chunks = chunk_large_table(
+                        markdown,
+                        config.get("chunking", {}).get("table_chunk_rows", 40)
+                    )
+                    
+                    for i, chunk in enumerate(table_chunks):
+                        chunk_section = current_section if len(table_chunks) == 1 else f"{current_section} (Part {i+1})"
+                        elements.append(ExtractedElement(
+                            content_type="table",
+                            content=chunk,
+                            page_number=0,
+                            section_title=chunk_section,
+                            table_shape=(len(data), len(data[0]) if data else 0),
+                            confidence=0.95
+                        ))
+        
+        wb.close()
+        return elements, 0, "office_native"
+    
+    except Exception as e:
+        raise ExtractionError(f"XLSX extraction failed: {str(e)}") from e
+```
+
+### 3.7 Table to Markdown Conversion
+
+```python
+# [EXACT] — Table serialization algorithm
+
+from typing import List, Any
+
+def table_to_markdown(
+    table: List[List[Any]],
+    max_cell_width: int = 50
+) -> str:
+    """
+    Convert 2D table to Markdown pipe-table format.
+    
+    REQUIRED: First row is treated as header.
+    REQUIRED: Escape pipe characters in cell values.
+    REQUIRED: Truncate cells exceeding max_cell_width.
+    REQUIRED: Handle empty cells gracefully.
+    
+    Example:
+        Input: [["Name", "Value"], ["NPL Ratio", "1.23%"], ["NCO Rate", "0.45%"]]
+        Output:
+            | Name | Value |
+            |---|---|
+            | NPL Ratio | 1.23% |
+            | NCO Rate | 0.45% |
+    """
+    if not table or not table[0]:
+        return ""
+    
+    def escape_cell(value: Any) -> str:
+        """Escape pipe characters and truncate."""
+        if value is None:
+            return ""
+        value = str(value).replace("|", "\\|").replace("\n", " ").strip()
+        if len(value) > max_cell_width:
+            value = value[:max_cell_width-3] + "..."
+        return value
+    
+    col_count = len(table[0])
+    
+    header = table[0]
+    header_cells = [escape_cell(cell) for cell in header]
+    while len(header_cells) < col_count:
+        header_cells.append("")
+    
+    lines = []
+    lines.append("| " + " | ".join(header_cells) + " |")
+    lines.append("|" + "|".join(["---"] * col_count) + "|")
+    
+    for row in table[1:]:
+        cells = [escape_cell(cell) for cell in row]
+        while len(cells) < col_count:
+            cells.append("")
+        cells = cells[:col_count]
+        lines.append("| " + " | ".join(cells) + " |")
+    
+    return "\n".join(lines)
+
+
+def chunk_large_table(
+    table_markdown: str,
+    max_rows_per_chunk: int = 40
+) -> List[str]:
+    """
+    Split large tables into chunks, repeating header in each chunk.
+    
+    REQUIRED: Each chunk must include the original header row.
+    REQUIRED: Each chunk must include the separator row.
+    """
+    lines = table_markdown.strip().split("\n")
+    
+    if len(lines) <= 2:
+        return [table_markdown]
+    
+    header_line = lines[0]
+    separator_line = lines[1]
+    data_lines = lines[2:]
+    
+    if len(data_lines) <= max_rows_per_chunk:
+        return [table_markdown]
+    
+    chunks = []
+    for i in range(0, len(data_lines), max_rows_per_chunk):
+        chunk_data = data_lines[i:i + max_rows_per_chunk]
+        chunk = "\n".join([header_line, separator_line] + chunk_data)
+        chunks.append(chunk)
+    
+    return chunks
+```
+
+### 3.8 Semantic Chunking Algorithm
+
+```python
+# [EXACT] — Text chunking with overlap
+
+from typing import List, Tuple
+import re
+
+def chunk_text_content(
+    text: str,
+    max_chars: int = 6000,
+    overlap_chars: int = 200
+) -> List[Tuple[str, int, int]]:
+    """
+    Split text into chunks respecting semantic boundaries.
+    
+    Args:
+        text: Input text to chunk
+        max_chars: Maximum characters per chunk (default 6000 ≈ 1500 tokens)
+        overlap_chars: Characters to overlap between chunks
+    
+    Returns:
+        List of tuples: (chunk_text, start_char_index, end_char_index)
+    
+    REQUIRED chunking priority:
+        1. Split at paragraph boundaries (double newline)
+        2. Split at sentence boundaries (. ? !)
+        3. Split at word boundaries (space)
+        4. Hard split at max_chars (last resort)
+    
+    REQUIRED: Overlap must pull from END of previous chunk, not START of next.
+    """
+    if len(text) <= max_chars:
+        return [(text, 0, len(text))]
+    
+    chunks = []
+    current_pos = 0
+    
+    while current_pos < len(text):
+        chunk_end = min(current_pos + max_chars, len(text))
+        
+        if chunk_end < len(text):
+            chunk_text = text[current_pos:chunk_end]
+            
+            # Try paragraph boundary
+            split_pos = chunk_text.rfind("\n\n")
+            if split_pos == -1 or split_pos < max_chars * 0.5:
+                # Try sentence boundary
+                sentence_match = None
+                for match in re.finditer(r'[.!?]\s+', chunk_text):
+                    if match.end() < len(chunk_text):
+                        sentence_match = match
+                
+                if sentence_match and sentence_match.end() > max_chars * 0.5:
+                    split_pos = sentence_match.end()
+                else:
+                    # Try word boundary
+                    split_pos = chunk_text.rfind(" ")
+                    if split_pos == -1 or split_pos < max_chars * 0.5:
+                        split_pos = len(chunk_text)
+            
+            actual_end = current_pos + split_pos
+        else:
+            actual_end = chunk_end
+        
+        chunk_content = text[current_pos:actual_end].strip()
+        if chunk_content:
+            chunks.append((chunk_content, current_pos, actual_end))
+        
+        current_pos = max(actual_end - overlap_chars, current_pos + 1)
+    
+    return chunks
+```
+
+### 3.9 Image Edge Density Filter
+
+```python
+# [EXACT] — Image classification algorithm
+
+from PIL import Image, ImageFilter
+from typing import Tuple
+import io
+
+def classify_image_by_edge_density(
+    image_bytes: bytes,
+    edge_threshold: int = 40,
+    density_threshold: float = 0.10
+) -> Tuple[bool, float]:
+    """
+    Classify image as data-dense or decorative using edge detection.
+    
+    Algorithm:
+        1. Load image and convert to grayscale
+        2. Apply edge detection filter
+        3. Count pixels above edge_threshold
+        4. Calculate edge_density = edge_pixels / total_pixels
+        5. Classify: edge_density > density_threshold → data image
+    
+    Returns:
+        Tuple of (is_data_image: bool, edge_density: float)
+    """
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        if img.mode != 'L':
+            img = img.convert('L')
+        
+        edges = img.filter(ImageFilter.FIND_EDGES)
+        
+        pixels = list(edges.getdata())
+        total_pixels = len(pixels)
+        edge_pixels = sum(1 for p in pixels if p > edge_threshold)
+        
+        edge_density = edge_pixels / total_pixels if total_pixels > 0 else 0.0
+        is_data_image = edge_density > density_threshold
+        
+        return is_data_image, round(edge_density, 4)
+    
+    except Exception:
+        return False, 0.0
+```
+
+### 3.10 Confidence Scoring Heuristics
+
+```python
+# [EXACT] — Confidence calculation
+
+from typing import List, Tuple, Optional
+
+def calculate_confidence(
+    content_type: str,
+    extractor_used: str,
+    extraction_warnings: List[str],
+    table_shape: Optional[Tuple[int, int]] = None
+) -> float:
+    """
+    Calculate confidence score for extracted content.
+    
+    Base scores by extractor:
+        - docling: 0.95 (highest fidelity)
+        - pdfplumber: 0.85 (good but less structure)
+        - office_native: 0.90 (direct parsing)
+    
+    Adjustments:
+        - Headers detected heuristically: -0.10
+        - Warnings present: -0.05 per warning (max -0.15)
+        - Malformed table (cols=0 or rows<2): -0.10
+    
+    Minimum confidence: 0.50
+    Maximum confidence: 1.00
+    """
+    base_scores = {
+        "docling": 0.95,
+        "pdfplumber": 0.85,
+        "office_native": 0.90
+    }
+    confidence = base_scores.get(extractor_used, 0.80)
+    
+    if content_type == "header" and extractor_used == "pdfplumber":
+        confidence -= 0.10
+    
+    warning_penalty = min(len(extraction_warnings) * 0.05, 0.15)
+    confidence -= warning_penalty
+    
+    if content_type == "table" and table_shape:
+        rows, cols = table_shape
+        if cols == 0 or rows < 2:
+            confidence -= 0.10
+    
+    return max(0.50, min(1.00, round(confidence, 2)))
+```
+
+---
+
+*End of Chunk 2 — Sections 2 and 3 Complete*
+
+*Key fixes in this chunk:*
+- *Section 3.4.1: Added binding Docling Field Mapping Contract with exact field paths and fallbacks*
+- *Section 3.3: Changed manifest key to use relative paths for portability*
+- *All [TEMPLATE] sections now have sufficient detail to implement without guessing*
+
+*Next: Chunk 3 will contain Section 4 (Tier 2 Copilot Logic) + Section 5 (File Specifications with JSON configs)*
+
+# Split-RAG Specification v2.1 — Chunk 3
+## Section 4: Tier 2 Copilot Logic + Section 5: File Specifications
+
+---
+
+## SECTION 4: TIER 2 COPILOT STUDIO LOGIC — COMPLETE ALGORITHM
+
+### 4.1 Sandbox-Safe Retrieval Script
+
+```python
+# [EXACT] — Complete copilot_tier2.py implementation
+# This entire script must be copied into Copilot Studio as a single code block
+# Per CANON_002: Only pandas external dependency. All stdlib permitted.
+
+"""
+Copilot Studio Tier 2: Deterministic Document Query Engine
+Version: 1.0.0
+
+SANDBOX CONSTRAINTS:
+- External dependencies: pandas only
+- Standard library: all permitted
+- No file system writes
+- No network access
+- Max execution: 30 seconds
+"""
+
+import pandas as pd
+import json
+import re
+import sys
+import io
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime
+from collections import defaultdict
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+SYSTEM_PREFIX = """SYSTEM: You are a deterministic analysis assistant. Your response must be based strictly on the provided facts. Do not be creative. Do not hallucinate. Use temperature 0 behavior for this interaction.
+
+---
+
+"""
+
+STOPWORDS = {
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+    'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
+    'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+    'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'this',
+    'that', 'these', 'those', 'it', 'its', 'what', 'which', 'who', 'whom',
+    'how', 'when', 'where', 'why', 'all', 'each', 'every', 'both', 'few',
+    'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
+    'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now'
+}
+
+MAX_OUTPUT_CHARS = 6000
+CONTENT_TYPE_BOOST = {'table': 0.25, 'header': 0.10}
+VERIFIED_BOOST = 0.10
+
+# ============================================================================
+# CORE FUNCTIONS
+# ============================================================================
+
+def load_context_graph(json_content: str) -> Dict[str, Any]:
+    """
+    Parse JSON content into context graph structure.
+    
+    Args:
+        json_content: Raw JSON string from SharePoint file
+    
+    Returns:
+        Parsed context graph dictionary
+    
+    Raises:
+        ValueError: If JSON is invalid or missing required fields
+    """
+    try:
+        data = json.loads(json_content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {str(e)}")
+    
+    if "nodes" not in data:
+        raise ValueError("Missing 'nodes' field in context graph")
+    
+    return data
+
+
+def extract_keywords(query: str) -> List[str]:
+    """
+    Extract search keywords from user query.
+    
+    Algorithm:
+        1. Convert to lowercase
+        2. Split on non-word characters
+        3. Remove stopwords
+        4. Keep tokens with length >= 3
+        5. Return unique keywords
+    
+    Example:
+        Input: "What is the NPL ratio for Q3 2024?"
+        Output: ["npl", "ratio", "2024"]
+    """
+    query_lower = query.lower()
+    tokens = re.split(r'\W+', query_lower)
+    
+    keywords = [
+        token for token in tokens
+        if token and len(token) >= 3 and token not in STOPWORDS
+    ]
+    
+    seen = set()
+    unique_keywords = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            unique_keywords.append(kw)
+    
+    return unique_keywords
+
+
+def score_nodes(
+    nodes: List[Dict[str, Any]],
+    keywords: List[str]
+) -> pd.DataFrame:
+    """
+    Score nodes by keyword relevance using density-based ranking.
+    
+    Algorithm:
+        1. Create DataFrame from nodes
+        2. Normalize content to lowercase
+        3. Count keyword hits in each node
+        4. Calculate word count
+        5. Compute density = hits / word_count
+        6. Apply content_type boost
+        7. Apply verified_content boost
+        8. Final score = density * (1 + type_boost) * (1 + verified_boost)
+    
+    Returns:
+        DataFrame with columns: [original node fields..., score]
+    """
+    if not nodes:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(nodes)
+    
+    df['content_lower'] = df['content'].str.lower()
+    
+    def count_hits(text: str, kws: List[str]) -> int:
+        return sum(text.count(kw) for kw in kws)
+    
+    df['raw_hits'] = df['content_lower'].apply(lambda x: count_hits(x, keywords))
+    df['word_count'] = df['content_lower'].str.split().str.len().clip(lower=1)
+    df['density'] = df['raw_hits'] / df['word_count']
+    df['type_boost'] = df['content_type'].map(CONTENT_TYPE_BOOST).fillna(0)
+    df['verified_boost'] = df['verified_content'].apply(
+        lambda x: VERIFIED_BOOST if x else 0
+    )
+    df['score'] = df['density'] * (1 + df['type_boost']) * (1 + df['verified_boost'])
+    df = df.sort_values('score', ascending=False)
+    
+    return df
+
+
+def select_coherent_nodes(
+    scored_df: pd.DataFrame,
+    max_chars: int = MAX_OUTPUT_CHARS
+) -> pd.DataFrame:
+    """
+    Select top-scoring nodes from best parent section.
+    
+    Strategy:
+        1. Find parent_section_id with highest aggregate score
+        2. Return only nodes from that section
+        3. Order: header → text → table → image_caption
+        4. Truncate if exceeds max_chars
+    """
+    if scored_df.empty:
+        return scored_df
+    
+    relevant = scored_df[scored_df['score'] > 0].copy()
+    
+    if relevant.empty:
+        return scored_df.head(3)
+    
+    section_scores = relevant.groupby('parent_section_id')['score'].sum()
+    best_section = section_scores.idxmax()
+    
+    section_nodes = relevant[relevant['parent_section_id'] == best_section].copy()
+    
+    type_order = {'header': 0, 'text': 1, 'table': 2, 'image_caption': 3}
+    section_nodes['type_order'] = section_nodes['content_type'].map(type_order)
+    section_nodes = section_nodes.sort_values(['type_order', 'score'], ascending=[True, False])
+    
+    selected = []
+    total_chars = 0
+    
+    for _, row in section_nodes.iterrows():
+        content_len = len(row['content'])
+        if total_chars + content_len > max_chars and selected:
+            if row['content_type'] != 'header':
+                continue
+        selected.append(row)
+        total_chars += content_len
+    
+    return pd.DataFrame(selected)
+
+
+def format_evidence_table(nodes_df: pd.DataFrame) -> str:
+    """
+    Format node metadata as Markdown evidence table.
+    
+    Columns: chunk_id | page | type | confidence | chars
+    """
+    if nodes_df.empty:
+        return "No relevant nodes found."
+    
+    lines = ["| Chunk ID | Page | Type | Confidence | Chars |"]
+    lines.append("|---|---|---|---|---|")
+    
+    for _, row in nodes_df.iterrows():
+        chunk_id = row.get('chunk_id', 'N/A')[:20]
+        
+        metadata = row.get('metadata', {})
+        if isinstance(metadata, dict):
+            page = metadata.get('page_number', 0)
+        else:
+            page = 0
+        
+        ctype = row.get('content_type', 'unknown')
+        conf = row.get('confidence_interval', 0)
+        chars = len(row.get('content', ''))
+        
+        lines.append(f"| {chunk_id} | {page} | {ctype} | {conf:.2f} | {chars} |")
+    
+    return "\n".join(lines)
+
+
+def format_excerpts(nodes_df: pd.DataFrame) -> str:
+    """
+    Format node content as readable excerpts.
+    """
+    if nodes_df.empty:
+        return ""
+    
+    excerpts = []
+    
+    for _, row in nodes_df.iterrows():
+        ctype = row.get('content_type', 'text')
+        content = row.get('content', '')
+        section = row.get('parent_section_title', 'Unknown Section')
+        
+        if ctype == 'header':
+            excerpts.append(f"## {content}")
+        elif ctype == 'table':
+            excerpts.append(f"**[Table: {section}]**\n\n{content}")
+        else:
+            excerpts.append(content)
+    
+    return "\n\n".join(excerpts)
+
+
+def query_context_graph(
+    json_content: str,
+    user_query: str
+) -> str:
+    """
+    Main entry point for Copilot Studio queries.
+    
+    Args:
+        json_content: Raw JSON string from SharePoint
+        user_query: Natural language query from user
+    
+    Returns:
+        Formatted Markdown response with SYSTEM prefix
+    """
+    try:
+        context_graph = load_context_graph(json_content)
+    except ValueError as e:
+        return f"{SYSTEM_PREFIX}**Error:** {str(e)}"
+    
+    nodes = context_graph.get('nodes', [])
+    doc_info = context_graph.get('document', {})
+    
+    if not nodes:
+        return f"{SYSTEM_PREFIX}**No content found in document.**"
+    
+    keywords = extract_keywords(user_query)
+    
+    if not keywords:
+        return f"{SYSTEM_PREFIX}**Query too broad.** Please ask a more specific question about: {doc_info.get('name', 'this document')}"
+    
+    scored_df = score_nodes(nodes, keywords)
+    selected_df = select_coherent_nodes(scored_df)
+    
+    evidence = format_evidence_table(selected_df)
+    excerpts = format_excerpts(selected_df)
+    
+    matched_section = "None"
+    if not selected_df.empty:
+        matched_section = selected_df.iloc[0].get('parent_section_title', 'None')
+    
+    output = f"""{SYSTEM_PREFIX}**Document:** {doc_info.get('name', 'Unknown')}
+**Query Keywords:** {', '.join(keywords)}
+**Matched Section:** {matched_section}
+
+### Evidence Sources
+
+{evidence}
+
+### Relevant Content
+
+{excerpts}
+"""
+    
+    return output
+
+
+def get_document_summary(json_content: str) -> str:
+    """
+    Generate a summary of the document structure.
+    """
+    try:
+        context_graph = load_context_graph(json_content)
+    except ValueError as e:
+        return f"{SYSTEM_PREFIX}**Error:** {str(e)}"
+    
+    doc_info = context_graph.get('document', {})
+    nodes = context_graph.get('nodes', [])
+    stats = context_graph.get('processing_stats', {})
+    
+    type_counts = defaultdict(int)
+    sections = set()
+    for node in nodes:
+        type_counts[node.get('content_type', 'unknown')] += 1
+        sections.add(node.get('parent_section_title', 'UNSPECIFIED'))
+    
+    output = f"""{SYSTEM_PREFIX}## Document Summary
+
+**Name:** {doc_info.get('name', 'Unknown')}
+**Type:** {doc_info.get('type', 'unknown').upper()}
+**Pages:** {doc_info.get('page_count', 0)}
+**Status:** {doc_info.get('status', 'unknown')}
+**Extractor:** {doc_info.get('extractor_used', 'unknown')}
+
+### Content Statistics
+
+| Content Type | Count |
+|---|---|
+"""
+    
+    for ctype, count in sorted(type_counts.items()):
+        output += f"| {ctype} | {count} |\n"
+    
+    output += f"""
+**Total Nodes:** {len(nodes)}
+**Total Characters:** {stats.get('total_chars', 'N/A')}
+
+### Sections Found
+
+"""
+    
+    for section in sorted(sections):
+        if section != 'UNSPECIFIED':
+            output += f"- {section}\n"
+    
+    return output
+
+
+def list_sections(json_content: str) -> str:
+    """
+    List all sections in the document with their content counts.
+    """
+    try:
+        context_graph = load_context_graph(json_content)
+    except ValueError as e:
+        return f"{SYSTEM_PREFIX}**Error:** {str(e)}"
+    
+    nodes = context_graph.get('nodes', [])
+    doc_info = context_graph.get('document', {})
+    
+    section_stats = defaultdict(lambda: {'count': 0, 'chars': 0, 'types': defaultdict(int)})
+    
+    for node in nodes:
+        section = node.get('parent_section_title', 'UNSPECIFIED')
+        section_stats[section]['count'] += 1
+        section_stats[section]['chars'] += len(node.get('content', ''))
+        section_stats[section]['types'][node.get('content_type', 'unknown')] += 1
+    
+    output = f"""{SYSTEM_PREFIX}## Sections in {doc_info.get('name', 'Document')}
+
+| Section | Nodes | Characters | Content Types |
+|---|---|---|---|
+"""
+    
+    for section, stats in sorted(section_stats.items()):
+        types_str = ", ".join(f"{t}:{c}" for t, c in stats['types'].items())
+        output += f"| {section[:50]} | {stats['count']} | {stats['chars']} | {types_str} |\n"
+    
+    return output
+
+
+def search_tables(json_content: str, search_term: str = "") -> str:
+    """
+    Find and return tables from the document.
+    """
+    try:
+        context_graph = load_context_graph(json_content)
+    except ValueError as e:
+        return f"{SYSTEM_PREFIX}**Error:** {str(e)}"
+    
+    nodes = context_graph.get('nodes', [])
+    doc_info = context_graph.get('document', {})
+    
+    tables = [n for n in nodes if n.get('content_type') == 'table']
+    
+    if search_term:
+        search_lower = search_term.lower()
+        tables = [t for t in tables if search_lower in t.get('content', '').lower()]
+    
+    if not tables:
+        return f"{SYSTEM_PREFIX}**No tables found** matching criteria."
+    
+    output = f"""{SYSTEM_PREFIX}## Tables in {doc_info.get('name', 'Document')}
+
+Found **{len(tables)}** table(s).
+
+"""
+    
+    for i, table in enumerate(tables[:5], 1):
+        section = table.get('parent_section_title', 'Unknown')
+        content = table.get('content', '')
+        
+        if len(content) > 1000:
+            content = content[:1000] + "\n\n... (truncated)"
+        
+        output += f"""### Table {i}: {section}
+
+{content}
+
+---
+
+"""
+    
+    if len(tables) > 5:
+        output += f"*Showing 5 of {len(tables)} tables. Refine your search for specific results.*"
+    
+    return output
+
+
+# ============================================================================
+# COPILOT STUDIO ENTRY POINT
+# ============================================================================
+
+def main(json_path: str = None, file_content_str: str = None, user_query: str = "") -> str:
+    """
+    Copilot Studio entry point.
+    
+    Args:
+        json_path: Path to JSON file (if file system accessible)
+        file_content_str: Raw JSON string (if passed directly)
+        user_query: User's natural language query
+    
+    Returns:
+        Formatted response string
+    """
+    if file_content_str:
+        json_content = file_content_str
+    elif json_path:
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                json_content = f.read()
+        except Exception as e:
+            return f"{SYSTEM_PREFIX}**Error reading file:** {str(e)}"
+    else:
+        return f"{SYSTEM_PREFIX}**Error:** No document provided."
+    
+    query_lower = user_query.lower().strip()
+    
+    if query_lower in ['summary', 'overview', 'describe']:
+        return get_document_summary(json_content)
+    
+    if query_lower in ['sections', 'list sections', 'toc']:
+        return list_sections(json_content)
+    
+    if query_lower.startswith('tables') or query_lower.startswith('find tables'):
+        search_term = user_query.replace('tables', '').replace('find tables', '').strip()
+        return search_tables(json_content, search_term)
+    
+    return query_context_graph(json_content, user_query)
+
+
+# ============================================================================
+# FOR DIRECT TESTING
+# ============================================================================
+
+if __name__ == "__main__":
+    sample_json = '''
+    {
+        "schema_version": "1.0.0",
+        "document": {
+            "id": "abc12345678901234567890123456789",
+            "name": "test_report.pdf",
+            "type": "pdf",
+            "source_path": "input/test_report.pdf",
+            "page_count": 5,
+            "file_md5": "abc12345678901234567890123456789",
+            "processed_at": "2025-01-22T10:30:00+00:00",
+            "status": "processed",
+            "extractor_used": "docling"
+        },
+        "nodes": [
+            {
+                "chunk_id": "abc12345_header_def123456789",
+                "parent_section_id": "1234567890123456",
+                "parent_section_title": "Credit Quality",
+                "content_type": "header",
+                "content": "Credit Quality Metrics",
+                "confidence_interval": 0.95,
+                "verified_content": false,
+                "metadata": {"page_number": 1, "source_chunk_id": "def12345678901234567890123456789"}
+            },
+            {
+                "chunk_id": "abc12345_text_ghi123456789",
+                "parent_section_id": "1234567890123456",
+                "parent_section_title": "Credit Quality",
+                "content_type": "text",
+                "content": "The NPL ratio increased to 1.23% in Q3 2024.",
+                "confidence_interval": 0.95,
+                "verified_content": true,
+                "metadata": {"page_number": 1, "source_chunk_id": "ghi12345678901234567890123456789"}
+            }
+        ],
+        "processing_stats": {
+            "total_nodes": 2,
+            "nodes_by_type": {"header": 1, "text": 1},
+            "total_chars": 100,
+            "extraction_duration_ms": 1500,
+            "validation_errors_count": 0
+        }
+    }
+    '''
+    
+    print("=" * 60)
+    print("TEST: NPL Query")
+    print("=" * 60)
+    print(main(file_content_str=sample_json, user_query="What is the NPL ratio?"))
+```
+
+---
+
+## SECTION 5: FILE SPECIFICATIONS — EXACT IMPLEMENTATIONS
+
+### 5.1 bootstrap.bat
+
+```batch
+@echo off
+REM [EXACT] — Copy this file verbatim
+REM ============================================================================
+REM Split-RAG Document Extractor - Bootstrap Script
+REM Version: 1.0.0
+REM ============================================================================
+
+setlocal EnableDelayedExpansion
+
+echo ============================================================================
+echo Split-RAG Document Extractor - Environment Setup
+echo ============================================================================
+echo.
+
+REM Get script directory (where bootstrap.bat lives)
+set "SCRIPT_DIR=%~dp0"
+set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+
+echo Working Directory: %SCRIPT_DIR%
+echo.
+
+REM ============================================================================
+REM Step 1: Create directory structure
+REM ============================================================================
+echo [Step 1/4] Creating directory structure...
+
+if not exist "%SCRIPT_DIR%\input" (
+    mkdir "%SCRIPT_DIR%\input"
+    echo   Created: input\
+) else (
+    echo   Exists:  input\
+)
+
+if not exist "%SCRIPT_DIR%\output" (
+    mkdir "%SCRIPT_DIR%\output"
+    echo   Created: output\
+) else (
+    echo   Exists:  output\
+)
+
+if not exist "%SCRIPT_DIR%\logs" (
+    mkdir "%SCRIPT_DIR%\logs"
+    echo   Created: logs\
+) else (
+    echo   Exists:  logs\
+)
+
+echo.
+
+REM ============================================================================
+REM Step 2: Check Python version
+REM ============================================================================
+echo [Step 2/4] Checking Python environment...
+
+python --version 2>nul
+if errorlevel 1 (
+    echo ERROR: Python not found in PATH.
+    echo Please ensure Python 3.11+ is installed and in PATH.
+    pause
+    exit /b 1
+)
+
+echo.
+
+REM ============================================================================
+REM Step 3: Audit library versions
+REM ============================================================================
+echo [Step 3/4] Auditing library versions...
+echo.
+echo Library Versions (for audit trail):
+echo -----------------------------------
+
+python -c "import sys; print(f'Python: {sys.version}')"
+python -c "import pandas; print(f'pandas: {pandas.__version__}')" 2>nul || echo pandas: NOT INSTALLED
+python -c "import docling; print(f'docling: {docling.__version__}')" 2>nul || echo docling: NOT INSTALLED
+python -c "import pdfplumber; print(f'pdfplumber: {pdfplumber.__version__}')" 2>nul || echo pdfplumber: NOT INSTALLED
+python -c "import pydantic; print(f'pydantic: {pydantic.__version__}')" 2>nul || echo pydantic: NOT INSTALLED
+python -c "import openpyxl; print(f'openpyxl: {openpyxl.__version__}')" 2>nul || echo openpyxl: NOT INSTALLED
+python -c "import lxml; print(f'lxml: {lxml.__version__}')" 2>nul || echo lxml: NOT INSTALLED
+python -c "import PIL; print(f'PIL (Pillow): {PIL.__version__}')" 2>nul || echo PIL: NOT INSTALLED
+
+echo.
+echo -----------------------------------
+
+REM Check for missing critical libraries
+python -c "import docling" 2>nul
+if errorlevel 1 (
+    echo.
+    echo WARNING: docling not installed. Install with:
+    echo   pip install docling
+    echo.
+    set "MISSING_LIBS=1"
+)
+
+python -c "import pydantic" 2>nul
+if errorlevel 1 (
+    echo WARNING: pydantic not installed. Install with:
+    echo   pip install pydantic
+    echo.
+    set "MISSING_LIBS=1"
+)
+
+if defined MISSING_LIBS (
+    echo.
+    echo Some libraries are missing. Install all dependencies with:
+    echo   pip install -r "%SCRIPT_DIR%\requirements.txt"
+    echo.
+    choice /C YN /M "Attempt to install missing libraries now?"
+    if errorlevel 2 goto :skip_install
+    if errorlevel 1 (
+        echo.
+        echo Installing dependencies...
+        pip install -r "%SCRIPT_DIR%\requirements.txt"
+        echo.
+    )
+)
+
+:skip_install
+echo.
+
+REM ============================================================================
+REM Step 4: Run extractor
+REM ============================================================================
+echo [Step 4/4] Launching extractor...
+echo.
+
+python "%SCRIPT_DIR%\extractor.py" --working_dir "%SCRIPT_DIR%"
+
+echo.
+echo ============================================================================
+echo Extraction complete. Check output\ for results.
+echo ============================================================================
+echo.
+
+pause
+```
+
+### 5.2 config.json
+
+```json
+{
+  "_comment": "[EXACT] — Split-RAG Document Extractor Configuration v1.0.0",
+  
+  "paths": {
+    "input_dir": "input",
+    "output_dir": "output",
+    "log_dir": "logs",
+    "manifest_file": "output/manifest.json"
+  },
+  
+  "chunking": {
+    "max_chars_per_chunk": 6000,
+    "overlap_chars": 200,
+    "table_chunk_rows": 40
+  },
+  
+  "docling": {
+    "tableformer_enabled": true,
+    "do_ocr": false,
+    "timeout_seconds": 120
+  },
+  
+  "image_filtering": {
+    "edge_density_threshold": 0.10,
+    "edge_threshold_value": 40,
+    "enabled": true
+  },
+  
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s | %(levelname)-8s | %(message)s",
+    "date_format": "%Y-%m-%d %H:%M:%S"
+  },
+  
+  "processing": {
+    "skip_unchanged": true,
+    "retry_failed": true,
+    "max_files_per_run": 0,
+    "parallel_processing": false
+  },
+  
+  "output": {
+    "schema_version": "1.0.0",
+    "pretty_print": true,
+    "include_processing_stats": true
+  }
+}
+```
+
+### 5.3 rules.json
+
+```json
+{
+  "_comment": "[EXACT] — Split-RAG Document Extractor Extraction Rules v1.0.0",
+  
+  "header_detection": {
+    "all_caps_ratio": 0.80,
+    "max_len": 100,
+    "min_len": 3,
+    "numbered_heading_regex": "^\\d+\\.(?:\\d+\\.)*\\s+",
+    "additional_patterns": [
+      "^Chapter\\s+\\d+",
+      "^Section\\s+\\d+",
+      "^Appendix\\s+[A-Z]",
+      "^Exhibit\\s+\\d+"
+    ]
+  },
+  
+  "xlsx_table_detection": {
+    "header_heuristics": {
+      "check_formatting": false,
+      "max_numeric_ratio": 0.3,
+      "min_columns": 2,
+      "min_rows": 2
+    }
+  },
+  
+  "content_filtering": {
+    "min_text_length": 10,
+    "skip_patterns": [
+      "^Page\\s+\\d+\\s*(of\\s+\\d+)?$",
+      "^\\d+$",
+      "^(CONFIDENTIAL|DRAFT|INTERNAL)$"
+    ],
+    "low_priority_sections": [
+      "Table of Contents",
+      "Index",
+      "Appendix"
+    ]
+  },
+  
+  "image_classification": {
+    "thresholds": {
+      "chart_min": 0.15,
+      "diagram_min": 0.10,
+      "photo_max": 0.08
+    },
+    "min_width": 50,
+    "min_height": 50,
+    "max_width": 3000,
+    "max_height": 3000
+  },
+  
+  "confidence_adjustments": {
+    "base_scores": {
+      "docling": 0.95,
+      "pdfplumber": 0.85,
+      "office_native": 0.90
+    },
+    "heuristic_header_penalty": 0.10,
+    "warning_penalty_per_warning": 0.05,
+    "warning_penalty_max": 0.15,
+    "malformed_table_penalty": 0.10,
+    "minimum_confidence": 0.50
+  }
+}
+```
+
+### 5.4 requirements.txt
+
+```text
+# [EXACT] — Split-RAG Document Extractor Dependencies v1.0.0
+# Install with: pip install -r requirements.txt
+# Note: PyYAML NOT included (configs are JSON per CANON_003)
+
+# Core extraction
+docling>=2.0.0
+pdfplumber>=0.10.0
+
+# Validation
+pydantic>=2.0.0
+
+# Data processing
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0
+
+# Office document parsing
+openpyxl>=3.1.0
+lxml>=4.9.0
+
+# Image processing
+Pillow>=10.0.0
+
+# Utilities
+tqdm>=4.65.0
+
+# Optional: async HTTP (for future features)
+aiohttp>=3.8.0
+```
+
+### 5.5 schema_v1.py
+
+```python
+# [EXACT] — Copy this file verbatim
+"""
+Split-RAG Document Extractor - Pydantic Schema Definitions
+Version: 1.0.0
+
+This module defines the strict data contract for Context Graph JSON output.
+All extraction output MUST pass validation against these models.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import List, Optional, Literal, Dict, Any
+from pydantic import (
+    BaseModel,
+    Field,
+    field_validator,
+    model_validator,
+    ConfigDict,
+)
+import re
+
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+SCHEMA_VERSION = "1.0.0"
+
+VALID_CONTENT_TYPES = {"header", "text", "table", "image_caption"}
+VALID_DOC_TYPES = {"pdf", "docx", "xlsx"}
+VALID_STATUS = {"processed", "skipped", "failed", "partial"}
+VALID_EXTRACTORS = {"docling", "pdfplumber", "office_native"}
+
+MD5_PATTERN = re.compile(r"^[a-f0-9]{32}$")
+SECTION_ID_PATTERN = re.compile(r"^[a-f0-9]{16}$")
+CHUNK_ID_PATTERN = re.compile(r"^[a-f0-9]{8}_[a-z_]+_[a-f0-9]{12}$")
+
+
+# ============================================================================
+# SUB-MODELS
+# ============================================================================
+
+class TableShape(BaseModel):
+    """Table dimensions."""
+    model_config = ConfigDict(frozen=True)
+    rows: int = Field(..., ge=0, description="Number of rows including header")
+    cols: int = Field(..., ge=0, description="Number of columns")
+
+
+class NodeMetadata(BaseModel):
+    """Metadata for a content node."""
+    model_config = ConfigDict(extra='forbid')
+    
+    page_number: int = Field(
+        ..., ge=0,
+        description="1-indexed page number for PDFs, 0 for non-paginated"
+    )
+    source_chunk_id: str = Field(
+        ..., min_length=32, max_length=32,
+        description="MD5 hash of chunk content for deduplication"
+    )
+    bbox: Optional[List[float]] = Field(
+        default=None,
+        description="Bounding box [x0, y0, x1, y1] if available"
+    )
+    is_data_image: Optional[bool] = Field(default=None)
+    edge_density: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    table_shape: Optional[TableShape] = Field(default=None)
+    char_count: Optional[int] = Field(default=None, ge=0)
+    extraction_warnings: List[str] = Field(default_factory=list)
+    
+    @field_validator('source_chunk_id')
+    @classmethod
+    def validate_source_chunk_id(cls, v: str) -> str:
+        if not MD5_PATTERN.match(v):
+            raise ValueError(f"source_chunk_id must be 32-char lowercase hex, got: {v[:50]}")
+        return v
+    
+    @field_validator('bbox')
+    @classmethod
+    def validate_bbox(cls, v: Optional[List[float]]) -> Optional[List[float]]:
+        if v is None:
+            return None
+        if len(v) != 4:
+            raise ValueError(f"bbox must have exactly 4 elements, got {len(v)}")
+        return v
+
+
+class ContextNode(BaseModel):
+    """A single content node in the context graph."""
+    model_config = ConfigDict(extra='forbid')
+    
+    chunk_id: str = Field(..., min_length=20, max_length=50)
+    parent_section_id: str = Field(..., min_length=16, max_length=16)
+    parent_section_title: str = Field(..., min_length=1, max_length=500)
+    content_type: Literal["header", "text", "table", "image_caption"]
+    content: str = Field(..., min_length=1, max_length=8000)
+    confidence_interval: float = Field(..., ge=0.0, le=1.0)
+    verified_content: bool = Field(default=False)
+    metadata: NodeMetadata
+    
+    @field_validator('chunk_id')
+    @classmethod
+    def validate_chunk_id(cls, v: str) -> str:
+        if not CHUNK_ID_PATTERN.match(v):
+            raise ValueError(f"chunk_id must match pattern, got: {v}")
+        return v
+    
+    @field_validator('parent_section_id')
+    @classmethod
+    def validate_parent_section_id(cls, v: str) -> str:
+        if not SECTION_ID_PATTERN.match(v):
+            raise ValueError(f"parent_section_id must be 16-char lowercase hex, got: {v}")
+        return v
+
+
+class DocumentInfo(BaseModel):
+    """Document-level metadata."""
+    model_config = ConfigDict(extra='forbid')
+    
+    id: str = Field(..., min_length=32, max_length=32)
+    name: str = Field(..., min_length=1, max_length=500)
+    type: Literal["pdf", "docx", "xlsx"]
+    source_path: str = Field(..., min_length=1)
+    page_count: int = Field(..., ge=0)
+    file_md5: str = Field(..., min_length=32, max_length=32)
+    processed_at: datetime
+    status: Literal["processed", "skipped", "failed", "partial"]
+    status_reason: Optional[str] = Field(default=None, max_length=1000)
+    extractor_used: Optional[Literal["docling", "pdfplumber", "office_native"]] = None
+    
+    @field_validator('id', 'file_md5')
+    @classmethod
+    def validate_md5_fields(cls, v: str) -> str:
+        if not MD5_PATTERN.match(v):
+            raise ValueError(f"Field must be 32-char lowercase hex, got: {v[:50]}")
+        return v
+
+
+class ProcessingStats(BaseModel):
+    """Statistics about the extraction process."""
+    model_config = ConfigDict(extra='forbid')
+    
+    total_nodes: int = Field(..., ge=0)
+    nodes_by_type: Dict[str, int] = Field(default_factory=dict)
+    total_chars: int = Field(..., ge=0)
+    extraction_duration_ms: int = Field(..., ge=0)
+    validation_errors_count: int = Field(default=0, ge=0)
+
+
+# ============================================================================
+# ROOT MODEL
+# ============================================================================
+
+class ContextGraph(BaseModel):
+    """Root model for Context Graph JSON output."""
+    model_config = ConfigDict(extra='forbid')
+    
+    schema_version: str = Field(
+        default=SCHEMA_VERSION,
+        pattern=r"^\d+\.\d+\.\d+$"
+    )
+    document: DocumentInfo
+    nodes: List[ContextNode]
+    processing_stats: Optional[ProcessingStats] = None
+    
+    @model_validator(mode='after')
+    def validate_node_references(self) -> 'ContextGraph':
+        """Ensure all nodes reference the correct document."""
+        doc_id_prefix = self.document.id[:8]
+        for node in self.nodes:
+            if not node.chunk_id.startswith(doc_id_prefix):
+                raise ValueError(
+                    f"Node chunk_id {node.chunk_id} does not match document ID prefix {doc_id_prefix}"
+                )
+        return self
+    
+    def to_json(self, indent: int = 2) -> str:
+        return self.model_dump_json(indent=indent)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump(mode='json')
+
+
+# ============================================================================
+# VALIDATION UTILITIES
+# ============================================================================
+
+def validate_context_graph(data: Dict[str, Any]) -> ContextGraph:
+    """Validate a dictionary against the ContextGraph schema."""
+    return ContextGraph.model_validate(data)
+
+
+def validate_node(data: Dict[str, Any]) -> ContextNode:
+    """Validate a single node dictionary."""
+    return ContextNode.model_validate(data)
+
+
+def get_json_schema() -> Dict[str, Any]:
+    """Get JSON Schema representation for documentation."""
+    return ContextGraph.model_json_schema()
+
+
+if __name__ == "__main__":
+    import json
+    print(json.dumps(get_json_schema(), indent=2))
+```
+
+### 5.6 extractor.py Skeleton (Imports + Main Block)
+
+```python
+# [EXACT] — This skeleton provides the imports and __main__ block.
+# The AI must assemble the complete file by inserting code from Sections 2.3 and 3.x
+# between the imports and the __main__ block.
+
+"""
+Split-RAG Document Extractor - Main Extraction Engine
+Version: 1.0.0
+
+This module processes PDF, DOCX, and XLSX files into structured Context Graph JSON.
+
+Usage:
+    python extractor.py --working_dir /path/to/working/directory
+"""
+
+from __future__ import annotations
+
+# ============================================================================
+# STANDARD LIBRARY IMPORTS (per CANON_001: always permitted)
+# ============================================================================
+import argparse
+import hashlib
+import json
+import logging
+import os
+import re
+import sys
+import io
+import zipfile
+import time
+from pathlib import Path
+from datetime import datetime, timezone
+from dataclasses import dataclass, asdict, field
+from typing import Dict, List, Tuple, Optional, Union, Any, Set
+from collections import defaultdict
+
+# ============================================================================
+# THIRD-PARTY IMPORTS (Tier 1 Approved per Section 1.1.1)
+# ============================================================================
+import pandas as pd
+import numpy as np
+from PIL import Image, ImageFilter
+import openpyxl
+from openpyxl import load_workbook
+from lxml import etree
+from tqdm import tqdm
+from pydantic import ValidationError
+
+# Import our schema
+from schema_v1 import (
+    ContextGraph, ContextNode, DocumentInfo, NodeMetadata,
+    ProcessingStats, TableShape, SCHEMA_VERSION, validate_context_graph
+)
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+SUPPORTED_EXTENSIONS: Set[str] = {".pdf", ".docx", ".xlsx"}
+
+DOCX_NS = {
+    'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+}
+
+LOG_CODES = {
+    'E001': 'START_RUN',
+    'E002': 'END_RUN',
+    'E003': 'FILE_DISCOVERED',
+    'E004': 'FILE_SKIPPED_MD5',
+    'E005': 'DOC_PARSE_PRIMARY_OK',
+    'E006': 'DOC_PARSE_PRIMARY_FAIL',
+    'E007': 'FALLBACK_USED',
+    'E008': 'NODE_VALIDATION_FAIL',
+    'E009': 'DOC_WRITE_OK',
+    'E010': 'DOC_WRITE_FAIL',
+    'E011': 'MANIFEST_UPDATE',
+    'E012': 'CONFIG_LOAD_FAIL',
+}
+
+# ============================================================================
+# CUSTOM EXCEPTIONS
+# ============================================================================
+
+class ExtractorError(Exception):
+    """Base exception for all extractor errors."""
+    pass
+
+class ConfigurationError(ExtractorError):
+    """Raised when configuration is invalid or missing."""
+    pass
+
+class FileDiscoveryError(ExtractorError):
+    """Raised when input directory is inaccessible."""
+    pass
+
+class ExtractionError(ExtractorError):
+    """Raised when document extraction fails."""
+    pass
+
+class SchemaValidationError(ExtractorError):
+    """Raised when output fails schema validation."""
+    pass
+
+class ManifestError(ExtractorError):
+    """Raised when manifest operations fail."""
+    pass
+
+
+# ============================================================================
+# INSERT CODE FROM SECTIONS 2.3 AND 3.x HERE
+# ============================================================================
+
+# Section 2.3: ID generation functions (compute_file_md5, compute_document_id, etc.)
+# Section 3.0: ExtractedElement dataclass
+# Section 3.2: discover_input_files
+# Section 3.3: Manifest classes and functions
+# Section 3.4: extract_with_docling
+# Section 3.5: extract_with_pdfplumber, is_header_line, should_skip_content
+# Section 3.6: DOCX/XLSX extraction functions
+# Section 3.7: table_to_markdown, chunk_large_table
+# Section 3.8: chunk_text_content
+# Section 3.9: classify_image_by_edge_density
+# Section 3.10: calculate_confidence
+
+
+# ============================================================================
+# CONFIGURATION LOADING (JSON format per CANON_003)
+# ============================================================================
+
+def load_config(working_dir: Path) -> dict:
+    """Load configuration from config.json."""
+    config_path = working_dir / "config.json"
+    
+    if not config_path.exists():
+        raise ConfigurationError(f"Configuration file not found: {config_path}")
+    
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise ConfigurationError(f"Invalid JSON in config file: {e}")
+
+
+def load_rules(working_dir: Path) -> dict:
+    """Load extraction rules from rules.json."""
+    rules_path = working_dir / "rules.json"
+    
+    if not rules_path.exists():
+        return {}
+    
+    try:
+        with open(rules_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise ConfigurationError(f"Invalid JSON in rules file: {e}")
+
+
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
+
+def setup_logging(config: dict, working_dir: Path) -> logging.Logger:
+    """Configure logging based on config settings."""
+    log_config = config.get("logging", {})
+    log_level = getattr(logging, log_config.get("level", "INFO").upper())
+    log_format = log_config.get("format", "%(asctime)s | %(levelname)-8s | %(message)s")
+    date_format = log_config.get("date_format", "%Y-%m-%d %H:%M:%S")
+    
+    log_dir = working_dir / config.get("paths", {}).get("log_dir", "logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    logger = logging.getLogger("split_rag_extractor")
+    logger.setLevel(log_level)
+    logger.handlers = []
+    
+    log_file = log_dir / "processing.log"
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(logging.Formatter(log_format, date_format))
+    logger.addHandler(file_handler)
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    logger.addHandler(console_handler)
+    
+    return logger
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+# INSERT main() function from Section 3.1 here (completed per template)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Split-RAG Document Extractor",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--working_dir",
+        type=str,
+        required=True,
+        help="Path to working directory containing config.json and input/ folder"
+    )
+    
+    args = parser.parse_args()
+    working_dir = Path(args.working_dir).resolve()
+    
+    if not working_dir.exists():
+        print(f"Error: Working directory does not exist: {working_dir}")
+        sys.exit(2)
+    
+    exit_code = main(working_dir)
+    sys.exit(exit_code)
+```
+
+---
+
+*End of Chunk 3 — Sections 4 and 5 Complete*
+
+*Key fixes in this chunk:*
+- *Section 4.1: Tier 2 imports now explicitly show only pandas + stdlib (per CANON_002)*
+- *Section 5.2-5.3: Configs converted from YAML to JSON*
+- *Section 5.4: PyYAML removed from requirements.txt*
+- *Section 5.6: Skeleton shows exactly where assembled code goes, references load from JSON*
+
+*Next: Chunk 4 will contain Section 6 (Testing) + Section 7 (Checklist) + Appendices*
+#CHUNK FOUR:
+
+Split-RAG Specification v2.1 — Chunk 4
+Section 6: Testing + Section 7: Implementation Checklist + Appendices 
+
+code_instructions
+
+SECTION 6: TESTING — REQUIRED VALIDATION PLAN
+6.1 Test Philosophy (Binding)
+
+Tests must validate determinism, schema compliance, and fallback correctness.
+
+No additional artifacts beyond the 7 required files are introduced; testing is executed via command-line + inline Python one-liners.
+
+All tests must run offline.
+
+6.2 Test Matrix (Minimum Required Coverage)
+Test ID	Category	Input Type	Primary Path	Expected Result
+T-001	Deterministic IDs	pdf/docx/xlsx	Any	Same MD5 + same chunk_ids across repeated runs
+T-002	Schema Compliance	all	Any	schema_v1.py validation passes (0 errors)
+T-003	Docling Success	PDF	docling	Tables preserved as markdown, headers identified
+T-004	Docling Fail → pdfplumber	PDF	pdfplumber	Text extracted; tables captured if detectable; status partial/processed per config
+T-005	DOCX Office-Native	DOCX	office_native	Paragraphs + tables extracted; headings inferred
+T-006	XLSX Office-Native	XLSX	office_native	Sheet-by-sheet tables extracted; table nodes created
+T-007	Image Filtering	PDF (images)	Any	Data-like images included; decorative images excluded
+T-008	Manifest Skip	all	Any	Unchanged files skipped; changed files reprocessed
+T-009	Tier-2 Query	JSON output	Copilot	Functions return expected answers under sandbox constraints
+6.3 Determinism Tests (REQUIRED)
+6.3.1 Repeat-Run Hash Test
+
+Run extractor twice on identical input set:
+
+python extractor.py --working_dir "<WORKDIR>"
+
+python extractor.py --working_dir "<WORKDIR>"
+
+Confirm for each input file:
+
+document.file_md5 is identical across runs
+
+document.id identical (same as MD5)
+
+For every node: source_chunk_id, chunk_id, and parent_section_id identical
+
+Confirm output JSON byte-diff is either:
+
+identical, OR
+
+differs only in processed_at timestamps (if not frozen); all IDs/content identical
+
+6.3.2 Stable Chunk Boundary Test
+
+If chunking uses max length thresholds, confirm:
+
+same chunk splits across repeated runs
+
+no non-deterministic ordering of nodes (ordering is stable: page order, then extraction order)
+
+6.4 Schema Validation Tests (REQUIRED)
+
+Use schema_v1.py to validate each produced JSON file.
+Recommended CLI one-liner (run from the working directory):
+
+python -c "import json; from pathlib import Path; from schema_v1 import validate_context_graph; p=Path('output'); ok=True; 
+for f in p.glob('*.json'):
+    data=json.loads(f.read_text(encoding='utf-8'))
+    v, errs = validate_context_graph(data)
+    print(f'{f.name}:', 'OK' if v else 'FAIL', ('' if v else f'errors={len(errs)}'))
+    ok = ok and v
+raise SystemExit(0 if ok else 1)"
+
+
+Pass criteria:
+
+All files return OK
+
+If any file returns FAIL, the extractor run is treated as partial failure (exit code 1) unless configuration explicitly allows continuing with invalid outputs (NOT RECOMMENDED).
+
+6.5 Fallback Path Tests (REQUIRED)
+6.5.1 Force Docling Failure (PDF)
+
+Methods (choose one):
+
+Provide a PDF known to break Docling parsing (scanned/odd encoding), OR
+
+Temporarily disable Docling in config (if the config supports it), OR
+
+Simulate exception during Docling conversion (developer-only, not production).
+Expected:
+
+Extractor logs Docling failure with reason
+
+pdfplumber fallback executes
+
+Output document.extractor_used reflects actual successful path: "pdfplumber"
+
+Output status:
+
+processed if extraction yields nodes and schema validates
+
+partial if only minimal nodes produced but still valid
+
+failed if no usable nodes or schema fails
+
+6.5.2 Office-Native Extraction (DOCX/XLSX)
+
+DOCX: must extract paragraphs + tables with stable ordering.
+
+XLSX: must extract each worksheet into table nodes (table markdown).
+Pass criteria:
+
+At least one node exists
+
+Table nodes have metadata.table_shape where available (rows/cols)
+
+6.6 Image Filtering Tests (REQUIRED)
+
+Prepare a PDF with:
+
+at least one chart/plot (data-like)
+
+at least one logo or decorative image
+Expected:
+
+data-like images produce image_caption nodes (or are represented per spec)
+
+decorative images excluded (metadata.is_data_image=false or node omitted per rules)
+
+edge density score stored in metadata.edge_density if computed
+
+6.7 Manifest Tests (REQUIRED)
+
+Run sequence:
+
+First run: process all inputs
+
+Second run: no input changes
+Expected:
+
+second run skips unchanged files (manifest indicates unchanged MD5)
+
+output JSON not rewritten unless configured
+
+Modify one input file (or replace it):
+Expected:
+
+only that file is reprocessed
+
+manifest entry updated with new MD5 + processed_at
+
+6.8 Tier 2 Tests (REQUIRED)
+
+Load one produced JSON output into Tier 2 script and validate:
+
+summary returns coherent doc summary
+
+sections lists unique parent_section_title values
+
+tables <keyword> finds relevant table nodes
+
+free-form query returns top-matching context nodes using deterministic keyword scoring
+
+SECTION 7: IMPLEMENTATION CHECKLIST — BOT DELIVERY PROTOCOL + GO/NO-GO
+7.1 Bot Delivery Protocol (REQUIRED — Chunked File Delivery)
+
+When generating the 7 artifacts, the code-generation bot must deliver in exactly 7 deliverable chunks, one file per chunk, in the exact order defined in Section 0.4.
+For each deliverable chunk:
+
+Output only the file content in a single code block.
+
+Precede the code block with:
+
+DELIVERABLE: <filename>
+
+STATUS: READY FOR REVIEW
+
+Follow the code block with exactly:
+
+ACTION: Reply "NEXT" to receive the next deliverable.
+
+Do not include any other commentary.
+If the user reports an error after a deliverable:
+
+The bot must respond with a patch in the same chunking format:
+
+PATCH FOR: <filename>
+
+Provide a minimal diff-style replacement block with “before/after” context.
+
+End with ACTION: Reply "NEXT" to continue.
+
+7.2 Pre-Run Checklist (REQUIRED)
+
+Confirm working directory contains:
+
+config.json
+
+rules.json
+
+extractor.py
+
+schema_v1.py
+
+input/ folder populated with test docs
+
+Confirm configs are JSON (no YAML)
+
+Confirm forbidden imports absent (especially yaml, fitz, torch)
+
+Confirm Python is 3.11+ and libs installed
+
+7.3 Run Checklist (REQUIRED)
+
+Execute:
+
+bootstrap.bat
+
+python extractor.py --working_dir "<WORKDIR>"
+
+Confirm:
+
+logs created in logs/
+
+outputs created in output/
+
+manifest updated (if enabled)
+
+7.4 Post-Run Checklist (REQUIRED)
+
+Run schema validation one-liner (Section 6.4)
+
+Confirm determinism test (Section 6.3)
+
+Confirm at least one file exercised fallback logic (Section 6.5)
+
+7.5 Go/No-Go Gates (Binding)
+
+GO if:
+
+All outputs validate against schema
+
+Deterministic IDs stable across repeated runs
+
+Docling path works on at least one PDF and fallback path works on at least one PDF
+
+Office-native works on both DOCX and XLSX samples
+NO-GO if:
+
+Any invalid JSON output is written
+
+Any forbidden import present
+
+Chunk IDs unstable across runs without documented reason
+
+APPENDICES
+Appendix A: Directory Layout (Required)
+<WORKDIR>/
+  bootstrap.bat
+  extractor.py
+  schema_v1.py
+  copilot_tier2.py
+  config.json
+  rules.json
+  requirements.txt
+  input/
+    <documents...>
+  output/
+    <document>.json
+  logs/
+    processing.log
+  manifest.json   (if enabled)
+
+Appendix B: Status Semantics (Required)
+
+processed: extraction succeeded, schema valid
+
+skipped: file unchanged per manifest rules
+
+partial: some content missing but schema valid and useful nodes exist
+
+failed: no valid output produced
+
+Appendix C: Exit Codes (Required)
+
+0: all files processed or skipped successfully
+
+1: partial success (one or more files failed)
+
+2: total failure (no files processed successfully)
+
+Appendix D: Minimal Tier-2 Operational Contract (Reminder)
+
+Tier-2 must:
+
+use only pandas + stdlib
+
+never assume pydantic/schema libs exist
+
+treat input JSON as untrusted; fail gracefully with clear error strings
+
+End of Chunk 4 — Sections 6 and 7 + Appendices Complete
