@@ -6,4 +6,6 @@
 
 code_instructions
 
-
+"JSON not YAML"
+"ignore v2.0 docs"
+"Use the exact filenames (config.json, rules.json)"
