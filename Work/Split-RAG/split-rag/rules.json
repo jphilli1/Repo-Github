@@ -1,0 +1,64 @@
+{
+    "entities": {
+        "borrower": {
+            "patterns": [
+                "\"Borrower\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Borrower\"\\)",
+                "Between\\s+(?P<lender>.+?)\\s+\\(\"Lender\"\\)\\s+and\\s+(?P<entity>.+?)\\s+\\(\"Borrower\"\\)",
+                "BORROWER:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "lender": {
+            "patterns": [
+                "\"Lender\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Lender\"\\)",
+                "LENDER:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "guarantor": {
+            "patterns": [
+                "\"Guarantor\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Guarantor\"\\)",
+                "GUARANTOR:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "document_type": {
+            "patterns": [
+                "(?P<entity>CREDIT MEMO|ANNUAL REVIEW|FINANCIAL STATEMENT|RENT ROLL|LOAN AGREEMENT|LOAN MODIFICATION|RISK RATING|MODEL VALIDATION)(?=\\s|\\n|$)",
+                "Subject:\\s*(?P<entity>.+?)(?=\\n)",
+                "RE:\\s*(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "effective_date": {
+            "patterns": [
+                "(As of|Effective Date|Statement Date|Period Ending|Date):\\s*(?P<entity>\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}|[A-Za-z]+\\s+\\d{1,2},?\\s+\\d{4})",
+                "Dated as of\\s+(?P<entity>.+?)(?=\\.|\\n)"
+            ]
+        },
+        "loan_type": {
+            "patterns": [
+                "(Facility Type|Loan Type|Product|Facility):\\s*(?P<entity>.+?)(?=\\n)",
+                "Subject Facility:\\s*(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "relationship_status": {
+            "patterns": [
+                "(Relationship|Client Status|Account Status):\\s*(?P<entity>.+?)(?=\\n)",
+                "Risk Rating:\\s*(?P<entity>.+?)(?=\\n)"
+            ]
+        }
+    },
+    "priority_order": [
+        "explicit_definition",
+        "parenthetical_definition",
+        "preamble_structure",
+        "all_caps_label",
+        "header_match"
+    ],
+    "stopwords": [
+        "the", "is", "at", "which", "on", "and", "a", "an", "of", "to", "in", 
+        "for", "with", "by", "from", "as", "or", "be", "are", "was", "were", 
+        "been", "have", "has", "had", "do", "does", "did", "will", "would", 
+        "could", "should", "may", "might", "must", "shall"
+    ]
+}

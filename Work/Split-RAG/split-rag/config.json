@@ -1,0 +1,31 @@
+{
+    "paths": {
+        "input_directory": "input",
+        "manual_input_directory": "input/_MANUAL_UPLOADS",
+        "output_directory": "output",
+        "log_directory": "logs",
+        "quarantine_directory": "quarantine"
+    },
+    "extraction_settings": {
+        "primary_engine": "docling",
+        "fallback_engine": "pdfplumber",
+        "enable_ocr": true,
+        "enable_table_detection": true,
+        "max_pages_for_entity_scan": 20
+    },
+    "docling_settings": {
+        "use_gpu": false,
+        "table_mode": "accurate"
+    },
+    "validation_settings": {
+        "conflict_threshold_levenshtein": 0.3,
+        "max_conflict_rate_for_quarantine": 0.20,
+        "enable_keep_all_policy": true
+    },
+    "logging_settings": {
+        "level": "INFO",
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        "log_to_console": true,
+        "log_to_file": true
+    }
+}
