@@ -1,0 +1,315 @@
+================================================================================
+SPLIT-RAG ARCHITECTURE UPDATE SPECIFICATION
+Version: 2.1
+Status: Authoritative Design Document
+================================================================================
+
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+
+The Split-RAG v2.1 architecture implements a decoupled document processing
+pipeline that separates heavy extraction (Tier 1) from lightweight retrieval
+(Tier 2). This design addresses enterprise requirements for auditability,
+security, and scalability.
+
+Key Updates in v2.1:
+  - JSON configuration format (YAML removed)
+  - Enhanced determinism guarantees
+  - Phased implementation protocol with checkpoints
+  - Expanded test matrix (T-001 through T-009)
+  - Sandbox-safe Tier 2 with pandas-only dependency
+
+
+ARCHITECTURAL OVERVIEW
+--------------------------------------------------------------------------------
+
+                    +-------------------+
+                    |   Source Docs     |
+                    | (PDF, DOCX, XLSX) |
+                    +--------+----------+
+                             |
+                             v
+    +------------------------------------------------+
+    |               TIER 1: THE FACTORY              |
+    |         (Local Anaconda Environment)           |
+    |                                                |
+    |  +------------------------------------------+  |
+    |  |            extractor.py                  |  |
+    |  |  - Docling primary (PDF layout analysis) |  |
+    |  |  - pdfplumber fallback (heuristics)      |  |
+    |  |  - Office native (DOCX/XLSX XML parsing) |  |
+    |  +------------------------------------------+  |
+    |                                                |
+    |  Libraries: docling, pdfplumber, pydantic,     |
+    |             pandas, openpyxl, lxml, PIL        |
+    +------------------------+-----------------------+
+                             |
+                             v
+                    +-------------------+
+                    |  Context Graph    |
+                    |   (JSON Output)   |
+                    +--------+----------+
+                             |
+                             v
+    +------------------------------------------------+
+    |              TIER 2: THE CONSUMER              |
+    |          (Copilot Studio Sandbox)              |
+    |                                                |
+    |  +------------------------------------------+  |
+    |  |          copilot_tier2.py                |  |
+    |  |  - Keyword density scoring               |  |
+    |  |  - Context grouping by section           |  |
+    |  |  - System prompt enforcement             |  |
+    |  +------------------------------------------+  |
+    |                                                |
+    |  Libraries: pandas ONLY + Python stdlib        |
+    +------------------------------------------------+
+
+
+TIER 1 SPECIFICATIONS
+--------------------------------------------------------------------------------
+
+Environment:
+  - Python 3.11.x
+  - Windows 10/11 x64
+  - Anaconda distribution
+  - Configuration: JSON format (config.json, rules.json)
+
+Approved Libraries:
+  - docling (primary PDF extraction)
+  - pdfplumber (fallback extraction)
+  - pydantic (schema validation)
+  - pandas, numpy (data processing)
+  - openpyxl, lxml (Office parsing)
+  - PIL/Pillow (image processing)
+  - tqdm (progress display)
+
+Forbidden Libraries:
+  - fitz/pymupdf (license issues)
+  - torch/transformers (too heavy)
+  - openai/anthropic (no API calls)
+  - langchain/llama_index (not approved)
+  - yaml/PyYAML (use JSON instead)
+
+Extraction Pipeline:
+  1. File Discovery: Scan input/ for .pdf, .docx, .xlsx
+  2. Manifest Check: Skip unchanged files (MD5 match)
+  3. Primary Extraction:
+     - PDF: Docling with TableFormer
+     - DOCX: zipfile + lxml (word/document.xml)
+     - XLSX: openpyxl sheet iteration
+  4. Fallback (PDF only): pdfplumber on Docling failure
+  5. Post-Processing:
+     - Image edge density filtering
+     - Semantic text chunking (6000 chars, 200 overlap)
+     - Deterministic ID generation
+  6. Validation: Pydantic schema enforcement
+  7. Output: JSON Context Graph to output/
+
+
+TIER 2 SPECIFICATIONS
+--------------------------------------------------------------------------------
+
+Environment:
+  - Python 3.10.x or 3.11.x (Microsoft-controlled)
+  - Copilot Studio sandbox
+  - Max execution: 30 seconds
+  - Max memory: 256 MB
+  - Network: None
+  - Filesystem: Read-only
+
+Approved Libraries:
+  - pandas (ONLY external dependency)
+  - Python standard library (all modules)
+
+Forbidden Libraries:
+  - pydantic (not available)
+  - numpy (not guaranteed)
+  - docling, pdfplumber, openpyxl (not available)
+  - PIL/Pillow (not available)
+  - yaml (not available)
+
+Retrieval Algorithm:
+  1. Parse Context Graph JSON
+  2. Extract keywords from query (remove stopwords)
+  3. Score nodes by keyword density:
+     score = density * (1 + type_boost) * (1 + verified_boost)
+  4. Group by parent_section_id
+  5. Return top section with coherent context
+  6. Prepend SYSTEM prompt for deterministic behavior
+
+
+DATA CONTRACT: CONTEXT GRAPH SCHEMA v1.0
+--------------------------------------------------------------------------------
+
+Root Structure:
+{
+  "schema_version": "1.0.0",
+  "document": { ... },
+  "nodes": [ ... ],
+  "processing_stats": { ... }
+}
+
+Document Object:
+  - id: MD5 of file bytes (32 hex chars)
+  - name: Original filename
+  - type: "pdf" | "docx" | "xlsx"
+  - source_path: Relative path
+  - page_count: Integer >= 0
+  - file_md5: Same as id
+  - processed_at: ISO-8601 timestamp
+  - status: "processed" | "skipped" | "failed" | "partial"
+  - extractor_used: "docling" | "pdfplumber" | "office_native"
+
+Node Object:
+  - chunk_id: {doc_id[:8]}_{type}_{source_chunk_id[:12]}
+  - parent_section_id: MD5(source + title)[:16]
+  - parent_section_title: Section name
+  - content_type: "header" | "text" | "table" | "image_caption"
+  - content: Extracted text (max 8000 chars)
+  - confidence_interval: 0.0 to 1.0
+  - verified_content: Boolean
+  - metadata: Page number, bbox, table_shape, etc.
+
+
+DETERMINISM REQUIREMENTS
+--------------------------------------------------------------------------------
+
+The system must produce identical outputs for identical inputs:
+
+1. Document ID = MD5(file_bytes)
+   - Same file content = same ID (regardless of filename)
+
+2. Parent Section ID = MD5(source_path + "|" + normalized_title)[:16]
+   - Normalized = strip whitespace, lowercase
+
+3. Source Chunk ID = MD5(source + title + type + content)
+   - Full 32-character hex
+
+4. Chunk ID = {doc_id[:8]}_{content_type}_{source_chunk_id[:12]}
+   - Human-readable composite key
+
+5. Node Ordering = page order, then extraction order
+   - No randomization or non-deterministic sorting
+
+
+CONFIGURATION FILES
+--------------------------------------------------------------------------------
+
+config.json:
+  - paths: input_dir, output_dir, log_dir, manifest_file
+  - chunking: max_chars_per_chunk (6000), overlap_chars (200)
+  - docling: tableformer_enabled, do_ocr, timeout_seconds
+  - image_filtering: edge_density_threshold (0.10)
+  - logging: level, format
+  - processing: skip_unchanged, retry_failed
+
+rules.json:
+  - header_detection: regex patterns, all_caps_ratio
+  - content_filtering: skip_patterns, min_text_length
+  - confidence_adjustments: base scores, penalties
+
+
+IMPLEMENTATION ARTIFACTS
+--------------------------------------------------------------------------------
+
+Code Files (7):
+  1. bootstrap.bat       - Environment setup
+  2. config.json         - Operational configuration
+  3. rules.json          - Heuristic rules
+  4. requirements.txt    - Dependencies
+  5. schema_v1.py        - Pydantic schema
+  6. extractor.py        - Extraction engine
+  7. copilot_tier2.py    - Retrieval script
+
+Documentation Files:
+  - README.md                        - Project overview
+  - ARCHITECTURE_OVERVIEW.md         - Detailed architecture
+  - SPLIT_RAG_CODING_PROMPT.md       - Implementation guide
+  - instructions_copilot_verison.md  - AI agent instructions
+  - code_instructions.txt            - Binding specification
+  - This file                        - Authoritative design doc
+
+
+TEST MATRIX
+--------------------------------------------------------------------------------
+
+| ID    | Category    | Input          | Expected Outcome                |
+|-------|-------------|----------------|--------------------------------|
+| T-001 | Determinism | Any file       | Same IDs across runs           |
+| T-002 | Schema      | JSON output    | Pydantic validation passes     |
+| T-003 | Docling     | PDF            | Tables + headers extracted     |
+| T-004 | Fallback    | Corrupt PDF    | pdfplumber activates           |
+| T-005 | DOCX        | Word document  | Paragraphs + tables extracted  |
+| T-006 | XLSX        | Spreadsheet    | Sheet-by-sheet tables          |
+| T-007 | Images      | PDF with images| Data images kept, logos skipped|
+| T-008 | Manifest    | Unchanged file | File skipped                   |
+| T-009 | Tier 2      | JSON + query   | Correct results returned       |
+
+
+EXIT CODES
+--------------------------------------------------------------------------------
+
+0 = All files processed or skipped successfully
+1 = Partial success (one or more files failed)
+2 = Total failure (no files processed successfully)
+
+
+GOVERNANCE PROTOCOLS
+--------------------------------------------------------------------------------
+
+CANON_001: StdLib Primacy
+  Python stdlib is always permitted unless explicitly forbidden.
+
+CANON_002: Tier-2 Constraint
+  Copilot Studio sandbox allows ONLY pandas + stdlib.
+
+CANON_003: JSON Standard
+  All configuration uses JSON format. YAML is forbidden.
+
+CANON_004: Template vs. Exact
+  [EXACT] blocks = copy verbatim
+  [TEMPLATE] blocks = complete with implementation logic
+
+CANON_005: Assembly Protocol
+  extractor.py is assembled from multiple specification sections.
+
+CANON_006: Precedence Rule
+  Lower section numbers take precedence if conflicts exist.
+
+
+VERIFICATION CHECKPOINTS
+--------------------------------------------------------------------------------
+
+CP-001: Type Safety
+  Every function must have explicit return type hints.
+
+CP-002: Exception Granularity
+  No generic except Exception: (allowed only at library boundaries).
+
+CP-003: Path Safety
+  All paths use pathlib.Path or raw strings r"".
+
+CP-004: Import Audit
+  Only approved libraries imported.
+
+
+VERSION HISTORY
+--------------------------------------------------------------------------------
+
+v2.0 (Initial):
+  - Original Split-RAG specification
+  - YAML configuration
+
+v2.1 (Current):
+  - Converted to JSON configuration
+  - Added phased implementation protocol
+  - Enhanced determinism requirements
+  - Expanded test matrix
+  - Added verification checkpoints
+  - Sandbox-safe Tier 2 constraints
+
+
+================================================================================
+END OF SPECIFICATION
+================================================================================
