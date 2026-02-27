@@ -558,6 +558,14 @@ class MasterDataDictionary:
             df.sort_values("Metric_Code", inplace=True, ignore_index=True)
         return df
 
+    def get_mdrm_dataframe(self) -> Optional[pd.DataFrame]:
+        """Return the raw MDRM DataFrame (all columns, all rows).
+
+        Useful for schedule-level filtering on the ``Reporting Form`` or
+        ``Description`` columns (e.g. RC-C, RC-N, RI-B).
+        """
+        return self._load_mdrm_dataframe()
+
     # ------------------------------------------------------------------
     #  Tier 1 — Federal Reserve MDRM
     # ------------------------------------------------------------------

@@ -28,7 +28,7 @@ from tqdm import tqdm
 from tqdm.asyncio import tqdm as tqdm_asyncio
 
 # --- Consolidated Data Dictionary (same package) ---
-from master_data_dictionary import MasterDataDictionary
+from master_data_dictionary import MasterDataDictionary, LOCAL_DERIVED_METRICS
 
 
 
@@ -4292,14 +4292,126 @@ class MacroTrendAnalyzer:
 class ExcelOutputGenerator:
     """Generates the final Excel dashboard output file."""
 
+    # FFIEC 031/041 schedule patterns (Description column text matching)
+    _SCHEDULE_PATTERNS = {
+        "RC-C (Loans and Leases)": r"RC-C",
+        "RC-N (Past Due and Nonaccrual)": r"RC-N",
+        "RI-B Part I (Charge-offs and Recoveries)": r"RI-B.*(?:charge|recover)",
+        "RI-B Part II (Changes in ACL)": r"RI-B.*(?:allowance|ACL|credit loss)",
+    }
+
     def __init__(self, config: 'DashboardConfig'):
         self.config = config
-        self.fdic_desc_df = _master_dict.export_dictionary_report()
-        self.fdic_desc_df.rename(columns={
-            'Metric_Code': 'Metric Code',
-            'Metric_Name': 'Metric Name',
-            'Source_of_Truth': 'Source of Truth',
-        }, inplace=True)
+        self._mdd = _master_dict
+        self.audit_df = self._build_audit_trail()
+
+    # ------------------------------------------------------------------
+    #  Audit Trail Builder
+    # ------------------------------------------------------------------
+
+    def _build_audit_trail(self) -> pd.DataFrame:
+        """Build the Data_Dictionary_Audit ledger.
+
+        Columns: Metric_Code, Metric_Name, Description, Source_of_Truth,
+                 Is_Derived, Usage_Status
+
+        *Used in Dashboard*  — every FDIC field, FRED series, and derived
+        metric the dashboard actually fetches or computes.
+
+        *Schedule Reference (Unused)* — all remaining MDRM items from
+        FFIEC 031/041 schedules RC-C, RC-N, RI-B Part I, RI-B Part II
+        that are NOT already marked as Used.
+        """
+        rows: list[dict] = []
+        used_codes: set[str] = set()
+
+        # --- 1. FDIC fields used by the dashboard ---
+        for code in FDIC_FIELDS_TO_FETCH:
+            info = self._mdd.lookup_metric(code)
+            rows.append({
+                "Metric_Code": code,
+                "Metric_Name": info["Metric_Name"],
+                "Description": info["Description"],
+                "Source_of_Truth": info["Source_of_Truth"],
+                "Is_Derived": False,
+                "Usage_Status": "Used in Dashboard",
+            })
+            used_codes.add(code.upper())
+
+        # --- 2. FRED series used by the dashboard ---
+        for _category, series_dict in FRED_SERIES_TO_FETCH.items():
+            for fred_code, meta in series_dict.items():
+                if fred_code.upper() in used_codes:
+                    continue
+                rows.append({
+                    "Metric_Code": fred_code,
+                    "Metric_Name": meta.get("short", fred_code),
+                    "Description": meta.get("long", ""),
+                    "Source_of_Truth": "FRED (Federal Reserve Economic Data)",
+                    "Is_Derived": False,
+                    "Usage_Status": "Used in Dashboard",
+                })
+                used_codes.add(fred_code.upper())
+
+        # --- 3. Local / Derived metrics used by the dashboard ---
+        for code, meta in LOCAL_DERIVED_METRICS.items():
+            if code.upper() in used_codes:
+                continue
+            rows.append({
+                "Metric_Code": code,
+                "Metric_Name": meta.get("short", code),
+                "Description": meta.get("long", ""),
+                "Source_of_Truth": "Tier 3 — Local/Derived",
+                "Is_Derived": True,
+                "Usage_Status": "Used in Dashboard",
+            })
+            used_codes.add(code.upper())
+
+        # --- 4. MDRM Schedule Reference rows (RC-C, RC-N, RI-B) ---
+        mdrm_df = self._mdd.get_mdrm_dataframe()
+        if mdrm_df is not None and not mdrm_df.empty:
+            call_report_mask = mdrm_df["Reporting Form"].isin(
+                ["FFIEC 031", "FFIEC 041", "FFIEC 051"]
+            )
+            cr_df = mdrm_df[call_report_mask].copy()
+            desc_col = cr_df["Description"].fillna("")
+
+            for schedule_label, pattern in self._SCHEDULE_PATTERNS.items():
+                matched = cr_df[desc_col.str.contains(pattern, case=False, na=False)]
+                for _, row in matched.iterrows():
+                    mnemonic = str(row.get("Mnemonic", "")).strip()
+                    item_code = str(row.get("Item Code", "")).strip()
+                    composite = f"{mnemonic}{item_code}" if mnemonic and item_code else (mnemonic or item_code)
+                    if not composite or composite.upper() in used_codes:
+                        continue
+                    rows.append({
+                        "Metric_Code": composite,
+                        "Metric_Name": str(row.get("Item Name", composite)).strip(),
+                        "Description": str(row.get("Description", "")).strip()[:500],
+                        "Source_of_Truth": f"MDRM — {schedule_label}",
+                        "Is_Derived": False,
+                        "Usage_Status": "Schedule Reference (Unused)",
+                    })
+                    used_codes.add(composite.upper())
+
+        audit = pd.DataFrame(rows)
+        if not audit.empty:
+            # Sort: Used first, then Reference; within each group, alphabetical
+            status_order = {"Used in Dashboard": 0, "Schedule Reference (Unused)": 1}
+            audit["_sort"] = audit["Usage_Status"].map(status_order).fillna(2)
+            audit.sort_values(["_sort", "Metric_Code"], inplace=True, ignore_index=True)
+            audit.drop(columns="_sort", inplace=True)
+
+        logging.info(
+            "Audit trail built: %d Used, %d Schedule Reference.",
+            len(audit[audit["Usage_Status"] == "Used in Dashboard"]),
+            len(audit[audit["Usage_Status"] == "Schedule Reference (Unused)"]),
+        )
+        return audit
+
+    # ------------------------------------------------------------------
+    #  Excel Writer
+    # ------------------------------------------------------------------
 
     def write_excel_output(self, file_path: str, **kwargs):
         """Writes all DataFrames to a single styled Excel file with multiple sheets."""
@@ -4313,25 +4425,57 @@ class ExcelOutputGenerator:
                         logging.error(f"Sheet '{sheet_name}' too large ({n_rows} rows).")
                     write_index = sheet_name in ["Latest_Peer_Snapshot", "Averages_8Q_All_Metrics", "Data_Validation_Report"]
                     df.to_excel(writer, sheet_name=sheet_name, index=write_index)
+
+            # Write the audit trail sheet
+            if not self.audit_df.empty:
+                self.audit_df.to_excel(writer, sheet_name="Data_Dictionary_Audit", index=False)
+
             logging.info("All data written, starting styling...")
-            self._style_metric_descriptions_sheet(writer)
+            self._style_audit_sheet(writer)
             self._apply_summary_styles(writer, kwargs.get("Summary_Dashboard"))
             self._apply_snapshot_styles(writer, kwargs.get("Latest_Peer_Snapshot"))
             self._apply_macro_analysis_styles(writer, kwargs.get("Macro_Analysis"))
         logging.info("Excel file written and styled successfully.")
 
-    def _style_metric_descriptions_sheet(self, writer):
-        """Styles the FDIC metric descriptions sheet."""
-        sheet_name = 'FDIC_Metric_Descriptions'
-        if sheet_name not in writer.sheets: return
+    # ------------------------------------------------------------------
+    #  Styling helpers
+    # ------------------------------------------------------------------
+
+    def _style_audit_sheet(self, writer):
+        """Format the Data_Dictionary_Audit sheet with visual row distinction."""
+        sheet_name = "Data_Dictionary_Audit"
+        if sheet_name not in writer.sheets:
+            return
 
         logging.info(f"Styling {sheet_name} sheet...")
-        worksheet = writer.sheets[sheet_name]
-        worksheet.column_dimensions['A'].width = 25  # Metric Code
-        worksheet.column_dimensions['B'].width = 35  # Metric Name
-        worksheet.column_dimensions['C'].width = 80  # Description
-        worksheet.column_dimensions['D'].width = 35  # Source of Truth
-        worksheet.column_dimensions['E'].width = 15  # Is Derived
+        ws = writer.sheets[sheet_name]
+
+        # Column widths
+        ws.column_dimensions["A"].width = 25   # Metric_Code
+        ws.column_dimensions["B"].width = 35   # Metric_Name
+        ws.column_dimensions["C"].width = 80   # Description
+        ws.column_dimensions["D"].width = 30   # Source_of_Truth
+        ws.column_dimensions["E"].width = 12   # Is_Derived
+        ws.column_dimensions["F"].width = 28   # Usage_Status
+
+        # Visual fills
+        used_fill = PatternFill(start_color="DAEEF3", end_color="DAEEF3", fill_type="solid")  # light blue
+        ref_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")   # light grey
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+
+        # Style header row (row 1)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+
+        # Style data rows: colour by Usage_Status (column F = col index 6)
+        for row_idx in range(2, ws.max_row + 1):
+            status_cell = ws.cell(row=row_idx, column=6)
+            fill = used_fill if status_cell.value == "Used in Dashboard" else ref_fill
+            for col_idx in range(1, ws.max_column + 1):
+                ws.cell(row=row_idx, column=col_idx).fill = fill
 
     def _apply_summary_styles(self, writer, df: pd.DataFrame):
         """Applies conditional formatting to the Summary_Dashboard sheet using openpyxl."""
@@ -5023,8 +5167,7 @@ class BankPerformanceDashboard:
             Normalized_Comparison=norm_comp_df,  # NEW: Ex-Commercial/Ex-Consumer view
             Latest_Peer_Snapshot=snapshot_df,
             Averages_8Q_All_Metrics=avg_8q_all_metrics_df,
-            FDIC_Metric_Descriptions=self.output_gen.fdic_desc_df,
-            FDIC_Metadata=fdic_meta_df,                     # <<— NEW SHEET
+            FDIC_Metadata=fdic_meta_df,
             Macro_Analysis=powerbi_macro_df,
             FDIC_Data=proc_df_with_peers,
             FRED_Data=fred_df.reset_index(),
