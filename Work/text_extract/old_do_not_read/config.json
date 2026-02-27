@@ -1,0 +1,47 @@
+{
+  "_comment": "[EXACT] — Split-RAG Document Extractor Configuration v1.0.0",
+
+  "paths": {
+    "input_dir": "input",
+    "output_dir": "output",
+    "log_dir": "logs",
+    "manifest_file": "output/manifest.json"
+  },
+
+  "chunking": {
+    "max_chars_per_chunk": 6000,
+    "overlap_chars": 200,
+    "table_chunk_rows": 40
+  },
+
+  "docling": {
+    "tableformer_enabled": true,
+    "do_ocr": false,
+    "timeout_seconds": 120
+  },
+
+  "image_filtering": {
+    "edge_density_threshold": 0.10,
+    "edge_threshold_value": 40,
+    "enabled": true
+  },
+
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s | %(levelname)-8s | %(message)s",
+    "date_format": "%Y-%m-%d %H:%M:%S"
+  },
+
+  "processing": {
+    "skip_unchanged": true,
+    "retry_failed": true,
+    "max_files_per_run": 0,
+    "parallel_processing": false
+  },
+
+  "output": {
+    "schema_version": "1.0.0",
+    "pretty_print": true,
+    "include_processing_stats": true
+  }
+}

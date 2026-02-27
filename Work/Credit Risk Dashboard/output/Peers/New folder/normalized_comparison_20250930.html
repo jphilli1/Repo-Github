@@ -1,0 +1,183 @@
+
+    <html><head><style>
+        body { font-family: Arial, sans-serif; background-color: transparent; }
+        .email-container {
+            background-color: transparent;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        h3 { color: #002F6C; margin-bottom: 5px; text-align: center; }
+        p.date-header { margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; }
+        th { background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }
+        td { padding: 6px; text-align: center; border: 1px solid #e0e0e0; }
+
+        .metric-name { text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 150px; }
+        .section-header { background-color: #E6F3FF !important; font-weight: bold; color: #002F6C; text-align: left !important; }
+        .std-value { background-color: #FFF9E6 !important; }
+        .norm-value { background-color: #E6FFE6 !important; font-weight: bold; }
+
+        .footnote {
+            font-size: 10px; color: #666; margin-top: 20px; border-top: 1px solid #ccc; padding-top: 10px; text-align: left;
+        }
+    </style></head><body>
+
+    <div class="email-container">
+        <h3>Normalized Metrics Comparison (Ex-Commercial/Ex-Consumer)</h3>
+        <p class="date-header">Call Report Q3-25</p>
+        <table><thead><tr>
+            <th>Metric</th>
+            <th colspan="2" style="background-color:#003D7A;">MSPBNA</th>
+            <th colspan="2" style="background-color:#4C78A8;">MSBNA</th>
+            <th colspan="2" style="background-color:#F7A81B; color:#000;">Core PB</th>
+        </tr>
+        <tr>
+            <th></th>
+            <th>Standard</th><th>Normalized</th>
+            <th>Standard</th><th>Normalized</th>
+            <th>Standard</th><th>Normalized</th>
+        </tr></thead><tbody>
+    <tr><td colspan="7" class="section-header">=== STANDARD vs NORMALIZED ===</td></tr><tr>
+            <td class="metric-name">Gross Loans ($B)</td>
+            <td class="std-value">$161.2B</td>
+            <td class="norm-value">$155.6B</td>
+            <td class="std-value">$101.8B</td>
+            <td class="norm-value">$33.4B</td>
+            <td class="std-value">$150.9B</td>
+            <td class="norm-value">$94.3B</td>
+        </tr><tr>
+            <td class="metric-name">NCO Rate (%)</td>
+            <td class="std-value">0.03%</td>
+            <td class="norm-value">0.03%</td>
+            <td class="std-value">0.15%</td>
+            <td class="norm-value">0.43%</td>
+            <td class="std-value">0.38%</td>
+            <td class="norm-value">0.71%</td>
+        </tr><tr>
+            <td class="metric-name">NA Rate (%)</td>
+            <td class="std-value">0.28%</td>
+            <td class="norm-value">0.29%</td>
+            <td class="std-value">0.69%</td>
+            <td class="norm-value">2.10%</td>
+            <td class="std-value">0.60%</td>
+            <td class="norm-value">1.09%</td>
+        </tr><tr>
+            <td class="metric-name">ACL Ratio (%)</td>
+            <td class="std-value">0.24%</td>
+            <td class="norm-value">0.24%</td>
+            <td class="std-value">0.60%</td>
+            <td class="norm-value">1.81%</td>
+            <td class="std-value">0.95%</td>
+            <td class="norm-value">0.66%</td>
+        </tr><tr>
+            <td class="metric-name">Risk-Adj ACL (%)</td>
+            <td class="std-value">0.45%</td>
+            <td class="norm-value">0.47%</td>
+            <td class="std-value">0.71%</td>
+            <td class="norm-value">3.39%</td>
+            <td class="std-value">1.11%</td>
+            <td class="norm-value">0.88%</td>
+        </tr><tr>
+            <td class="metric-name">CRE % of Loans</td>
+            <td class="std-value">4.56%</td>
+            <td class="norm-value">4.67%</td>
+            <td class="std-value">7.77%</td>
+            <td class="norm-value">27.46%</td>
+            <td class="std-value">3.40%</td>
+            <td class="norm-value">5.85%</td>
+        </tr><tr>
+            <td class="metric-name">CRE ACL Ratio (%)</td>
+            <td class="std-value">2.41%</td>
+            <td class="norm-value">46.70%</td>
+            <td class="std-value">4.54%</td>
+            <td class="norm-value">59.24%</td>
+            <td class="std-value">2.53%</td>
+            <td class="norm-value">32.35%</td>
+        </tr><tr>
+            <td class="metric-name">SBL % of Loans</td>
+            <td class="std-value">46.63%</td>
+            <td class="norm-value">48.31%</td>
+            <td class="std-value">15.22%</td>
+            <td class="norm-value">46.40%</td>
+            <td class="std-value">31.21%</td>
+            <td class="norm-value">37.91%</td>
+        </tr><tr>
+            <td class="metric-name">Fund Finance %</td>
+            <td class="std-value">3.48%</td>
+            <td class="norm-value">3.60%</td>
+            <td class="std-value">67.20%</td>
+            <td class="norm-value">2.05%</td>
+            <td class="std-value">28.42%</td>
+            <td class="norm-value">53.86%</td>
+        </tr><tr><td colspan="7" class="section-header">=== EXCLUSION BREAKDOWN ===</td></tr><tr>
+            <td class="metric-name">Total Excluded (%)</td>
+            <td class="std-value">3.48%</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">67.20%</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">28.35%</td>
+            <td class="norm-value">-</td>
+        </tr><tr>
+            <td class="metric-name">C&I Excluded ($B)</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+        </tr><tr>
+            <td class="metric-name">NDFI Excluded ($B)</td>
+            <td class="std-value">$5.6B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$68.4B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$56.5B</td>
+            <td class="norm-value">-</td>
+        </tr><tr>
+            <td class="metric-name">ADC Excluded ($B)</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+        </tr><tr>
+            <td class="metric-name">Credit Cards ($B)</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+        </tr><tr>
+            <td class="metric-name">Auto Loans ($B)</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+        </tr><tr>
+            <td class="metric-name">Ag Loans ($B)</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+            <td class="std-value">$0.0B</td>
+            <td class="norm-value">-</td>
+        </tr></tbody></table>
+
+    <div class="footnote">
+        <p><b>Normalization Methodology:</b></p>
+        <ul>
+            <li><b>Excluded Segments:</b> Domestic C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto Loans, Ag Loans</li>
+            <li><b>Purpose:</b> Creates "apples-to-apples" comparison by removing Mass Market Consumer and Commercial Banking segments that MSPBNA does not participate in</li>
+            <li><b>Norm Gross Loans:</b> Total Loans minus all Excluded Balances</li>
+            <li><b>Norm Rates:</b> Numerator exclusions (NCOs, Nonaccruals) divided by Norm Gross Loans</li>
+        </ul>
+    </div>
+
+    </div></body></html>
+    

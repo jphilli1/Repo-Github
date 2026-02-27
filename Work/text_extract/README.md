@@ -99,7 +99,7 @@ Load Context Graph JSON as data source
 
 Testing Matrix
 Test IDDescriptionPass CriteriaT-001Determinism ValidationMD5(run1) == MD5(run2) for same inputT-002Borrower DisambiguationCorrect entity extraction vs. corpus definitionsT-003Data Mart ExportValid .xlsx under 512MB generated
-Implementation Instructions
+Implementation Instructions in "instructions_copilot_verison.md"
 This repository includes four instruction blocks for AI-assisted implementation:
 
 INSTRUCTIONS_BLOCK_1.txt - Environment setup, dependencies, project scaffolding

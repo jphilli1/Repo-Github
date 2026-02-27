@@ -31,6 +31,22 @@ from tqdm.asyncio import tqdm as tqdm_asyncio
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
+import sys, os, platform, site, subprocess
+from pathlib import Path
+import os
+print("FRED_API_KEY present:", "FRED_API_KEY" in os.environ)
+print("FDIC_API_KEY present:", "FDIC_API_KEY" in os.environ)  # only if you use one
+if "FRED_API_KEY" in os.environ:
+    print("FRED_API_KEY length:", len(os.environ["FRED_API_KEY"]))
+from pathlib import Path
+for p in [Path.cwd()/".env", Path.home()/".env"]:
+    print("Found .env:", p, p.exists())
+
+import inspect
+print("Script path:", __file__)
+print("CWD:", os.getcwd())
+
+#%%
 # ==================================================================================
 #  1. SCRIPT CONFIGURATION & SETUP
 # ==================================================================================

@@ -1,0 +1,11 @@
+python_executable: C:\Users\jmsph\anaconda3\python.exe
+python_version: 3.12.3 | packaged by conda-forge | (main, Apr 15 2024, 18:20:11) [MSC v.1938 64 bit (AMD64)]
+platform: Windows-11-10.0.26200-SP0
+prefix: C:\Users\jmsph\anaconda3
+base_prefix: C:\Users\jmsph\anaconda3
+conda_prefix: None
+conda_default_env: None
+venv: None
+sys_path_head: ['C:\\Users\\jmsph\\anaconda3\\python312.zip', 'C:\\Users\\jmsph\\anaconda3\\DLLs', 'C:\\Users\\jmsph\\anaconda3\\Lib', 'C:\\Users\\jmsph\\anaconda3', '', 'C:\\Users\\jmsph\\anaconda3\\Lib\\site-packages', 'C:\\Users\\jmsph\\anaconda3\\Lib\\site-packages\\win32', 'C:\\Users\\jmsph\\anaconda3\\Lib\\site-packages\\win32\\lib', 'C:\\Users\\jmsph\\anaconda3\\Lib\\site-packages\\Pythonwin', 'C:\\Users\\jmsph\\anaconda3\\Lib\\site-packages\\setuptools\\_vendor']
+site_packages: ['C:\\Users\\jmsph\\anaconda3', 'C:\\Users\\jmsph\\anaconda3\\Lib\\site-packages']
+user_site: C:\Users\jmsph\AppData\Roaming\Python\Python312\site-packages
