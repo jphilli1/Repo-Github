@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema targetNamespace="http://www.ffiec.gov/xbrl/mdr-schema" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:mdr="http://www.ffiec.gov/xbrl/mdr-schema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:element name="versionInfo">
+		<xs:annotation>
+			<xs:documentation>Versioning information</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element ref="mdr:dataSeries"/>
+				<xs:element ref="mdr:reportName"/>
+				<xs:element ref="mdr:versionName"/>
+				<xs:element ref="mdr:versionDate"/>
+				<xs:element ref="mdr:versionDescription" minOccurs="0"/>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:element name="dataSeries" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>Name of the dataSeries</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="reportName" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>Name of the report</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="versionName" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>Name of the version</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="versionDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Version Date</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="versionDescription" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>Description of the version</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+</xs:schema>

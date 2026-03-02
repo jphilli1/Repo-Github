@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schema targetNamespace="http://www.ffiec.gov/2004/instance" xmlns="http://www.w3.org/2001/XMLSchema" xmlns:ffieci="http://www.ffiec.gov/2004/instance" xmlns:xbrli="http://www.xbrl.org/2003/instance"  xmlns:link="http://www.xbrl.org/2003/linkbase" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<annotation>
+		<documentation>
+    			Taxonomy schema for FFIEC data types (derived from XBRL 2.1 data types).
+	    </documentation>
+	</annotation>
+	<import namespace="http://www.xbrl.org/2003/instance" schemaLocation="http://www.xbrl.org/2003/xbrl-instance-2003-12-31.xsd"/>
+	
+	<complexType name="nonNegativeMonetaryItemType" final="extension">
+		<simpleContent>
+			<restriction base="xbrli:monetaryItemType">
+				<minInclusive value="0"></minInclusive>
+			</restriction>
+		</simpleContent>
+	</complexType>
+	
+	<complexType name="nonNegativeDecimalItemType" final="extension">
+		<simpleContent>
+		<restriction base="xbrli:decimalItemType">
+			<minInclusive value="0"></minInclusive>
+		</restriction>
+		</simpleContent>
+	</complexType>	
+
+</schema>

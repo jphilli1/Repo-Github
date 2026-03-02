@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schema targetNamespace="http://www.ffiec.gov/2003/linkbase" xmlns="http://www.w3.org/2001/XMLSchema" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:flink="http://www.ffiec.gov/2003/linkbase" xmlns:xl="http://www.xbrl.org/2003/XLink" elementFormDefault="qualified">
+	<import namespace="http://www.xbrl.org/2003/linkbase" schemaLocation="http://www.xbrl.org/2003/xbrl-linkbase-2003-12-31.xsd"/>
+	<import namespace="http://www.xbrl.org/2003/XLink" schemaLocation="http://www.xbrl.org/2003/xl-2003-12-31.xsd"/>
+	<import namespace="http://www.w3.org/1999/xlink" schemaLocation="http://www.xbrl.org/2003/xlink-2003-12-31.xsd"/>
+	<element name="loc" type="xl:locatorType" substitutionGroup="xl:locator">
+		<annotation>
+			<documentation>
+      Concrete locator element.  The loc element is the 
+      XLink locator element for all extended links in XBRL.
+      </documentation>
+		</annotation>
+	</element>
+	<element name="formulaArc" type="xl:arcType" substitutionGroup="xl:arc">
+		<annotation>
+			<documentation>
+                                Concrete arc for use in formula extended links.
+                        </documentation>
+		</annotation>
+	</element>
+	<element name="formula" substitutionGroup="xl:resource">
+		<annotation>
+			<documentation>
+                                Definition of the formula  resource element.
+                        </documentation>
+		</annotation>
+		<complexType mixed="true">
+			<complexContent mixed="true">
+				<extension base="xl:resourceType">
+					<sequence>
+						<any namespace="http://www.w3.org/1999/xhtml" processContents="skip" minOccurs="0" maxOccurs="unbounded"/>
+					</sequence>
+					<attribute name="select" type="string" form="unqualified"/>
+				</extension>
+			</complexContent>
+		</complexType>
+	</element>
+	<element name="formulaLink" substitutionGroup="xl:extended">
+		<annotation>
+			<documentation>
+                                formula extended link element definition
+                        </documentation>
+		</annotation>
+		<complexType>
+			<complexContent>
+				<extension base="flink:formulaExtendedType">
+					<choice minOccurs="0" maxOccurs="unbounded">
+						<element ref="flink:absoluteContext"/>
+						<element ref="flink:relativeContext"/>
+
+					</choice>
+				</extension>
+			</complexContent>
+		</complexType>
+	</element>
+	<element name="absoluteContext">
+		<complexType>
+			<sequence>
+				<element name="periodConstraint" minOccurs="0" maxOccurs="unbounded">
+					<complexType>
+						<sequence>
+							<element name="instantConstraint" minOccurs="0" maxOccurs="unbounded">
+								<complexType>
+									<attribute name="year" type="string" form="unqualified"/>
+									<attribute name="month" type="string" form="unqualified"/>
+									<attribute name="day" type="string" form="unqualified"/>
+								</complexType>
+							</element>
+						</sequence>
+					</complexType>
+				</element>
+			</sequence>
+			<attribute name="id" type="string" form="unqualified"/>
+			<attribute ref="xlink:title" use="optional"/>
+			<attribute ref="xlink:type" use="optional"/>
+		</complexType>
+	</element>
+	
+		<element name="relativeContext">
+		<complexType>
+			<sequence>
+				<element name="periodOffset" minOccurs="0" maxOccurs="unbounded">
+					<complexType>
+						<sequence>
+							<element name="instantOffset" minOccurs="0" maxOccurs="unbounded">
+								<complexType>
+									<attribute name="base" type="string" form="unqualified"/>
+									<attribute name="offset" type="string" form="unqualified"/>
+								</complexType>
+							</element>
+						</sequence>
+					</complexType>
+				</element>
+			</sequence>
+			<attribute name="id" type="string" form="unqualified"/>
+			<attribute ref="xlink:title" use="optional"/>
+			<attribute ref="xlink:type" use="optional"/>
+		</complexType>
+	</element>
+	
+	<complexType name="formulaExtendedType">
+		<complexContent>
+			<restriction base="xl:extendedType">
+				<choice minOccurs="0" maxOccurs="unbounded">
+					<element ref="xl:title"/>
+					<element ref="link:documentation"/>
+					<element ref="flink:loc"/>
+					<element ref="flink:formulaArc"/>
+					<element ref="flink:formula"/>
+				</choice>
+			</restriction>
+		</complexContent>
+	</complexType>
+</schema>
