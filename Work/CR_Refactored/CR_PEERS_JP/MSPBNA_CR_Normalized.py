@@ -1487,6 +1487,7 @@ class FFIECBulkLoader:
 
         logging.info(f"      [Merge] Updated {merged_fields} target fields")
 
+        df_main = df_main.copy()  # de-fragment after sequential column assignments
         res = df_main.reset_index()
 
         ric_check_cols = ['RCFDJ466', 'RCONJ466', 'RCFDJJ04', 'RCONJJ04']
@@ -3095,7 +3096,7 @@ class BankMetricsProcessor:
         df_final['RIC_Comm_Best'] = df_final['RIC_Comm_ACL']
         df_final['RIC_CommRE_Best'] = df_final['RIC_CRE_ACL']
 
-        return df_final
+        return df_final.copy()
 
 
     # ==================================================================================
@@ -3358,7 +3359,8 @@ class PeerAnalyzer:
         subject_data = latest_data[latest_data["CERT"] == self.config.subject_bank_cert]
         if subject_data.empty: return pd.DataFrame()
 
-        metrics_to_compare = [c for c in latest_data.columns if c not in ("CERT", "NAME", "REPDTE")]
+        numeric_cols = latest_data.select_dtypes(include=["number"]).columns
+        metrics_to_compare = [c for c in numeric_cols if c not in ("CERT", "REPDTE")]
         comparison_list = []
 
         for metric in metrics_to_compare:
