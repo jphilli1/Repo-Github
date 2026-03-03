@@ -3393,6 +3393,9 @@ class PeerAnalyzer:
                 # Filter data for this specific group
                 group_data = latest_data[latest_data["CERT"].isin(group_certs)][actual_metric].dropna()
 
+                # Force numeric conversion, turning strings into NaNs, then drop them
+                group_data = pd.to_numeric(group_data, errors='coerce').dropna()
+
                 if group_data.empty: continue
 
                 # For normalized groups, also get subject's normalized value
