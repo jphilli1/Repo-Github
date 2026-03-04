@@ -26,6 +26,24 @@
         "top_k": 15,
         "min_score": 0.01
     },
+    "weights": {
+        "content_type": {
+            "header": 3.0,
+            "title": 3.0,
+            "table": 2.5,
+            "table_row": 2.0,
+            "kv_pair": 2.0,
+            "image_caption": 1.5,
+            "list_item": 1.2,
+            "text": 1.0,
+            "paragraph": 1.0,
+            "footer": 0.3
+        },
+        "scope": {
+            "primary": 1.5,
+            "corpus": 1.0
+        }
+    },
     "router": {
         "fallback_top_k": 15,
         "multi_hop_depth": 2

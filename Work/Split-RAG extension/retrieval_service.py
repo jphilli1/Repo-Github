@@ -9,8 +9,10 @@ ABSOLUTE CONSTRAINT: No torch, transformers, llama-index, neo4j, openai, google-
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
@@ -24,9 +26,9 @@ logger = logging.getLogger("SplitRAG.Retrieval")
 
 
 # ---------------------------------------------------------------------------
-# Content-type weight multipliers (matching the v2.0 spec)
+# Content-type weight multipliers (defaults, overridable via config.json)
 # ---------------------------------------------------------------------------
-CHUNK_TYPE_WEIGHTS: Dict[str, float] = {
+DEFAULT_CHUNK_TYPE_WEIGHTS: Dict[str, float] = {
     "header": 3.0,
     "title": 3.0,
     "table": 2.5,
@@ -38,10 +40,33 @@ CHUNK_TYPE_WEIGHTS: Dict[str, float] = {
     "footer": 0.3,
 }
 
-SCOPE_BOOST: Dict[str, float] = {
+DEFAULT_SCOPE_BOOST: Dict[str, float] = {
     "primary": 1.5,
     "corpus": 1.0,
 }
+
+
+def load_weights_from_config(
+    config_path: Path = Path("config.json"),
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """
+    Load content-type weights and scope boost from config.json.
+    Falls back to built-in defaults if config is missing or incomplete.
+    """
+    chunk_weights = dict(DEFAULT_CHUNK_TYPE_WEIGHTS)
+    scope_boost = dict(DEFAULT_SCOPE_BOOST)
+    try:
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            weights_cfg = cfg.get("weights", {})
+            if "content_type" in weights_cfg:
+                chunk_weights.update(weights_cfg["content_type"])
+            if "scope" in weights_cfg:
+                scope_boost.update(weights_cfg["scope"])
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not load weights from config: %s", exc)
+    return chunk_weights, scope_boost
 
 
 class RetrievalService:
@@ -63,11 +88,15 @@ class RetrievalService:
         ngram_range: Tuple[int, int] = (1, 2),
         top_k: int = 15,
         min_score: float = 0.01,
+        chunk_type_weights: Optional[Dict[str, float]] = None,
+        scope_boost: Optional[Dict[str, float]] = None,
     ) -> None:
         self._max_features = max_features
         self._ngram_range = ngram_range
         self._top_k = top_k
         self._min_score = min_score
+        self._chunk_type_weights = chunk_type_weights or dict(DEFAULT_CHUNK_TYPE_WEIGHTS)
+        self._scope_boost = scope_boost or dict(DEFAULT_SCOPE_BOOST)
 
         self._vectorizer: Optional[TfidfVectorizer] = None
         self._tfidf_matrix = None
@@ -158,8 +187,8 @@ class RetrievalService:
                 continue
             ctype = data.get("chunk_type", "paragraph")
             scope = data.get("source_scope", "primary")
-            type_w = CHUNK_TYPE_WEIGHTS.get(ctype, 1.0)
-            scope_w = SCOPE_BOOST.get(scope, 1.0)
+            type_w = self._chunk_type_weights.get(ctype, 1.0)
+            scope_w = self._scope_boost.get(scope, 1.0)
             weighted_scores[i] = score * type_w * scope_w
 
         # Rank
@@ -213,6 +242,8 @@ class RetrievalService:
             ngram_range=self._ngram_range,
             top_k=top_k or self._top_k,
             min_score=self._min_score,
+            chunk_type_weights=self._chunk_type_weights,
+            scope_boost=self._scope_boost,
         )
         count = temp_service.build_index(subgraph)
         if count == 0:
@@ -228,7 +259,8 @@ class RetrievalService:
         return self._fitted
 
     @property
-    def document_count(self) -> int:
+    def chunk_count(self) -> int:
+        """Number of indexed chunk nodes (not unique documents)."""
         return len(self._node_ids)
 
     def get_vocabulary_size(self) -> int:

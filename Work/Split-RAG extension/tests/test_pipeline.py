@@ -438,3 +438,149 @@ class TestDeterminism:
 
         assert set(svc1.graph.nodes) == set(svc2.graph.nodes)
         assert set(svc1.graph.edges) == set(svc2.graph.edges)
+
+
+# ---------------------------------------------------------------------------
+# Cross-page isolation tests
+# ---------------------------------------------------------------------------
+
+class TestPageStateReset:
+    """
+    Verify that prev_chunk_id and current_section_id are reset at each
+    page boundary. This prevents chunks on page N+1 from incorrectly
+    linking to page N's last chunk or section.
+    """
+
+    def test_no_cross_page_next_block_edges(self, built_graph):
+        """NEXT_BLOCK edges must NOT span across pages."""
+        for u, v, d in built_graph.graph.edges(data=True):
+            if d.get("edge_type") == "NEXT_BLOCK":
+                u_page = built_graph.graph.nodes[u].get("page_number")
+                v_page = built_graph.graph.nodes[v].get("page_number")
+                assert u_page == v_page, (
+                    f"Cross-page NEXT_BLOCK edge: {u} (p{u_page}) → {v} (p{v_page})"
+                )
+
+    def test_next_block_count_per_page(self, built_graph):
+        """
+        Each page's NEXT_BLOCK count = (chunks_on_page - 1).
+        Page 1: 3 chunks (header, para, table) → 2 edges
+        Page 2: 2 chunks (header, para) → 1 edge
+        Page 3: 2 chunks (header, para) → 1 edge
+        Total: 4 NEXT_BLOCK edges (was 6 when cross-page)
+        """
+        next_block_edges = [
+            (u, v) for u, v, d in built_graph.graph.edges(data=True)
+            if d.get("edge_type") == "NEXT_BLOCK"
+        ]
+        assert len(next_block_edges) == 4
+
+    def test_headerless_page2_attaches_to_page_node(self):
+        """
+        When page 2 has no header, its chunks should attach to the page
+        node (not to page 1's section).
+        """
+        chunks = [
+            ChunkMetadata(
+                node_id=generate_node_id("test.pdf", 1, 0, "SECTION ONE HEADER"),
+                source_file_name="test.pdf",
+                page_number=1,
+                chunk_type="header",
+                bounding_boxes=[(72.0, 50.0, 540.0, 80.0)],
+                raw_text="SECTION ONE HEADER",
+                reading_order_index=0,
+                extraction_method="pdfplumber",
+            ),
+            ChunkMetadata(
+                node_id=generate_node_id("test.pdf", 1, 1, "Page 1 content"),
+                source_file_name="test.pdf",
+                page_number=1,
+                chunk_type="paragraph",
+                bounding_boxes=[(72.0, 90.0, 540.0, 160.0)],
+                raw_text="Page 1 content under the section header.",
+                reading_order_index=1,
+                extraction_method="pdfplumber",
+            ),
+            # Page 2 has NO header — just a paragraph
+            ChunkMetadata(
+                node_id=generate_node_id("test.pdf", 2, 2, "Page 2 orphan content"),
+                source_file_name="test.pdf",
+                page_number=2,
+                chunk_type="paragraph",
+                bounding_boxes=[(72.0, 50.0, 540.0, 140.0)],
+                raw_text="Page 2 orphan content with no header.",
+                reading_order_index=2,
+                extraction_method="pdfplumber",
+            ),
+        ]
+
+        svc = GraphConstructionService()
+        svc.build_graph(chunks, document_id="test123", filename="test.pdf")
+
+        page2_chunk_id = chunks[2].node_id
+        page2_node = "PAGE_test123_2"
+        page1_section = f"SEC_{chunks[0].node_id}"
+
+        # The page 2 chunk should be a child of the PAGE_2 node
+        parents = list(svc.graph.predecessors(page2_chunk_id))
+        parent_types = {
+            p: svc.graph.nodes[p].get("node_type") for p in parents
+        }
+
+        # Must be attached to page node, NOT to page 1's section
+        assert page2_node in parents, (
+            f"Page 2 chunk should attach to {page2_node}, got parents: {parents}"
+        )
+        assert page1_section not in parents, (
+            f"Page 2 chunk must NOT attach to page 1 section {page1_section}"
+        )
+
+    def test_no_cross_page_reading_order(self):
+        """First chunk on page 2 must NOT have a NEXT_BLOCK edge from page 1's last chunk."""
+        chunks = [
+            ChunkMetadata(
+                node_id=generate_node_id("test.pdf", 1, 0, "Page 1 last chunk"),
+                source_file_name="test.pdf",
+                page_number=1,
+                chunk_type="paragraph",
+                bounding_boxes=[(72.0, 50.0, 540.0, 120.0)],
+                raw_text="Page 1 last chunk content here.",
+                reading_order_index=0,
+                extraction_method="pdfplumber",
+            ),
+            ChunkMetadata(
+                node_id=generate_node_id("test.pdf", 2, 1, "Page 2 first chunk"),
+                source_file_name="test.pdf",
+                page_number=2,
+                chunk_type="paragraph",
+                bounding_boxes=[(72.0, 50.0, 540.0, 120.0)],
+                raw_text="Page 2 first chunk content here.",
+                reading_order_index=1,
+                extraction_method="pdfplumber",
+            ),
+        ]
+
+        svc = GraphConstructionService()
+        svc.build_graph(chunks, document_id="cross123", filename="test.pdf")
+
+        page1_chunk = chunks[0].node_id
+        page2_chunk = chunks[1].node_id
+
+        # There should be NO NEXT_BLOCK edge from page1_chunk to page2_chunk
+        edge_data = svc.graph.get_edge_data(page1_chunk, page2_chunk)
+        assert edge_data is None or edge_data.get("edge_type") != "NEXT_BLOCK", (
+            "Cross-page NEXT_BLOCK edge found — page state was not reset"
+        )
+
+    def test_edge_naming_consistency(self, built_graph):
+        """All sequential edges must use NEXT_BLOCK (not NEXT_CHUNK)."""
+        for u, v, d in built_graph.graph.edges(data=True):
+            assert d.get("edge_type") != "NEXT_CHUNK", (
+                f"Found legacy NEXT_CHUNK edge: {u} → {v}"
+            )
+
+    def test_chunk_count_property(self, built_graph):
+        """Verify chunk_count property (renamed from document_count)."""
+        svc = RetrievalService()
+        svc.build_index(built_graph.graph)
+        assert svc.chunk_count == 7

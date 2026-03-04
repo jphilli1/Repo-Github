@@ -111,7 +111,7 @@ class GraphEdge(BaseModel):
     source_id: str
     target_id: str
     edge_type: Literal[
-        "HAS_PAGE", "HAS_SECTION", "HAS_CHILD", "NEXT_CHUNK",
+        "HAS_PAGE", "HAS_SECTION", "HAS_CHILD", "NEXT_BLOCK",
         "CONTAINS_TABLE", "MENTIONED_IN",
     ]
     weight: float = Field(default=1.0, ge=0.0)

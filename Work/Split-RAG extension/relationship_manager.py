@@ -112,6 +112,10 @@ class DocumentKnowledgeGraph:
         current_section_id: Optional[str] = None
 
         for page_no in sorted(pages.keys()):
+            # Reset per-page state: each page starts with clean context
+            prev_chunk_id = None
+            current_section_id = None
+
             page_id = f"PAGE_{ctx.document_id}_{page_no}"
             self.graph.add_node(
                 page_id,
@@ -301,8 +305,8 @@ class DocumentKnowledgeGraph:
 # §2  HYBRID RETRIEVAL ROUTING (TF-IDF + networkx subgraph scoping)
 # ============================================================================
 
-# Content-type weight multipliers (per architecture spec)
-CONTENT_TYPE_WEIGHTS: Dict[str, float] = {
+# Content-type weight multipliers (defaults, overridable via config.json "weights" section)
+DEFAULT_CONTENT_TYPE_WEIGHTS: Dict[str, float] = {
     "header": 3.0,
     "table": 2.5,
     "kv_pair": 2.0,
@@ -310,7 +314,31 @@ CONTENT_TYPE_WEIGHTS: Dict[str, float] = {
     "text": 1.0,
 }
 
-PRIMARY_SCOPE_MULTIPLIER: float = 1.5
+DEFAULT_PRIMARY_SCOPE_MULTIPLIER: float = 1.5
+
+
+def load_weights_from_config(
+    config_path: Path = Path("config.json"),
+) -> Tuple[Dict[str, float], float]:
+    """
+    Load content-type weights and scope multiplier from config.json.
+    Falls back to built-in defaults if config is missing or incomplete.
+    """
+    weights = dict(DEFAULT_CONTENT_TYPE_WEIGHTS)
+    scope_mult = DEFAULT_PRIMARY_SCOPE_MULTIPLIER
+    try:
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            weights_cfg = cfg.get("weights", {})
+            if "content_type" in weights_cfg:
+                weights.update(weights_cfg["content_type"])
+            scope_cfg = weights_cfg.get("scope", {})
+            if "primary" in scope_cfg:
+                scope_mult = float(scope_cfg["primary"])
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not load weights from config: %s", exc)
+    return weights, scope_mult
 
 # Route definitions: keyword patterns → subgraph targets
 ROUTE_RULES: List[Dict[str, Any]] = [
@@ -376,6 +404,8 @@ class HybridRetrievalRouter:
         top_k: int = 15,
         min_score: float = 0.01,
         route_rules: Optional[List[Dict[str, Any]]] = None,
+        content_type_weights: Optional[Dict[str, float]] = None,
+        primary_scope_multiplier: Optional[float] = None,
     ) -> None:
         self._dkg = dkg
         self._max_features = max_features
@@ -383,6 +413,12 @@ class HybridRetrievalRouter:
         self._top_k = top_k
         self._min_score = min_score
         self._route_rules = route_rules or ROUTE_RULES
+        self._content_type_weights = content_type_weights or dict(DEFAULT_CONTENT_TYPE_WEIGHTS)
+        self._primary_scope_multiplier = (
+            primary_scope_multiplier
+            if primary_scope_multiplier is not None
+            else DEFAULT_PRIMARY_SCOPE_MULTIPLIER
+        )
 
         # Full-graph index
         self._vectorizer: Optional[TfidfVectorizer] = None
@@ -574,8 +610,8 @@ class HybridRetrievalRouter:
                 continue
             ctype = data.get("content_type", "text")
             scope = data.get("source_scope", "primary")
-            type_w = CONTENT_TYPE_WEIGHTS.get(ctype, 1.0)
-            scope_w = PRIMARY_SCOPE_MULTIPLIER if scope == "primary" else 1.0
+            type_w = self._content_type_weights.get(ctype, 1.0)
+            scope_w = self._primary_scope_multiplier if scope == "primary" else 1.0
             weighted_scores[i] = score * type_w * scope_w
 
         # Rank and return
@@ -818,6 +854,9 @@ def process_document(
     dkg.build_from_context_graph(ctx)
     dkg.extract_entities()
 
+    # Load configurable weights
+    ct_weights, scope_mult = load_weights_from_config(config_path)
+
     # Build retrieval router
     ngram = retrieval_cfg.get("ngram_range", [1, 2])
     router = HybridRetrievalRouter(
@@ -826,6 +865,8 @@ def process_document(
         ngram_range=tuple(ngram),
         top_k=retrieval_cfg.get("top_k", 15),
         min_score=retrieval_cfg.get("min_score", 0.01),
+        content_type_weights=ct_weights,
+        primary_scope_multiplier=scope_mult,
     )
     router.build_index()
 

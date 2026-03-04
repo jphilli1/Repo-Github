@@ -65,8 +65,8 @@ class DocumentIngestionService:
         try:
             from docling.document_converter import DocumentConverter  # noqa: F401
             return True
-        except Exception:
-            logger.warning("Docling not available — will use pdfplumber fallback.")
+        except (ImportError, ModuleNotFoundError) as exc:
+            logger.warning("Docling not available — will use pdfplumber fallback: %s", exc)
             return False
 
     # ------------------------------------------------------------------
@@ -97,7 +97,7 @@ class DocumentIngestionService:
                 logger.info(
                     "Docling extracted %d chunks from %s", len(chunks), file_path.name
                 )
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError, ImportError) as exc:
                 logger.warning(
                     "Docling failed for %s: %s — falling back to pdfplumber",
                     file_path.name,
@@ -320,8 +320,8 @@ class DocumentIngestionService:
                     if m:
                         entities[role] = m.group("entity").strip().strip('",.')
                         break
-        except Exception:
-            pass
+        except (OSError, ValueError, re.error, AttributeError) as exc:
+            logger.warning("Entity extraction failed for %s: %s", file_path.name, exc)
 
         return entities
 

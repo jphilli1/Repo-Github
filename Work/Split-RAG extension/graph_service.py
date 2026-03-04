@@ -4,7 +4,7 @@ Split-RAG Extension — Phase 2: In-Memory Document Knowledge Graph (DKG)
 GraphConstructionService:
   - Builds a networkx.DiGraph from ChunkMetadata objects
   - Structural hierarchy: Document -> Page -> Section -> Chunk
-  - Edges: HAS_PAGE, HAS_SECTION, HAS_CHILD, NEXT_CHUNK, CONTAINS_TABLE, MENTIONED_IN
+  - Edges: HAS_PAGE, HAS_SECTION, HAS_CHILD, NEXT_BLOCK, CONTAINS_TABLE, MENTIONED_IN
   - Optional rule-based entity extraction via RapidFuzz
 
 ABSOLUTE CONSTRAINT: No torch, transformers, llama-index, neo4j, openai, google-genai.
@@ -92,6 +92,10 @@ class GraphConstructionService:
         current_section_id: Optional[str] = None
 
         for page_no in sorted(pages.keys()):
+            # Reset per-page state: each page starts with clean context
+            prev_chunk_id = None
+            current_section_id = None
+
             page_node = f"PAGE_{document_id}_{page_no}"
             self.graph.add_node(
                 page_node,
@@ -147,10 +151,10 @@ class GraphConstructionService:
                         current_section_id, chunk_node, edge_type="CONTAINS_TABLE"
                     )
 
-                # Sequential reading-order edge
+                # Sequential reading-order edge (per-page only)
                 if prev_chunk_id:
                     self.graph.add_edge(
-                        prev_chunk_id, chunk_node, edge_type="NEXT_CHUNK"
+                        prev_chunk_id, chunk_node, edge_type="NEXT_BLOCK"
                     )
                 prev_chunk_id = chunk_node
 
