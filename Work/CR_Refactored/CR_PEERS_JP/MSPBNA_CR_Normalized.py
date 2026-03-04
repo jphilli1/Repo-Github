@@ -4310,106 +4310,45 @@ class ExcelOutputGenerator:
         self._enrich_audit_with_source_code()
 
     # ------------------------------------------------------------------
-    #  Static Analysis: Python_Calculation_Code & Dependencies
+    #  Static Analysis: Python_Calculation_Code & Dependencies (AST)
     # ------------------------------------------------------------------
 
-    def _enrich_audit_with_source_code(self) -> None:
-        """Append Python_Calculation_Code and Upstream_Derived_Dependencies
-        columns to ``self.audit_df`` for every derived metric.
+    # Variables that hold computed metrics inside create_derived_metrics
+    _TARGET_VARS = frozenset({"df_processed", "new_cols", "norm_cols", "df_final"})
 
-        Uses ``inspect.getsource`` on ``BankMetricsProcessor.create_derived_metrics``
-        to extract the assignment expression and parse upstream references.
+    # Segment names used in for-loops with f-string keys
+    _SEGMENT_NAMES = [
+        "Constr", "CRE", "Resi", "Comm", "Card", "OthCons",
+        "ADC", "CI",
+    ]
+
+    def _enrich_audit_with_source_code(self) -> None:
+        """Append ``Python_Calculation_Code`` and ``Upstream_Derived_Dependencies``
+        columns to *self.audit_df* for every derived metric.
+
+        Uses the :mod:`ast` module to parse
+        ``BankMetricsProcessor.create_derived_metrics`` into an Abstract
+        Syntax Tree, then walks every assignment node to extract:
+
+        * The exact RHS source text (via ``ast.get_source_segment``).
+        * All upstream metric-key references (via AST node walking).
         """
         if self.audit_df.empty:
             self.audit_df["Python_Calculation_Code"] = ""
             self.audit_df["Upstream_Derived_Dependencies"] = ""
             return
 
-        # --- 1. Grab source lines ----------------------------------
         try:
-            src = inspect.getsource(BankMetricsProcessor.create_derived_metrics)
-            src_lines = src.splitlines()
-        except (OSError, TypeError):
+            code_map, deps_map = self._ast_extract_metrics()
+        except Exception:
+            # Absolute last-resort fallback
             self.audit_df["Python_Calculation_Code"] = "Requires Manual Audit"
             self.audit_df["Upstream_Derived_Dependencies"] = ""
             return
 
-        # --- 2. Build a lookup: metric_code -> extracted code -------
-        derived_codes = set(
-            self.audit_df.loc[
-                (self.audit_df["Is_Derived"] == True)
-                | (self.audit_df["Source_of_Truth"].str.contains("Derived", case=False, na=False)),
-                "Metric_Code",
-            ]
-        )
-
-        # Also treat any metric assigned inside create_derived_metrics as
-        # having extractable code, even if not flagged Is_Derived.
-        all_metric_codes = set(self.audit_df["Metric_Code"])
-
-        code_map: dict[str, str] = {}   # metric_code -> source snippet
-        deps_map: dict[str, str] = {}   # metric_code -> comma-sep dependencies
-
-        # Pre-compile regex for the three assignment targets:
-        #   df_processed['<key>'] = ...
-        #   new_cols['<key>'] = ...
-        #   norm_cols['<key>'] = ...
-        _ASSIGN_PAT = re.compile(
-            r"""(?:df_processed|new_cols|norm_cols|df_final)\[['"]([^'"]+)['"]\]\s*=""",
-        )
-
-        # Also detect f-string loop expansions like:
-        #   new_cols[f'RIC_{seg_name}_ACL_Coverage'] = ...
-        _FSTR_ASSIGN_PAT = re.compile(
-            r"""(?:df_processed|new_cols|norm_cols|df_final)\[f['"]([^'"]+)['"]\]\s*=""",
-        )
-
-        # Map from literal metric code -> (line_index, rhs_code)
-        # Walk every source line and collect assignments.
-        for i, line in enumerate(src_lines):
-            stripped = line.strip()
-
-            # --- Literal key assignments ---
-            m = _ASSIGN_PAT.search(stripped)
-            if m:
-                key = m.group(1)
-                rhs = stripped[m.end():].strip()
-                rhs = self._expand_multiline(src_lines, i, rhs)
-                code_map[key] = rhs
-                continue
-
-            # --- f-string key assignments ---
-            fm = _FSTR_ASSIGN_PAT.search(stripped)
-            if fm:
-                template = fm.group(1)  # e.g. "RIC_{seg_name}_ACL_Coverage"
-                rhs = stripped[fm.end():].strip()
-                rhs = self._expand_multiline(src_lines, i, rhs)
-                # Expand template for every segment name found in the source
-                seg_names = re.findall(
-                    r"""['"](\w+)['"]\s*:\s*\(""", src,
-                )
-                if not seg_names:
-                    seg_names = ["Constr", "CRE", "Resi", "Comm", "Card", "OthCons"]
-                for seg in seg_names:
-                    expanded = template.replace("{seg_name}", seg).replace("{seg}", seg)
-                    if expanded not in code_map:
-                        code_map[expanded] = rhs
-
-        # --- 3. For each metric, extract upstream derived deps ------
-        _KEY_REF_PAT = re.compile(
-            r"""(?:df_processed|new_cols|norm_cols|df_final)(?:\[['"]|\.\bget\s*\(\s*['"])([^'"]+)['"]"""
-        )
-
-        for code, snippet in code_map.items():
-            refs = set(_KEY_REF_PAT.findall(snippet))
-            # Keep only references that are themselves derived / computed
-            # in this function (i.e. they also appear in code_map).
-            upstream = sorted(refs & set(code_map.keys()) - {code})
-            deps_map[code] = ", ".join(upstream) if upstream else ""
-
-        # --- 4. Map back onto the audit DataFrame -------------------
-        calc_col = []
-        deps_col = []
+        # Map back onto audit rows
+        calc_col: list[str] = []
+        deps_col: list[str] = []
         for _, row in self.audit_df.iterrows():
             mc = row["Metric_Code"]
             is_derived = (
@@ -4417,8 +4356,7 @@ class ExcelOutputGenerator:
                 or "Derived" in str(row.get("Source_of_Truth", ""))
             )
             if is_derived or mc in code_map:
-                snippet = code_map.get(mc, "Requires Manual Audit")
-                calc_col.append(snippet)
+                calc_col.append(code_map.get(mc, "Requires Manual Audit"))
                 deps_col.append(deps_map.get(mc, ""))
             else:
                 calc_col.append("")
@@ -4427,19 +4365,172 @@ class ExcelOutputGenerator:
         self.audit_df["Python_Calculation_Code"] = calc_col
         self.audit_df["Upstream_Derived_Dependencies"] = deps_col
 
-    @staticmethod
-    def _expand_multiline(src_lines: list[str], start: int, rhs: str) -> str:
-        """If *rhs* has unbalanced parentheses, append subsequent lines
-        until balanced or a reasonable limit is reached.
+    # ---- AST helpers -------------------------------------------------
+
+    def _ast_extract_metrics(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Parse *create_derived_metrics* with :mod:`ast` and return
+        ``(code_map, deps_map)`` where each maps metric-code strings to
+        extracted source / comma-separated dependency lists.
         """
-        open_parens = rhs.count("(") - rhs.count(")")
-        j = start + 1
-        while open_parens > 0 and j < len(src_lines) and (j - start) < 20:
-            next_line = src_lines[j].strip()
-            rhs += " " + next_line
-            open_parens += next_line.count("(") - next_line.count(")")
-            j += 1
-        return rhs.strip()
+        import ast as _ast
+        import textwrap as _tw
+
+        # 1. Obtain dedented method source for standalone parsing
+        src_full = inspect.getsource(BankMetricsProcessor.create_derived_metrics)
+        src = _tw.dedent(src_full)
+        tree = _ast.parse(src)
+
+        # 2. Walk all Assign nodes and collect metric -> RHS source text
+        raw_map: dict[str, str] = {}          # literal or template key -> rhs
+        template_keys: list[str] = []         # f-string templates for expansion
+
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Assign):
+                continue
+            for target in node.targets:
+                if not isinstance(target, _ast.Subscript):
+                    continue
+
+                var_name = self._ast_var_name(target.value)
+                if var_name not in self._TARGET_VARS:
+                    continue
+
+                key = self._ast_extract_key(target.slice)
+                if key is None:
+                    continue
+
+                # Extract RHS: prefer get_source_segment for perfect fidelity
+                rhs_src = _ast.get_source_segment(src, node.value)
+                if rhs_src is None:
+                    try:
+                        rhs_src = _ast.unparse(node.value)
+                    except Exception:
+                        rhs_src = "Requires Manual Audit"
+
+                # Normalise whitespace (collapse inner newlines for readability)
+                rhs_src = " ".join(rhs_src.split())
+                raw_map[key] = rhs_src
+
+                if "{" in key:
+                    template_keys.append(key)
+
+        # 3. Expand f-string templates into concrete metric names
+        code_map: dict[str, str] = {}
+        for key, rhs in raw_map.items():
+            if "{" not in key:
+                code_map[key] = rhs
+            else:
+                # Expand template across all known segment names
+                for seg in self._SEGMENT_NAMES:
+                    expanded = (
+                        key.replace("{seg_name}", seg)
+                           .replace("{seg}", seg)
+                           .replace("{...}", seg)
+                    )
+                    if expanded not in code_map:
+                        code_map[expanded] = rhs
+
+        # 4. Build dependency map using AST-based RHS walking
+        all_keys = set(code_map.keys())
+        deps_map: dict[str, str] = {}
+
+        for metric_code, rhs_src in code_map.items():
+            refs = self._ast_extract_deps(rhs_src, all_keys)
+            refs.discard(metric_code)
+            deps_map[metric_code] = ", ".join(sorted(refs)) if refs else ""
+
+        return code_map, deps_map
+
+    @staticmethod
+    def _ast_var_name(node) -> str | None:
+        """Return the variable name from an AST node (Name or Attribute)."""
+        import ast as _ast
+        if isinstance(node, _ast.Name):
+            return node.id
+        if isinstance(node, _ast.Attribute):
+            return node.attr
+        return None
+
+    @staticmethod
+    def _ast_extract_key(slice_node) -> str | None:
+        """Extract the string key from a subscript slice AST node.
+
+        Handles:
+        - ``ast.Constant('key')`` → ``'key'``
+        - ``ast.JoinedStr`` (f-string) → template like ``'RIC_{seg_name}_ACL_Coverage'``
+        """
+        import ast as _ast
+        if isinstance(slice_node, _ast.Constant) and isinstance(slice_node.value, str):
+            return slice_node.value
+        if isinstance(slice_node, _ast.JoinedStr):
+            parts: list[str] = []
+            for v in slice_node.values:
+                if isinstance(v, _ast.Constant):
+                    parts.append(str(v.value))
+                elif isinstance(v, _ast.FormattedValue):
+                    if isinstance(v.value, _ast.Name):
+                        parts.append("{" + v.value.id + "}")
+                    else:
+                        parts.append("{...}")
+            return "".join(parts)
+        return None
+
+    def _ast_extract_deps(self, rhs_src: str, all_keys: set[str]) -> set[str]:
+        """Walk the AST of an RHS code snippet and collect every metric-key
+        reference (subscript or ``.get()`` call) that is itself a known
+        derived metric.
+
+        Falls back to regex if the snippet cannot be parsed as an expression.
+        """
+        import ast as _ast
+
+        deps: set[str] = set()
+
+        # Try parsing as expression first, then as statement(s)
+        rhs_tree = None
+        for mode in ("eval", "exec"):
+            try:
+                rhs_tree = _ast.parse(rhs_src, mode=mode)
+                break
+            except SyntaxError:
+                continue
+
+        if rhs_tree is None:
+            # Regex fallback for truly unparseable fragments
+            pat = re.compile(
+                r"""(?:df_processed|new_cols|norm_cols|df_final)"""
+                r"""(?:\[['"]|\.get\s*\(\s*['"])([^'"]+)['"]"""
+            )
+            return set(pat.findall(rhs_src)) & all_keys
+
+        for node in _ast.walk(rhs_tree):
+            # Subscript: var['key']
+            if isinstance(node, _ast.Subscript):
+                var_name = self._ast_var_name(node.value)
+                if var_name in self._TARGET_VARS:
+                    k = self._ast_extract_key(node.slice)
+                    if k and k in all_keys:
+                        deps.add(k)
+
+            # Method call: var.get('key', default)
+            elif isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute):
+                if node.func.attr == "get":
+                    var_name = self._ast_var_name(node.func.value)
+                    if var_name in self._TARGET_VARS and node.args:
+                        arg0 = node.args[0]
+                        if isinstance(arg0, _ast.Constant) and isinstance(arg0.value, str):
+                            if arg0.value in all_keys:
+                                deps.add(arg0.value)
+
+            # Also catch string constants inside list literals passed to
+            # helper functions like sum_cols(df, ['X', 'Y']).
+            # These are upstream *source* fields, not derived, so only
+            # include them if they are in all_keys.
+            elif isinstance(node, _ast.Constant) and isinstance(node.value, str):
+                if node.value in all_keys:
+                    deps.add(node.value)
+
+        return deps
 
     # ------------------------------------------------------------------
     #  Audit Trail Builder
