@@ -1,0 +1,50 @@
+{
+    "entities": {
+        "borrower": {
+            "patterns": [
+                "\"Borrower\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Borrower\"\\)",
+                "Between\\s+(?P<lender>.+?)\\s+\\(\"Lender\"\\)\\s+and\\s+(?P<entity>.+?)\\s+\\(\"Borrower\"\\)",
+                "BORROWER:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "lender": {
+            "patterns": [
+                "\"Lender\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Lender\"\\)",
+                "LENDER:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "guarantor": {
+            "patterns": [
+                "\"Guarantor\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Guarantor\"\\)",
+                "GUARANTOR:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        }
+    },
+    "entity_keywords": {
+        "financial_metric": [
+            "NPL ratio", "net interest margin", "capital adequacy",
+            "loan-to-value", "debt service coverage", "return on equity",
+            "tier 1 capital", "leverage ratio", "provision coverage"
+        ],
+        "contract_term": [
+            "maturity date", "interest rate", "principal amount",
+            "collateral", "covenant", "default event", "prepayment",
+            "amortization", "guarantee", "subordination"
+        ],
+        "regulatory": [
+            "Basel III", "Basel IV", "Dodd-Frank", "Volcker Rule",
+            "IFRS 9", "CECL", "stress test", "risk-weighted assets"
+        ],
+        "pricing": [
+            "SOFR", "LIBOR", "spread", "basis points", "margin",
+            "commitment fee", "origination fee", "prepayment penalty"
+        ]
+    },
+    "stopwords": [
+        "the", "is", "at", "which", "on", "and", "a", "an", "of", "to",
+        "in", "for", "with", "by", "from", "as", "or", "be", "are", "was"
+    ]
+}
