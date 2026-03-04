@@ -1,12 +1,12 @@
 """
 Split-RAG System v2.0 — Tier 1 Extraction Engine (Refactored)
-"The Factory" — Multi-Engine Dual-Run with Deterministic Fallbacks
+"The Factory" — pdfplumber Primary + pypdfium2 Fallback
 
 ARCHITECTURE CONSTRAINTS (STRICT ENFORCEMENT):
     - Zero External APIs: No OpenAI, Anthropic, Gemini, or external API calls
     - Zero Neural Network Dependencies: No torch, transformers, or llama-index imports
-    - Multi-Engine Dual-Run: Docling primary → pdfplumber+pypdfium2 fallback
-    - ≥ 99% detection accuracy SLA via resilient cascading extraction
+    - Primary Engine: pdfplumber with .extract_words() for exact bbox
+    - Fallback Engine: pypdfium2 for corrupted-page recovery
     - Every extracted node carries [x0, y0, x1, y1] bounding box metadata
 
 CP-001: All functions have explicit return type hints
@@ -34,20 +34,7 @@ from pydantic import ValidationError
 import schema_v2 as schema
 
 # ---------------------------------------------------------------------------
-# DOCLING AVAILABILITY PROBE — lazy import, torch may be broken
-# ---------------------------------------------------------------------------
-_DOCLING_AVAILABLE: bool = False
-try:
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
-    from docling.datamodel.base_models import InputFormat
-    _DOCLING_AVAILABLE = True
-except Exception:
-    # Docling or its torch dependency is broken — will use fallback
-    _DOCLING_AVAILABLE = False
-
-# ---------------------------------------------------------------------------
-# PYPDFIUM2 AVAILABILITY PROBE — used for bbox rendering fallback
+# PYPDFIUM2 AVAILABILITY PROBE — used for per-page fallback
 # ---------------------------------------------------------------------------
 _PYPDFIUM2_AVAILABLE: bool = False
 try:
@@ -56,7 +43,7 @@ try:
 except ImportError:
     _PYPDFIUM2_AVAILABLE = False
 
-# pdfplumber is always required as minimum fallback
+# pdfplumber is the PRIMARY engine — always required
 import pdfplumber
 
 
@@ -70,7 +57,6 @@ class Config:
         "input_dir", "output_dir", "log_dir", "quarantine_dir",
         "primary_engine", "fallback_engine",
         "enable_ocr", "enable_table_detection", "max_pages_scan",
-        "docling_use_gpu", "docling_table_mode",
         "conflict_threshold", "keep_all_policy",
     )
 
@@ -79,7 +65,6 @@ class Config:
         input_dir: Path, output_dir: Path, log_dir: Path, quarantine_dir: Path,
         primary_engine: str, fallback_engine: str,
         enable_ocr: bool, enable_table_detection: bool, max_pages_scan: int,
-        docling_use_gpu: bool, docling_table_mode: str,
         conflict_threshold: float, keep_all_policy: bool,
     ) -> None:
         self.input_dir = input_dir
@@ -91,8 +76,6 @@ class Config:
         self.enable_ocr = enable_ocr
         self.enable_table_detection = enable_table_detection
         self.max_pages_scan = max_pages_scan
-        self.docling_use_gpu = docling_use_gpu
-        self.docling_table_mode = docling_table_mode
         self.conflict_threshold = conflict_threshold
         self.keep_all_policy = keep_all_policy
 
@@ -104,22 +87,18 @@ def load_config(config_path: Path) -> Config:
             data = json.load(f)
         paths = data.get("paths", {})
         ext_set = data.get("extraction_settings", data.get("ingestion", {}))
-        doc_set = data.get("docling_settings", {})
         val_set = data.get("validation_settings", {})
         return Config(
             input_dir=Path(paths.get("input_directory", "input")),
             output_dir=Path(paths.get("output_directory", "output")),
             log_dir=Path(paths.get("log_directory", "logs")),
             quarantine_dir=Path(paths.get("quarantine_directory", "quarantine")),
-            primary_engine=ext_set.get("primary_engine", "docling"),
-            fallback_engine=ext_set.get("fallback_engine", "pdfplumber"),
+            primary_engine=ext_set.get("primary_engine", "pdfplumber"),
+            fallback_engine=ext_set.get("fallback_engine", "pypdfium2"),
             enable_ocr=ext_set.get("enable_ocr", False),
             enable_table_detection=ext_set.get("enable_table_detection", True),
             max_pages_scan=ext_set.get("max_pages_for_entity_scan",
                                        ext_set.get("entity_scan_pages", 20)),
-            docling_use_gpu=doc_set.get("use_gpu",
-                                        ext_set.get("use_gpu", False)),
-            docling_table_mode=doc_set.get("table_mode", "accurate"),
             conflict_threshold=val_set.get("conflict_threshold_levenshtein", 0.3),
             keep_all_policy=val_set.get("enable_keep_all_policy", True),
         )
@@ -194,122 +173,18 @@ def extract_entities(
 
 
 # ============================================================================
-# PRIMARY ENGINE: Docling (wrapped in resilient try/except)
+# PRIMARY ENGINE: pdfplumber with .extract_words() for exact bounding boxes
 # ============================================================================
 
-def process_with_docling(
-    file_path: Path, config: Config, doc_id: str, file_hash: str
-) -> List[schema.ContextNode]:
-    """
-    Primary extraction via IBM Docling.
-    Wrapped in robust error handling — if torch is broken, docling init
-    will fail and we cascade to fallback.
-    """
-    if not _DOCLING_AVAILABLE:
-        raise RuntimeError("Docling not available (torch dependency likely broken)")
-
-    nodes: List[schema.ContextNode] = []
-
-    # Configure pipeline
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = config.enable_ocr
-    pipeline_options.do_table_structure = config.enable_table_detection
-    if config.docling_table_mode == "accurate":
-        pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
-    else:
-        pipeline_options.table_structure_options.mode = TableFormerMode.FAST
-
-    # CPU-only unless explicitly configured
-    if config.docling_use_gpu:
-        pipeline_options.accelerator_options.device = "cuda"
-    else:
-        pipeline_options.accelerator_options.device = "cpu"
-
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-        }
-    )
-
-    doc_result = converter.convert(file_path)
-    doc = doc_result.document
-
-    chunk_idx = 0
-
-    # --- Text elements ---
-    for item in doc.texts:
-        c_type = _map_docling_label(item.label)
-        page_no = item.prov[0].page_no if item.prov else 1
-        bbox_raw = item.prov[0].bbox.as_tuple() if item.prov else None
-        bbox_list = [float(x) for x in bbox_raw] if bbox_raw else None
-
-        chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, item.text)
-        lineage = schema.generate_lineage_trace(file_hash, page_no, bbox_list, "docling")
-
-        meta = schema.NodeMetadata(
-            page_number=page_no,
-            bbox=bbox_list,
-            source_scope="primary",
-            extraction_method="docling",
-            is_active=True,
-        )
-        node = schema.ContextNode(
-            chunk_id=chunk_id,
-            content_type=c_type,
-            content=item.text,
-            metadata=meta,
-            lineage_trace=lineage,
-        )
-        nodes.append(node)
-        chunk_idx += 1
-
-    # --- Tables ---
-    for table in doc.tables:
-        page_no = table.prov[0].page_no if table.prov else 1
-        bbox_raw = table.prov[0].bbox.as_tuple() if table.prov else None
-        bbox_list = [float(x) for x in bbox_raw] if bbox_raw else None
-        md_content = table.export_to_markdown()
-        t_shape = None
-        if hasattr(table, "data"):
-            num_rows = getattr(table.data, "num_rows", 0)
-            num_cols = getattr(table.data, "num_cols", 0)
-            if num_rows and num_cols:
-                t_shape = [num_rows, num_cols]
-
-        chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, md_content)
-        lineage = schema.generate_lineage_trace(file_hash, page_no, bbox_list, "docling")
-
-        meta = schema.NodeMetadata(
-            page_number=page_no,
-            bbox=bbox_list,
-            table_shape=t_shape,
-            source_scope="primary",
-            extraction_method="docling",
-            is_active=True,
-        )
-        node = schema.ContextNode(
-            chunk_id=chunk_id,
-            content_type="table",
-            content=md_content,
-            metadata=meta,
-            lineage_trace=lineage,
-        )
-        nodes.append(node)
-        chunk_idx += 1
-
-    return nodes
-
-
-# ============================================================================
-# FALLBACK ENGINE: pdfplumber + pypdfium2 (combined for ≥ 99% SLA)
-# ============================================================================
-
-def process_with_fallback(
+def process_with_pdfplumber(
     file_path: Path, doc_id: str, file_hash: str
 ) -> List[schema.ContextNode]:
     """
-    Fallback extraction using pdfplumber for text/tables and
-    pypdfium2 for supplementary bounding-box accuracy.
+    Primary extraction using pdfplumber.
+
+    - .extract_words() captures text alongside exact [x0, top, x1, bottom] bbox
+    - .find_tables() extracts tables with bounding-box coordinates
+    - Per-page try/except with pypdfium2 fallback for corrupted pages
 
     Spatial Provenance: Every node carries [x0, y0, x1, y1] coordinates
     derived from pdfplumber word-level geometry.
@@ -317,228 +192,235 @@ def process_with_fallback(
     nodes: List[schema.ContextNode] = []
     chunk_idx = 0
 
-    # --- Phase A: pypdfium2 page dimensions (if available) ---
-    page_dims: Dict[int, Tuple[float, float]] = {}
-    if _PYPDFIUM2_AVAILABLE:
-        try:
-            pdf_doc = pdfium.PdfDocument(str(file_path))
-            for i in range(len(pdf_doc)):
-                page = pdf_doc[i]
-                page_dims[i + 1] = (page.get_width(), page.get_height())
-        except Exception:
-            pass
-
-    # --- Phase B: pdfplumber extraction with word-level bounding boxes ---
     with pdfplumber.open(file_path) as pdf:
         for page_idx, page in enumerate(pdf.pages):
             page_no = page_idx + 1
-            extraction_method = "pdfplumber"
 
-            # Extract word-level data for spatial reconstruction
-            words = page.extract_words(keep_blank_chars=False) or []
+            try:
+                # --- Text extraction via .extract_words() ---
+                words = page.extract_words(keep_blank_chars=False) or []
 
-            # Group into lines and merge into paragraphs with bounding boxes
-            lines = _cluster_words_to_lines(words)
-            paragraphs = _merge_lines_to_paragraphs(lines)
+                # Group into lines and merge into paragraphs with bounding boxes
+                lines = _cluster_words_to_lines(words)
+                paragraphs = _merge_lines_to_paragraphs(lines)
 
-            for para_text, para_bbox in paragraphs:
-                if len(para_text.strip()) < 5:
-                    continue
+                for para_text, para_bbox in paragraphs:
+                    if len(para_text.strip()) < 5:
+                        continue
 
-                c_type = _classify_chunk_type(para_text)
-                bbox_list = list(para_bbox)
-                chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, para_text)
-                lineage = schema.generate_lineage_trace(
-                    file_hash, page_no, bbox_list, extraction_method
+                    c_type = _classify_chunk_type(para_text)
+                    bbox_list = list(para_bbox)
+                    chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, para_text)
+                    lineage = schema.generate_lineage_trace(
+                        file_hash, page_no, bbox_list, "pdfplumber"
+                    )
+
+                    meta = schema.NodeMetadata(
+                        page_number=page_no,
+                        bbox=bbox_list,
+                        source_scope="primary",
+                        extraction_method="pdfplumber",
+                        is_active=True,
+                    )
+                    node = schema.ContextNode(
+                        chunk_id=chunk_id,
+                        content_type=c_type,
+                        content=para_text,
+                        metadata=meta,
+                        lineage_trace=lineage,
+                    )
+                    nodes.append(node)
+                    chunk_idx += 1
+
+                # --- Tables with bounding-box via .find_tables() ---
+                tables = page.find_tables() or []
+                for tbl in tables:
+                    table_data = tbl.extract()
+                    if not table_data:
+                        continue
+                    md_content = _table_to_markdown(table_data)
+
+                    # Table bbox from pdfplumber table object
+                    tbl_bbox = list(tbl.bbox) if hasattr(tbl, "bbox") and tbl.bbox else None
+                    t_shape = None
+                    if table_data:
+                        t_shape = [len(table_data), len(table_data[0]) if table_data[0] else 0]
+
+                    chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, md_content)
+                    lineage = schema.generate_lineage_trace(
+                        file_hash, page_no, tbl_bbox, "pdfplumber"
+                    )
+
+                    meta = schema.NodeMetadata(
+                        page_number=page_no,
+                        bbox=tbl_bbox,
+                        table_shape=t_shape,
+                        source_scope="primary",
+                        extraction_method="pdfplumber",
+                        is_active=True,
+                    )
+                    node = schema.ContextNode(
+                        chunk_id=chunk_id,
+                        content_type="table",
+                        content=md_content,
+                        metadata=meta,
+                        lineage_trace=lineage,
+                    )
+                    nodes.append(node)
+                    chunk_idx += 1
+
+            except Exception:
+                # Per-page fallback to pypdfium2 if pdfplumber fails
+                fallback_nodes = _fallback_page_pypdfium2(
+                    file_path, page_no, doc_id, file_hash, chunk_idx
                 )
-
-                meta = schema.NodeMetadata(
-                    page_number=page_no,
-                    bbox=bbox_list,
-                    source_scope="primary",
-                    extraction_method="pdfplumber",
-                    is_active=True,
-                )
-                node = schema.ContextNode(
-                    chunk_id=chunk_id,
-                    content_type=c_type,
-                    content=para_text,
-                    metadata=meta,
-                    lineage_trace=lineage,
-                )
-                nodes.append(node)
-                chunk_idx += 1
-
-            # --- Tables with bounding-box estimation ---
-            tables = page.find_tables() or []
-            for tbl in tables:
-                table_data = tbl.extract()
-                if not table_data:
-                    continue
-                md_content = _table_to_markdown(table_data)
-
-                # Table bbox from pdfplumber table object
-                tbl_bbox = list(tbl.bbox) if hasattr(tbl, "bbox") and tbl.bbox else None
-                t_shape = None
-                if table_data:
-                    t_shape = [len(table_data), len(table_data[0]) if table_data[0] else 0]
-
-                chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, md_content)
-                lineage = schema.generate_lineage_trace(
-                    file_hash, page_no, tbl_bbox, extraction_method
-                )
-
-                meta = schema.NodeMetadata(
-                    page_number=page_no,
-                    bbox=tbl_bbox,
-                    table_shape=t_shape,
-                    source_scope="primary",
-                    extraction_method="pdfplumber",
-                    is_active=True,
-                )
-                node = schema.ContextNode(
-                    chunk_id=chunk_id,
-                    content_type="table",
-                    content=md_content,
-                    metadata=meta,
-                    lineage_trace=lineage,
-                )
-                nodes.append(node)
-                chunk_idx += 1
+                nodes.extend(fallback_nodes)
+                chunk_idx += len(fallback_nodes)
 
     return nodes
 
 
 # ============================================================================
-# DUAL-RUN CONFLICT DETECTION (Keep-All Policy)
+# FALLBACK ENGINE: pypdfium2 (per-page recovery for corrupted pages)
 # ============================================================================
 
-def dual_run_with_conflict_detection(
-    file_path: Path, config: Config, doc_id: str, file_hash: str,
-    logger: logging.Logger,
-) -> Tuple[List[schema.ContextNode], bool, bool, int]:
+def _fallback_page_pypdfium2(
+    file_path: Path, page_no: int, doc_id: str, file_hash: str, chunk_idx: int
+) -> List[schema.ContextNode]:
     """
-    Execute Multi-Engine Dual-Run strategy for ≥ 99% detection accuracy.
+    Fallback extraction for a single corrupted page using pypdfium2.
+    Returns text-only nodes without precise word-level bounding boxes.
+    """
+    if not _PYPDFIUM2_AVAILABLE:
+        return []
 
-    Strategy:
-        1. Try primary engine (Docling) — if it succeeds, also run fallback
-           and compare for conflict detection (Keep-All Policy).
-        2. If primary fails, use fallback as sole engine.
+    nodes: List[schema.ContextNode] = []
+    try:
+        pdf_doc = pdfium.PdfDocument(str(file_path))
+        page_index = page_no - 1
+        if page_index >= len(pdf_doc):
+            return []
+
+        page = pdf_doc[page_index]
+        text = page.get_textpage().get_text_range()
+
+        if not text or len(text.strip()) < 5:
+            return []
+
+        # Split into paragraphs by double newline
+        paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+
+        page_width = page.get_width()
+        page_height = page.get_height()
+
+        for para_text in paragraphs:
+            if len(para_text) < 5:
+                continue
+
+            # Approximate bbox as full page width
+            bbox_list = [0.0, 0.0, float(page_width), float(page_height)]
+            c_type = _classify_chunk_type(para_text)
+
+            chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, para_text)
+            lineage = schema.generate_lineage_trace(
+                file_hash, page_no, bbox_list, "pypdfium2"
+            )
+
+            meta = schema.NodeMetadata(
+                page_number=page_no,
+                bbox=bbox_list,
+                source_scope="primary",
+                extraction_method="pypdfium2",
+                is_active=True,
+            )
+            node = schema.ContextNode(
+                chunk_id=chunk_id,
+                content_type=c_type,
+                content=para_text,
+                metadata=meta,
+                lineage_trace=lineage,
+            )
+            nodes.append(node)
+            chunk_idx += 1
+
+    except Exception:
+        pass
+
+    return nodes
+
+
+def process_with_pypdfium2_full(
+    file_path: Path, doc_id: str, file_hash: str
+) -> List[schema.ContextNode]:
+    """
+    Full-document fallback extraction using pypdfium2.
+    Used when pdfplumber completely fails to open the document.
+    """
+    if not _PYPDFIUM2_AVAILABLE:
+        raise RuntimeError("pypdfium2 not available — cannot extract")
+
+    nodes: List[schema.ContextNode] = []
+    chunk_idx = 0
+
+    pdf_doc = pdfium.PdfDocument(str(file_path))
+    for page_index in range(len(pdf_doc)):
+        page_no = page_index + 1
+        page_nodes = _fallback_page_pypdfium2(
+            file_path, page_no, doc_id, file_hash, chunk_idx
+        )
+        nodes.extend(page_nodes)
+        chunk_idx += len(page_nodes)
+
+    return nodes
+
+
+# ============================================================================
+# EXTRACTION PIPELINE (pdfplumber primary → pypdfium2 fallback)
+# ============================================================================
+
+def run_extraction(
+    file_path: Path, doc_id: str, file_hash: str,
+    logger: logging.Logger,
+) -> Tuple[List[schema.ContextNode], bool, bool]:
+    """
+    Execute extraction strategy:
+        1. Try pdfplumber as primary engine
+        2. If pdfplumber completely fails to open, fallback to pypdfium2
+
+    Per-page fallback (pdfplumber page error → pypdfium2) is handled
+    inside process_with_pdfplumber() automatically.
 
     Returns:
-        (nodes, primary_success, fallback_triggered, conflicts_detected)
+        (nodes, primary_success, fallback_triggered)
     """
-    primary_nodes: List[schema.ContextNode] = []
-    fallback_nodes: List[schema.ContextNode] = []
     primary_success = False
     fallback_triggered = False
-    conflicts_detected = 0
 
-    # --- Attempt Primary ---
-    logger.info("Starting Primary Extraction (docling) for %s...", file_path.name)
+    # --- Attempt Primary: pdfplumber ---
+    logger.info("Starting Primary Extraction (pdfplumber) for %s...", file_path.name)
     try:
-        primary_nodes = process_with_docling(file_path, config, doc_id, file_hash)
+        nodes = process_with_pdfplumber(file_path, doc_id, file_hash)
         primary_success = True
-        logger.info("Docling extracted %d nodes from %s", len(primary_nodes), file_path.name)
-    except RuntimeError as exc:
-        logger.warning("Primary engine unavailable for %s: %s", file_path.name, exc)
-    except Exception as exc:
+        logger.info("pdfplumber extracted %d nodes from %s", len(nodes), file_path.name)
+        return nodes, primary_success, fallback_triggered
+    except (OSError, pdfplumber.exceptions.PSException) as exc:
         logger.warning("Primary engine failed for %s: %s", file_path.name, exc)
 
-    # --- Attempt Fallback ---
-    if not primary_success:
-        logger.info("Triggering Fallback Engine (pdfplumber+pypdfium2) for %s...", file_path.name)
-        try:
-            fallback_nodes = process_with_fallback(file_path, doc_id, file_hash)
-            fallback_triggered = True
-            logger.info("Fallback extracted %d nodes from %s", len(fallback_nodes), file_path.name)
-        except Exception as exc:
-            logger.critical("Both engines failed for %s: %s", file_path.name, exc)
-            raise
-
-    # --- Keep-All Conflict Detection (Dual-Run when primary succeeded) ---
-    if primary_success and config.keep_all_policy:
-        try:
-            fallback_nodes = process_with_fallback(file_path, doc_id, file_hash)
-            conflicts_detected = _detect_conflicts(
-                primary_nodes, fallback_nodes, config.conflict_threshold
-            )
-            if conflicts_detected > 0:
-                logger.warning(
-                    "Keep-All Policy: %d conflicts detected in %s — retaining both versions",
-                    conflicts_detected, file_path.name,
-                )
-                # Mark fallback nodes as inactive (audit trail)
-                for node in fallback_nodes:
-                    node.metadata.is_active = False
-                    node.metadata.conflict_detected = True
-                primary_nodes.extend(fallback_nodes)
-        except Exception as exc:
-            logger.info("Dual-run fallback skipped for %s: %s", file_path.name, exc)
-
-    final_nodes = primary_nodes if primary_success else fallback_nodes
-    return final_nodes, primary_success, fallback_triggered, conflicts_detected
-
-
-def _detect_conflicts(
-    primary: List[schema.ContextNode],
-    fallback: List[schema.ContextNode],
-    threshold: float,
-) -> int:
-    """
-    Compare primary vs fallback node sets using Levenshtein distance.
-    Returns number of conflicts detected above threshold.
-    """
-    conflicts = 0
+    # --- Attempt Fallback: pypdfium2 ---
+    logger.info("Triggering Fallback Engine (pypdfium2) for %s...", file_path.name)
     try:
-        from rapidfuzz import fuzz
-    except ImportError:
-        # Without RapidFuzz, skip conflict detection
-        return 0
-
-    primary_texts = {n.chunk_id: n.content for n in primary}
-    fallback_texts = {n.chunk_id: n.content for n in fallback}
-
-    # Compare texts on matching page numbers
-    primary_by_page: Dict[int, List[str]] = {}
-    for n in primary:
-        primary_by_page.setdefault(n.metadata.page_number, []).append(n.content)
-
-    fallback_by_page: Dict[int, List[str]] = {}
-    for n in fallback:
-        fallback_by_page.setdefault(n.metadata.page_number, []).append(n.content)
-
-    for page_no in primary_by_page:
-        if page_no not in fallback_by_page:
-            continue
-        for p_text in primary_by_page[page_no]:
-            best_ratio = 0.0
-            for f_text in fallback_by_page[page_no]:
-                ratio = fuzz.ratio(p_text[:500], f_text[:500]) / 100.0
-                best_ratio = max(best_ratio, ratio)
-            if best_ratio < (1.0 - threshold):
-                conflicts += 1
-
-    return conflicts
+        nodes = process_with_pypdfium2_full(file_path, doc_id, file_hash)
+        fallback_triggered = True
+        logger.info("pypdfium2 extracted %d nodes from %s", len(nodes), file_path.name)
+        return nodes, primary_success, fallback_triggered
+    except Exception as exc:
+        logger.critical("Both engines failed for %s: %s", file_path.name, exc)
+        raise
 
 
 # ---------------------------------------------------------------------------
 # Text processing helpers
 # ---------------------------------------------------------------------------
-
-def _map_docling_label(label: str) -> str:
-    """Map Docling structural labels to schema content_type."""
-    mapping = {
-        "title": "header",
-        "section_header": "header",
-        "paragraph": "text",
-        "list_item": "text",
-        "caption": "image_caption",
-        "page_footer": "text",
-        "page_header": "header",
-    }
-    return mapping.get(label, "text")
-
 
 def _cluster_words_to_lines(
     words: List[Dict[str, Any]], y_tolerance: float = 3.0
@@ -664,7 +546,7 @@ def process_file(
     Steps:
         1. Hash file → deterministic document_id
         2. Entity anchoring (regex-based)
-        3. Multi-Engine Dual-Run extraction
+        3. pdfplumber primary → pypdfium2 fallback extraction
         4. Assemble ContextGraph with ExtractionMetrics
         5. Validate via Pydantic and serialize to JSON
     """
@@ -683,12 +565,10 @@ def process_file(
     logger.info("Scanning entities for %s...", file_path.name)
     entities = extract_entities(file_path, config.max_pages_scan, rules)
 
-    # 3. Multi-Engine Dual-Run extraction
+    # 3. Extraction (pdfplumber primary → pypdfium2 fallback)
     try:
-        nodes, primary_success, fallback_triggered, conflicts = (
-            dual_run_with_conflict_detection(
-                file_path, config, doc_id, file_hash, logger
-            )
+        nodes, primary_success, fallback_triggered = run_extraction(
+            file_path, doc_id, file_hash, logger
         )
     except Exception as exc:
         logger.critical("All engines failed for %s. Quarantining.", file_path.name)
@@ -703,16 +583,14 @@ def process_file(
     # 4. Assemble ContextGraph
     fallback_engine_name: Optional[str] = None
     if fallback_triggered:
-        fallback_engine_name = "pdfplumber"
-        if _PYPDFIUM2_AVAILABLE:
-            fallback_engine_name = "pdfplumber+pypdfium2"
+        fallback_engine_name = "pypdfium2"
 
     metrics = schema.ExtractionMetrics(
         total_pages=max((n.metadata.page_number for n in nodes), default=0),
         total_nodes=len(nodes),
         tables_extracted=sum(1 for n in nodes if n.content_type == "table"),
         headers_extracted=sum(1 for n in nodes if n.content_type == "header"),
-        conflicts_detected=conflicts,
+        conflicts_detected=0,
         extraction_time_seconds=time.time() - start_time,
         primary_engine_used=primary_success,
         fallback_triggered=fallback_triggered,
@@ -749,7 +627,7 @@ def process_file(
 # ============================================================================
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Split-RAG Tier 1 Extraction Engine (Refactored)")
+    parser = argparse.ArgumentParser(description="Split-RAG Tier 1 Extraction Engine")
     parser.add_argument("--config", type=Path, default=Path("config.json"))
     parser.add_argument("--rules", type=Path, default=Path("rules.json"))
     parser.add_argument("--file", type=Path, help="Process single file")
@@ -763,7 +641,7 @@ def main() -> None:
     rules = load_rules(args.rules)
     logger = setup_logging(config.log_dir)
 
-    logger.info("Docling available: %s", _DOCLING_AVAILABLE)
+    logger.info("Primary engine: pdfplumber")
     logger.info("pypdfium2 available: %s", _PYPDFIUM2_AVAILABLE)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)

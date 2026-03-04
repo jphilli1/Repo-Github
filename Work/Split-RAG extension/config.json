@@ -6,22 +6,11 @@
         "quarantine_directory": "quarantine"
     },
     "extraction_settings": {
-        "primary_engine": "docling",
-        "fallback_engine": "pdfplumber",
+        "primary_engine": "pdfplumber",
+        "fallback_engine": "pypdfium2",
         "enable_ocr": false,
         "enable_table_detection": true,
         "max_pages_for_entity_scan": 20
-    },
-    "ingestion": {
-        "use_docling": true,
-        "enable_ocr": false,
-        "enable_table_detection": true,
-        "use_gpu": false,
-        "entity_scan_pages": 20
-    },
-    "docling_settings": {
-        "use_gpu": false,
-        "table_mode": "accurate"
     },
     "validation_settings": {
         "conflict_threshold_levenshtein": 0.3,

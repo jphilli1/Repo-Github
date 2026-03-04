@@ -61,7 +61,7 @@ class DocumentKnowledgeGraph:
                 └── SEC_<id>  (inferred from header nodes)
                       └── CHUNK_<id>
 
-    Edge types: HAS_PAGE, HAS_SECTION, HAS_CHILD, NEXT_CHUNK,
+    Edge types: HAS_PAGE, HAS_SECTION, HAS_CHILD, NEXT_BLOCK,
                 CONTAINS_TABLE, MENTIONED_IN
 
     AUDITABILITY: Every chunk node retains its bounding box [x0,y0,x1,y1]
@@ -164,9 +164,9 @@ class DocumentKnowledgeGraph:
                         current_section_id, chunk_id, edge_type="CONTAINS_TABLE"
                     )
 
-                # Reading-order edge
+                # Reading-order edge (NEXT_BLOCK per architecture spec)
                 if prev_chunk_id:
-                    self.graph.add_edge(prev_chunk_id, chunk_id, edge_type="NEXT_CHUNK")
+                    self.graph.add_edge(prev_chunk_id, chunk_id, edge_type="NEXT_BLOCK")
                 prev_chunk_id = chunk_id
 
         logger.info(
@@ -524,7 +524,8 @@ class HybridRetrievalRouter:
                     if len(results) >= k:
                         break
 
-        return results[:k]
+        results = results[:k]
+        return self._enrich_with_section_context(results)
 
     def _query_subgraph(
         self, query_text: str, subgraph: nx.DiGraph, top_k: int
@@ -601,6 +602,34 @@ class HybridRetrievalRouter:
     # Bounding-Box Citation Export
     # ------------------------------------------------------------------
 
+    def _get_parent_section(self, chunk_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Walk up the DKG to find the parent Section node for a given chunk.
+        Returns section data dict or None if no section parent exists.
+        """
+        for pred in self._dkg.graph.predecessors(chunk_id):
+            pred_data = self._dkg.graph.nodes.get(pred, {})
+            if pred_data.get("node_type") == "section":
+                return {"section_id": pred, **pred_data}
+        return None
+
+    def _enrich_with_section_context(
+        self, results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Enrich each result with its parent Section label and siblings.
+        Provides surrounding context for the retrieval result.
+        """
+        for r in results:
+            section_info = self._get_parent_section(r["chunk_id"])
+            if section_info:
+                r["parent_section"] = section_info.get("label", "")
+                r["parent_section_id"] = section_info.get("section_id", "")
+            else:
+                r["parent_section"] = None
+                r["parent_section_id"] = None
+        return results
+
     @staticmethod
     def get_bounding_box_citations(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -623,6 +652,66 @@ class HybridRetrievalRouter:
                     "text_preview": r["content"][:80],
                 })
         return citations
+
+    def get_citation_payload(
+        self, query_text: str, top_k: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Full retrieval with JSON citation payload.
+
+        Returns a structured dict with:
+            - synthesized_text: concatenated top-K results with section context
+            - citations: array of {page_number, bbox, content_type, section, text_preview}
+            - query: original query
+            - route: matched route name
+        """
+        results = self.query(query_text, top_k=top_k)
+        results = self._enrich_with_section_context(results)
+
+        # Build synthesized text from results with section headers
+        text_parts: List[str] = []
+        current_section: Optional[str] = None
+        for r in results:
+            sec = r.get("parent_section")
+            if sec and sec != current_section:
+                text_parts.append(f"\n## {sec}\n")
+                current_section = sec
+            text_parts.append(r["content"])
+
+        synthesized = "\n\n".join(text_parts).strip()
+
+        # Build citations array
+        citations: List[Dict[str, Any]] = []
+        for r in results:
+            citation: Dict[str, Any] = {
+                "chunk_id": r["chunk_id"],
+                "page_number": r["page_number"],
+                "content_type": r["content_type"],
+                "score": r["score"],
+                "text_preview": r["content"][:120],
+                "section": r.get("parent_section"),
+            }
+            bbox = r.get("bbox")
+            if bbox and len(bbox) == 4:
+                citation["bbox"] = {
+                    "x0": bbox[0],
+                    "y0": bbox[1],
+                    "x1": bbox[2],
+                    "y1": bbox[3],
+                }
+            else:
+                citation["bbox"] = None
+            citations.append(citation)
+
+        route = results[0]["route"] if results else "none"
+
+        return {
+            "query": query_text,
+            "route": route,
+            "result_count": len(results),
+            "synthesized_text": synthesized,
+            "citations": citations,
+        }
 
     @staticmethod
     def format_results_markdown(results: List[Dict[str, Any]]) -> str:

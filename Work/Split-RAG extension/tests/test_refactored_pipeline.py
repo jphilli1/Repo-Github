@@ -289,10 +289,10 @@ class TestDocumentKnowledgeGraph:
         ]
         assert len(edges) >= 3
 
-    def test_has_next_chunk_edges(self, built_dkg):
+    def test_has_next_block_edges(self, built_dkg):
         edges = [
             (u, v) for u, v, d in built_dkg.graph.edges(data=True)
-            if d.get("edge_type") == "NEXT_CHUNK"
+            if d.get("edge_type") == "NEXT_BLOCK"
         ]
         assert len(edges) == 6  # 7 chunks, 6 sequential edges
 
@@ -469,3 +469,70 @@ class TestDeterminism:
         id1 = _make_entity_id("financial_metric", "NPL ratio")
         id2 = _make_entity_id("financial_metric", "NPL ratio")
         assert id1 == id2
+
+
+# ---------------------------------------------------------------------------
+# §6 NEXT_BLOCK edge, parent Section context, JSON citation payload tests
+# ---------------------------------------------------------------------------
+
+class TestNextBlockAndSectionContext:
+    def test_has_next_block_edges(self, built_dkg):
+        """NEXT_BLOCK edges must exist alongside NEXT_CHUNK."""
+        edges = [
+            (u, v) for u, v, d in built_dkg.graph.edges(data=True)
+            if d.get("edge_type") == "NEXT_BLOCK"
+        ]
+        assert len(edges) == 6  # 7 chunks, 6 sequential edges
+
+    def test_query_results_have_parent_section(self, router):
+        """Every result should be enriched with parent_section."""
+        results = router.query("credit quality NPL ratio")
+        assert len(results) > 0
+        assert all("parent_section" in r for r in results)
+
+    def test_parent_section_is_correct_label(self, router):
+        """Chunk under CREDIT QUALITY REVIEW header should have that section."""
+        results = router.query("NPL ratio provision coverage")
+        matched = [r for r in results if r.get("parent_section") == "CREDIT QUALITY REVIEW"]
+        assert len(matched) > 0
+
+    def test_citation_payload_structure(self, router):
+        """get_citation_payload returns correct JSON structure."""
+        payload = router.get_citation_payload("SOFR spread basis points")
+        assert "query" in payload
+        assert "route" in payload
+        assert "result_count" in payload
+        assert "synthesized_text" in payload
+        assert "citations" in payload
+        assert isinstance(payload["citations"], list)
+
+    def test_citation_payload_has_bbox(self, router):
+        """Citations in payload must include bbox coordinates."""
+        payload = router.get_citation_payload("credit quality NPL ratio")
+        for c in payload["citations"]:
+            assert "bbox" in c
+            assert "page_number" in c
+            assert "content_type" in c
+
+    def test_citation_payload_has_section(self, router):
+        """Citations should include the section label."""
+        payload = router.get_citation_payload("NPL ratio")
+        has_section = any(c.get("section") is not None for c in payload["citations"])
+        assert has_section
+
+    def test_synthesized_text_not_empty(self, router):
+        """Synthesized text should contain content from results."""
+        payload = router.get_citation_payload("Basel III stress test")
+        assert len(payload["synthesized_text"]) > 0
+        assert "Basel" in payload["synthesized_text"] or "stress" in payload["synthesized_text"]
+
+    def test_schema_no_docling_method(self):
+        """Schema extraction_method must not accept 'docling'."""
+        from pydantic import ValidationError as PydanticValidationError
+        with pytest.raises(PydanticValidationError):
+            schema.NodeMetadata(
+                page_number=1,
+                bbox=[0.0, 0.0, 100.0, 50.0],
+                source_scope="primary",
+                extraction_method="docling",
+            )

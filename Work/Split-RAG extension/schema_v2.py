@@ -50,7 +50,7 @@ class NodeMetadata(BaseModel):
     table_shape: Optional[List[int]] = Field(default=None, min_length=2, max_length=2, description="[rows, cols]")
     edge_density: float = Field(default=0.0, description="Heuristic for image/content complexity")
     source_scope: Literal["primary", "corpus"] = Field(..., description="Scope for disambiguation")
-    extraction_method: Literal["docling", "pdfplumber", "pypdfium2"]
+    extraction_method: Literal["pdfplumber", "pypdfium2"]
     conflict_detected: bool = Field(default=False, description="True if Keep-All Policy triggered conflict")
     is_active: bool = Field(default=True, description="False for fallback versions retained for audit")
 
