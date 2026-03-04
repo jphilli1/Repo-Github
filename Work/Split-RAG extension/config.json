@@ -5,12 +5,17 @@
         "log_directory": "logs",
         "quarantine_directory": "quarantine"
     },
-    "ingestion": {
-        "use_docling": true,
+    "extraction_settings": {
+        "primary_engine": "pdfplumber",
+        "fallback_engine": "pypdfium2",
         "enable_ocr": false,
         "enable_table_detection": true,
-        "use_gpu": false,
-        "entity_scan_pages": 20
+        "max_pages_for_entity_scan": 20
+    },
+    "validation_settings": {
+        "conflict_threshold_levenshtein": 0.3,
+        "max_conflict_rate_for_quarantine": 0.20,
+        "enable_keep_all_policy": true
     },
     "graph": {
         "fuzzy_threshold": 85
