@@ -48,6 +48,7 @@ class NodeMetadata(BaseModel):
     page_number: int = Field(..., description="1-based page number")
     bbox: Optional[Tuple[float, float, float, float]] = Field(default=None)
     table_shape: Optional[List[int]] = Field(default=None, min_length=2, max_length=2, description="[rows, cols]")
+    cell_bboxes: Optional[List[Tuple[float, float, float, float]]] = Field(default=None, description="Granular bounding boxes for individual table cells")
     edge_density: float = Field(default=0.0, description="Heuristic for image/content complexity")
     source_scope: Literal["primary", "corpus"] = Field(..., description="Scope for disambiguation")
     extraction_method: Literal["pdfplumber", "pypdfium2"]
