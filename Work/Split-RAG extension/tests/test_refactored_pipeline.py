@@ -294,7 +294,7 @@ class TestDocumentKnowledgeGraph:
             (u, v) for u, v, d in built_dkg.graph.edges(data=True)
             if d.get("edge_type") == "NEXT_BLOCK"
         ]
-        assert len(edges) == 6  # 7 chunks, 6 sequential edges
+        assert len(edges) == 4  # per-page reset: p1=2, p2=1, p3=1
 
     def test_contains_table_edge(self, built_dkg):
         edges = [
@@ -477,12 +477,12 @@ class TestDeterminism:
 
 class TestNextBlockAndSectionContext:
     def test_has_next_block_edges(self, built_dkg):
-        """NEXT_BLOCK edges must exist alongside NEXT_CHUNK."""
+        """NEXT_BLOCK edges must exist for within-page reading order."""
         edges = [
             (u, v) for u, v, d in built_dkg.graph.edges(data=True)
             if d.get("edge_type") == "NEXT_BLOCK"
         ]
-        assert len(edges) == 6  # 7 chunks, 6 sequential edges
+        assert len(edges) == 4  # per-page reset: p1=2, p2=1, p3=1
 
     def test_query_results_have_parent_section(self, router):
         """Every result should be enriched with parent_section."""
@@ -686,3 +686,146 @@ class TestLocalizedSubgraphRetrieval:
             if d.get("content_type") == "table"
         ]
         assert len(table_chunks) >= 1
+
+
+# ---------------------------------------------------------------------------
+# §10 Cross-page isolation tests (relationship_manager.py DKG)
+# ---------------------------------------------------------------------------
+
+class TestPageStateResetDKG:
+    """
+    Verify that prev_chunk_id and current_section_id are reset at each
+    page boundary in the DocumentKnowledgeGraph builder.
+    """
+
+    def test_no_cross_page_next_block_edges(self, built_dkg):
+        """NEXT_BLOCK edges must NOT span across pages."""
+        for u, v, d in built_dkg.graph.edges(data=True):
+            if d.get("edge_type") == "NEXT_BLOCK":
+                u_page = built_dkg.graph.nodes[u].get("page_number")
+                v_page = built_dkg.graph.nodes[v].get("page_number")
+                assert u_page == v_page, (
+                    f"Cross-page NEXT_BLOCK edge: {u} (p{u_page}) → {v} (p{v_page})"
+                )
+
+    def test_headerless_page_attaches_to_page_node(self):
+        """
+        When page 2 has no header, its chunks should attach to the page
+        node via HAS_CHILD, not to page 1's section.
+        """
+        nodes = [
+            schema.ContextNode(
+                chunk_id=schema.generate_chunk_id("doc1", 1, 0, "SECTION HEADER"),
+                content_type="header",
+                content="SECTION HEADER",
+                metadata=schema.NodeMetadata(
+                    page_number=1,
+                    bbox=[72.0, 50.0, 540.0, 80.0],
+                    source_scope="primary",
+                    extraction_method="pdfplumber",
+                ),
+                lineage_trace=schema.generate_lineage_trace("h1", 1, [72.0, 50.0, 540.0, 80.0], "pdfplumber"),
+            ),
+            schema.ContextNode(
+                chunk_id=schema.generate_chunk_id("doc1", 1, 1, "Page 1 content"),
+                content_type="text",
+                content="Page 1 content under the section header.",
+                metadata=schema.NodeMetadata(
+                    page_number=1,
+                    bbox=[72.0, 90.0, 540.0, 160.0],
+                    source_scope="primary",
+                    extraction_method="pdfplumber",
+                ),
+                lineage_trace=schema.generate_lineage_trace("h1", 1, [72.0, 90.0, 540.0, 160.0], "pdfplumber"),
+            ),
+            # Page 2: NO header, just a paragraph
+            schema.ContextNode(
+                chunk_id=schema.generate_chunk_id("doc1", 2, 2, "Page 2 orphan"),
+                content_type="text",
+                content="Page 2 orphan content with no header above it.",
+                metadata=schema.NodeMetadata(
+                    page_number=2,
+                    bbox=[72.0, 50.0, 540.0, 140.0],
+                    source_scope="primary",
+                    extraction_method="pdfplumber",
+                ),
+                lineage_trace=schema.generate_lineage_trace("h1", 2, [72.0, 50.0, 540.0, 140.0], "pdfplumber"),
+            ),
+        ]
+
+        ctx = schema.ContextGraph(
+            document_id=schema.generate_document_id(b"headerless_test"),
+            filename="headerless_test.pdf",
+            processed_at=schema.ContextGraph.get_current_timestamp(),
+            nodes=nodes,
+        )
+
+        from relationship_manager import DocumentKnowledgeGraph
+        dkg = DocumentKnowledgeGraph()
+        dkg.build_from_context_graph(ctx)
+
+        page2_chunk = nodes[2].chunk_id
+        page2_node = f"PAGE_{ctx.document_id}_2"
+        page1_section_id = f"SEC_{nodes[0].chunk_id}"
+
+        # The page 2 chunk must be a child of the PAGE_2 node
+        parents = list(dkg.graph.predecessors(page2_chunk))
+        assert page2_node in parents, (
+            f"Page 2 chunk should attach to {page2_node}, got parents: {parents}"
+        )
+        assert page1_section_id not in parents, (
+            f"Page 2 chunk must NOT attach to page 1's section"
+        )
+
+    def test_no_cross_page_reading_order(self):
+        """First chunk on page 2 must NOT have NEXT_BLOCK from page 1's last chunk."""
+        nodes = [
+            schema.ContextNode(
+                chunk_id=schema.generate_chunk_id("doc2", 1, 0, "Page 1 last"),
+                content_type="text",
+                content="Page 1 last chunk content here.",
+                metadata=schema.NodeMetadata(
+                    page_number=1,
+                    bbox=[72.0, 50.0, 540.0, 120.0],
+                    source_scope="primary",
+                    extraction_method="pdfplumber",
+                ),
+                lineage_trace=schema.generate_lineage_trace("h2", 1, [72.0, 50.0, 540.0, 120.0], "pdfplumber"),
+            ),
+            schema.ContextNode(
+                chunk_id=schema.generate_chunk_id("doc2", 2, 1, "Page 2 first"),
+                content_type="text",
+                content="Page 2 first chunk content here.",
+                metadata=schema.NodeMetadata(
+                    page_number=2,
+                    bbox=[72.0, 50.0, 540.0, 120.0],
+                    source_scope="primary",
+                    extraction_method="pdfplumber",
+                ),
+                lineage_trace=schema.generate_lineage_trace("h2", 2, [72.0, 50.0, 540.0, 120.0], "pdfplumber"),
+            ),
+        ]
+
+        ctx = schema.ContextGraph(
+            document_id=schema.generate_document_id(b"cross_page_test"),
+            filename="cross_page_test.pdf",
+            processed_at=schema.ContextGraph.get_current_timestamp(),
+            nodes=nodes,
+        )
+
+        from relationship_manager import DocumentKnowledgeGraph
+        dkg = DocumentKnowledgeGraph()
+        dkg.build_from_context_graph(ctx)
+
+        p1_chunk = nodes[0].chunk_id
+        p2_chunk = nodes[1].chunk_id
+
+        edge_data = dkg.graph.get_edge_data(p1_chunk, p2_chunk)
+        assert edge_data is None or edge_data.get("edge_type") != "NEXT_BLOCK", (
+            "Cross-page NEXT_BLOCK edge found — page state was not reset"
+        )
+
+    def test_configurable_weights_loaded(self, router):
+        """Router should have configurable weight dicts, not empty."""
+        assert len(router._content_type_weights) > 0
+        assert router._primary_scope_multiplier > 0
