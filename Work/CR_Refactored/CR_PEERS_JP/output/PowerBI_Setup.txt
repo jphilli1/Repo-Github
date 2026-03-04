@@ -1,0 +1,155 @@
+
+//==============================================================================
+// Power BI Setup Script
+// Generated: 2026-03-04 15:22:27
+//==============================================================================
+
+// INSTRUCTIONS:
+// 1. In Power BI, click "Get data" -> "Excel workbook" and select the generated Excel file.
+// 2. In the Navigator, select the 'Macro_Analysis' and 'FRED_Descriptions' sheets. Click "Transform Data".
+//    This loads the data into the Power Query Editor.
+// 3. Once in the Power Query Editor, create a new "Blank Query" for each of the M Language Queries below.
+//    (Right-click in the Queries pane -> New Query -> Blank Query).
+// 4. Copy and paste the code for each query into its corresponding blank query's Advanced Editor.
+// 5. Rename the queries exactly as specified in the titles (e.g., "dDate", "dSeries", "fMacro_Data").
+// 6. Click "Close & Apply" to load the data model.
+// 7. Once loaded, verify the relationships as described below in the 'Model' view.
+// 8. Finally, go to the "Data" view, select the 'fMacro_Data' table, and create each DAX measure.
+
+//--- M LANGUAGE QUERIES ---
+//--- Paste each query into a new Blank Query in Power BI's Power Query Editor ---
+
+
+// --- Dimension Table: dDate ---
+// This query generates a complete and dynamic date table based on your data.
+let
+    // **FIXED**: Point to the correct 'Macro_Analysis' sheet
+    SourceTable = Macro_Analysis,
+    MinDate = List.Min(Table.Column(SourceTable, "Date")),
+    MaxDate = List.Max(Table.Column(SourceTable, "Date")),
+
+    DayCount = Duration.Days(MaxDate - MinDate) + 1,
+    DateList = List.Dates(MinDate, DayCount, #duration(1, 0, 0, 0)),
+    DateTable = Table.FromList(DateList, Splitter.SplitByNothing(), {"Date"}),
+
+    #"Changed Type to Date" = Table.TransformColumnTypes(DateTable,{{"Date", type date}}),
+    #"Inserted Year" = Table.AddColumn(#"Changed Type to Date", "Year", each Date.Year([Date]), Int64.Type),
+    #"Inserted Quarter Num" = Table.AddColumn(#"Inserted Year", "QuarterNum", each Date.QuarterOfYear([Date]), Int64.Type),
+    #"Added Quarter" = Table.AddColumn(#"Inserted Quarter Num", "Quarter", each "Q" & Text.From([QuarterNum]), type text),
+    #"Inserted Month" = Table.AddColumn(#"Added Quarter", "Month", each Date.Month([Date]), Int64.Type),
+    #"Inserted Month Name" = Table.AddColumn(#"Inserted Month", "MonthName", each Date.ToText([Date], "MMMM"), type text),
+    #"Inserted Day" = Table.AddColumn(#"Inserted Month Name", "Day", each Date.Day([Date]), Int64.Type),
+    #"Inserted Day Name" = Table.AddColumn(#"Inserted Day", "DayName", each Date.ToText([Date], "dddd"), type text),
+    #"Inserted Week of Year" = Table.AddColumn(#"Inserted Day Name", "WeekOfYear", each Date.WeekOfYear([Date]), Int64.Type),
+    #"Added DateKey" = Table.AddColumn(#"Inserted Week of Year", "DateKey", each [Year] * 10000 + [Month] * 100 + [Day], Int64.Type),
+
+    #"Reordered Columns" = Table.ReorderColumns(#"Added DateKey",{"DateKey", "Date", "Year", "Quarter", "Month", "MonthName", "Day", "DayName", "WeekOfYear"}),
+    #"Removed QuarterNum" = Table.RemoveColumns(#"Reordered Columns",{"QuarterNum"})
+in
+    #"Removed QuarterNum"
+
+
+// --- Dimension Table: dSeries ---
+// It assumes you have loaded the 'FRED_Descriptions' and 'Macro_Analysis' sheets from Excel.
+let
+    SourceDescriptions = FRED_Descriptions,
+    SourceData = Macro_Analysis,
+
+    // Get the distinct list of Series IDs from the main data table to ensure relevance
+    MacroDataSeries = Table.Distinct(Table.SelectColumns(SourceData, {"Series_ID"})),
+
+    // Join descriptions with the actual series present in the data
+    #"Merged Queries" = Table.NestedJoin(SourceDescriptions, {"Series ID"}, MacroDataSeries, {"Series_ID"}, "Join", JoinKind.Inner),
+    #"Removed Columns" = Table.RemoveColumns(#"Merged Queries",{"Join"}),
+
+    // Add a unique integer key for the dimension, which will be the primary key
+    #"Added Index" = Table.AddIndexColumn(#"Removed Columns", "SeriesKey", 1, 1, Int64.Type),
+
+    // Select and reorder for clarity
+    #"Selected Columns" = Table.SelectColumns(#"Added Index",{"SeriesKey", "Series ID", "long", "short", "Category", "Sectors"}),
+    #"Renamed Columns" = Table.RenameColumns(#"Selected Columns",{{"long", "Description"}, {"short", "Series Name"}})
+in
+    #"Renamed Columns"
+
+
+// --- Fact Table: fMacro_Data ---
+// It assumes you have the queries 'Macro_Analysis', and 'dSeries' already created.
+let
+    Source = Macro_Analysis,
+
+    #"Added DateKey" = Table.AddColumn(Source, "DateKey", each Date.Year([Date]) * 10000 + Date.Month([Date]) * 100 + Date.Day([Date]), Int64.Type),
+
+    #"Merged with dSeries" = Table.NestedJoin(#"Added DateKey", {"Series_ID"}, dSeries, {"Series ID"}, "dSeries", JoinKind.LeftOuter),
+    #"Expanded SeriesKey" = Table.ExpandTableColumn(#"Merged with dSeries", "dSeries", {"SeriesKey"}, {"SeriesKey"}),
+
+    #"Selected Columns" = Table.SelectColumns(#"Expanded SeriesKey",{"DateKey", "SeriesKey", "Indicator_Value"}),
+    #"Changed Type" = Table.TransformColumnTypes(#"Selected Columns",{{"Indicator_Value", type number}, {"DateKey", Int64.Type}, {"SeriesKey", Int64.Type}})
+in
+    #"Changed Type"
+
+//--- DATA MODEL RELATIONSHIPS ---
+//--- Power BI should auto-detect these. If not, create them manually in the 'Model' view. ---
+
+// Relationship 1: Dates
+//   Table 1: fMacro_Data (Many side)
+//   Table 2: dDate (One side)
+//   Column:  DateKey
+//   Cardinality: Many to One (*:1)
+//   Cross-filter direction: Single
+
+// Relationship 2: Series
+//   Table 1: fMacro_Data (Many side)
+//   Table 2: dSeries (One side)
+//   Column:  SeriesKey
+//   Cardinality: Many to One (*:1)
+//   Cross-filter direction: Single
+
+
+//--- DAX MEASURES & COLUMNS ---
+//--- Select the 'fMacro_Data' table, then click 'New Measure' for each item. ---
+
+[Selected Value] = SUM('fMacro_Data'[Indicator_Value])
+
+[Latest Value] =
+CALCULATE(
+    [Selected Value],
+    LASTDATE('dDate'[Date])
+)
+
+[Previous Month Value] =
+CALCULATE(
+    [Selected Value],
+    DATEADD('dDate'[Date], -1, MONTH)
+)
+
+[Month-over-Month Change] =
+VAR CurrentValue = [Selected Value]
+VAR PreviousValue = [Previous Month Value]
+RETURN
+    IF(NOT ISBLANK(CurrentValue) && NOT ISBLANK(PreviousValue), CurrentValue - PreviousValue, BLANK())
+
+[Year-over-Year Value] =
+CALCULATE(
+    [Selected Value],
+    SAMEPERIODLASTYEAR('dDate'[Date])
+)
+
+[Year-over-Year Change] =
+VAR CurrentValue = [Selected Value]
+VAR PreviousValue = [Year-over-Year Value]
+RETURN
+    IF(NOT ISBLANK(CurrentValue) && NOT ISBLANK(PreviousValue), CurrentValue - PreviousValue, BLANK())
+
+
+//--- BONUS: M-LANGUAGE FOR BRIDGE TABLE ---
+// --- Bridge Table: dSeries_Sectors ---
+let
+    Source = dSeries,
+    #"Removed Other Columns" = Table.SelectColumns(Source,{"SeriesKey", "Sectors"}),
+    #"Split Column by Delimiter" = Table.ExpandListColumn(Table.TransformColumns(#"Removed Other Columns", {{"Sectors", Splitter.SplitTextByDelimiter("|", QuoteStyle.None), let itemType = (type nullable text) meta [Serialized.Text = true] in type {itemType}}}), "Sectors"),
+    #"Renamed Columns" = Table.RenameColumns(#"Split Column by Delimiter",{{"Sectors", "Sector"}}),
+    #"Trimmed Text" = Table.TransformColumns(#"Renamed Columns",{{"Sector", Text.Trim, type text}}),
+    #"Filtered Rows" = Table.SelectRows(#"Trimmed Text", each ([Sector] <> null and [Sector] <> ""))
+in
+    #"Filtered Rows"
+
