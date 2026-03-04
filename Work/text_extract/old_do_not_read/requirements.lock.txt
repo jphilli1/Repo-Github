@@ -1,5 +1,0 @@
-﻿# NOTE: Corp snapshot (pip freeze). Informational only.
-# Do not pip install -r this file on a clean machine; it may contain internal-only or platform-specific wheels.
-# Use requirements.txt for installs.
-
-packaging==26.0

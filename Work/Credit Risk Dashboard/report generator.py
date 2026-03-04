@@ -72,20 +72,17 @@ def find_latest_excel_file(directory: str = "output") -> Optional[str]:
 
 def load_config() -> Dict[str, Any]:
     """
-    Configuration for MSPBNA Private Bank Dashboard.
+    Simulates loading configuration. In a real implementation, this could
+    read from a config file or environment variables.
+
+    Returns:
+        Dict[str, Any]: Configuration dictionary
     """
     return {
-        'subject_bank_cert': 34221,  # MSPBNA
-        # These are the dummy certs created by CR_Bank_DashvMSPB.py
-        'peer_composites': {
-            'Core_PB': 90001,      # Core Private Bank Peers
-            'MS_Wealth': 90002,    # MS + Extended Wealth
-            'All_Peers': 90003     # Full Universe
-        },
+        'subject_bank_cert': 19977,
+        'peer_bank_certs': [26876, 9396, 18221, 16068, 22953, 57919, 20234, 58647, 26610, 32541, 32172, 24045],
         'output_dir': 'output'
     }
-
-
 
 def get_diff_class(diff_str: str) -> str:
     """
@@ -352,158 +349,253 @@ def _fmt_percent_auto(v: float) -> str:
     return f"{f:.2f}%"
 
 def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
-    formatted_date = report_date.strftime('%B %d, %Y')
+    """
+    Generates a properly formatted HTML table for email.
+
+    Args:
+        df (pd.DataFrame): DataFrame with metrics comparison data
+        report_date (datetime): The reporting date
+
+    Returns:
+        str: Complete HTML string for email
+    """
+    # Format the report date
+    formatted_date = report_date.strftime('%B %d, %Y') if hasattr(report_date, 'strftime') else str(report_date)
 
     html = f"""
     <html>
     <head>
         <style>
-            body {{ font-family: Arial, sans-serif; background-color: #f5f5f5; }}
-            .email-container {{ background-color: white; padding: 20px; border-radius: 8px; max-width: 900px; margin: 0 auto; }}
-            table {{ width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 12px; }}
-            th {{ background-color: #002F6C; color: white; padding: 10px; border: 1px solid #2c3e50; }} /* MS Blue */
-            td {{ padding: 8px; text-align: center; border: 1px solid #bdc3c7; }}
-            .metric-name {{ text-align: left !important; font-weight: bold; color: #2c3e50; }}
-            .subject-value {{ background-color: #E6F3FF; font-weight: bold; color: #002F6C; }} /* Light Blue */
-            .positive {{ color: #d32f2f; font-weight: 600; }}
-            .negative {{ color: #388e3c; font-weight: 600; }}
+            body {{
+                font-family: Arial, sans-serif;
+                margin: 20px;
+                background-color: #f5f5f5;
+            }}
+            .email-container {{
+                background-color: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                max-width: 900px;
+                margin: 0 auto;
+            }}
+            .header {{
+                text-align: center;
+                margin-bottom: 30px;
+                color: #2c3e50;
+            }}
+            .header h2 {{
+                margin: 0;
+                font-size: 24px;
+                font-weight: 600;
+            }}
+            .header p {{
+                margin: 5px 0 0 0;
+                color: #7f8c8d;
+                font-size: 14px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 20px 0;
+                font-size: 12px;
+            }}
+            th {{
+                background-color: #34495e;
+                color: white;
+                padding: 12px 8px;
+                text-align: center;
+                font-weight: 600;
+                border: 1px solid #2c3e50;
+            }}
+            td {{
+                padding: 10px 8px;
+                text-align: center;
+                border: 1px solid #bdc3c7;
+            }}
+            tr:nth-child(even) {{
+                background-color: #f8f9fa;
+            }}
+            tr:hover {{
+                background-color: #e3f2fd;
+            }}
+            .metric-name {{
+                text-align: left !important;
+                font-weight: 500;
+                color: #2c3e50;
+            }}
+            .idb-value {{
+                background-color: #fff3cd;
+                font-weight: 600;
+                color: #856404;
+            }}
+            .positive {{
+                color: #d32f2f;
+                font-weight: 600;
+            }}
+            .negative {{
+                color: #388e3c;
+                font-weight: 600;
+            }}
+            .neutral {{
+                color: #5d4037;
+            }}
+            .footer {{
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 2px solid #ecf0f1;
+                font-size: 12px;
+                color: #7f8c8d;
+                text-align: center;
+            }}
+            .legend {{
+                margin: 20px 0;
+                padding: 15px;
+                background-color: #f8f9fa;
+                border-radius: 5px;
+                font-size: 11px;
+                color: #495057;
+            }}
+            .legend strong {{
+                color: #2c3e50;
+            }}
         </style>
     </head>
     <body>
         <div class="email-container">
-            <div style="text-align:center; color:#002F6C;">
-                <h2>Private Banking Risk Monitor</h2>
-                <p>MSPBNA vs. Core Private Bank Peers | {formatted_date}</p>
+            <div class="header">
+                <h2>Credit Risk Metrics Comparison</h2>
+                <p>IDB vs Peer Groups Analysis | Report Date: {formatted_date}</p>
             </div>
+
             <table>
                 <thead>
                     <tr>
-                        <th style="width: 30%;">Metric</th>
-                        <th style="width: 15%;">MSPBNA</th>
-                        <th style="width: 15%;">Core PB Avg</th>
-                        <th style="width: 15%;">MS+Wealth Avg</th>
-                        <th style="width: 12%;">Diff vs Core</th>
-                        <th style="width: 12%;">Diff vs MS+</th>
+                        <th style="width: 30%;">Credit Metric</th>
+                        <th style="width: 12%;">IDB</th>
+                        <th style="width: 12%;">All Peers</th>
+                        <th style="width: 15%;">Selective Peers<br><small>(Ex. Flagstar & Valley)</small></th>
+                        <th style="width: 15%;">Diff vs<br>All Peers</th>
+                        <th style="width: 16%;">Diff vs<br>Selective Peers</th>
                     </tr>
                 </thead>
                 <tbody>
     """
-    for _, row in df.iterrows():
-        # Heuristic: For Risk metrics, Higher = "Positive" (Red/Bad)
-        # For Growth/Profit, Higher = "Negative" (Green/Good) - inverted for color logic
-        # We stick to simple Red/Green logic: Red = Deviation is Negative (Worse), Green = Better
-        # For simplicity in this snippet, we just apply the class based on string parsing
 
-        diff_val = row['Diff vs Core']
-        cls = "neutral"
-        if "N/A" not in diff_val:
-            val = float(diff_val.strip('%x').replace('+',''))
-            # If it's a risk metric (contains Rate, Risk, NCO)
-            if any(x in row['Metric'] for x in ['Rate', 'Risk', 'NCO', 'RRI']):
-                cls = "positive" if val > 0 else "negative" # Red if higher risk
-            else:
-                cls = "negative" if val > 0 else "positive" # Green if higher growth
+    # Add table rows
+    for _, row in df.iterrows():
+        # Determine styling for difference columns
+        diff_all_class = get_diff_class(row['Diff vs All'])
+        diff_selective_class = get_diff_class(row['Diff vs Selective'])
 
         html += f"""
-            <tr>
-                <td class="metric-name">{row['Metric']}</td>
-                <td class="subject-value">{row['MSPBNA']}</td>
-                <td>{row['Core PB Avg']}</td>
-                <td>{row['MS+Wealth Avg']}</td>
-                <td class="{cls}">{row['Diff vs Core']}</td>
-                <td>{row['Diff vs MS+']}</td>
-            </tr>
+                    <tr>
+                        <td class="metric-name">{row['Metric']}</td>
+                        <td class="idb-value">{row['IDB']}</td>
+                        <td>{row['All Peers']}</td>
+                        <td>{row['Selective Peers']}</td>
+                        <td class="{diff_all_class}">{row['Diff vs All']}</td>
+                        <td class="{diff_selective_class}">{row['Diff vs Selective']}</td>
+                    </tr>
         """
-    html += "</tbody></table></div></body></html>"
+
+    html += """
+                </tbody>
+            </table>
+
+            <div class="legend">
+                <strong>Legend:</strong><br>
+                • <span style="color: #d32f2f; font-weight: 600;">Red values</span>: IDB performs worse than peer group (higher is worse for most credit metrics)<br>
+                • <span style="color: #388e3c; font-weight: 600;">Green values</span>: IDB performs better than peer group (lower is better for most credit metrics)<br>
+                • <strong>Selective Peers</strong>: Excludes Flagstar Bank and Valley National Bank for cleaner comparison<br>
+                • All values are as of the latest available quarter
+            </div>
+
+            <div class="footer">
+                <p>This report is generated automatically from FDIC call report data.<br>
+                For questions or additional analysis, please contact the Credit Risk team.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
     return html
 
 def generate_credit_metrics_email_table(
     proc_df_with_peers: pd.DataFrame,
-    subject_bank_cert: int = 34221
+    subject_bank_cert: int = 19977
 ) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
     """
-    Builds the Executive Summary Table using V6 Private Bank Metrics.
+    Build the email HTML table; ASSET & LNLS are shown as $ (millions), others as %.
     """
-    # MAP: {Metric_Code: Display_Name}
     important_metrics = {
-        # 1. Scale & Growth
-        "ASSET": "Total Assets",
-        "Total_Loan_Growth_TTM": "Total Loan Growth (YoY %)",
-
-        # 2. Portfolio Composition (The Private Bank Pivot)
-        "SBL_Composition": "SBL % of Loans",
-        "Wealth_Resi_Composition": "Wealth Resi % of Loans",
-        "Fund_Finance_Composition": "Fund Banking % of Loans",
-        "CRE_Investment_Composition": "Inv. CRE % of Loans",
-
-        # 3. Risk-Adjusted Coverage (Critical for MSPBNA)
-        "Risk_Adj_Allowance_Coverage": "Risk-Adj ACL Coverage (%)",
-        "Allowance_to_Gross_Loans_Rate": "Headline ACL / Loans (%)",
-
-        # 4. Credit Quality
-        "Nonaccrual_to_Gross_Loans_Rate": "Nonaccrual Rate (%)",
+        "ASSET": "Assets",
+        "LNLS": "Gross Loans",
+        "CI_to_Capital_Risk": "C&I to Capital Risk (%)",
+        "CRE_Concentration_Capital_Risk": "CRE Concentration Risk (%)",
+        "IDB_CRE_Growth_TTM": "CRE Growth TTM (%)",
+        "IDB_CRE_Growth_36M": "CRE Growth 36M (%)",
         "TTM_NCO_Rate": "TTM NCO Rate (%)",
-
-        # 5. Relative Reserve Indices (Are we over/under reserved?)
-        "RRI_Residential": "Resi Reserve Index (RRI)",
-        "RRI_Commercial": "Comm. Reserve Index (RRI)"
+        "NPL_to_Gross_Loans_Rate": "NPL to Gross Loans (%)",
+        "Allowance_to_Gross_Loans_Rate": "Allowance to Gross Loans (%)",
+        "TTM_Past_Due_Rate": "TTM Past Due Rate (%)",
+        "TTM_PD30_Rate": "TTM Past Due (30-90 Days) Rate (%)",
+        "TTM_PD90_Rate": "TTM Past Due (>90 Days) Rate (%)",
     }
 
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    # Get Entities
     idb = latest_data[latest_data["CERT"] == subject_bank_cert]
+    peers = latest_data[latest_data["CERT"] == 99999]
+    peers_ex = latest_data[latest_data["CERT"] == 99998]
 
-    # Use V6 Composite IDs (defined in your main dashboard script)
-    core_pb = latest_data[latest_data["CERT"] == 90001] # Core Private Bank
-    ms_plus = latest_data[latest_data["CERT"] == 90002] # MS + Wealth
-
-    if idb.empty or core_pb.empty:
-        print("Missing data for Subject or Core Peers")
+    if idb.empty or peers.empty or peers_ex.empty:
+        print("Missing data for one or more entities")
         return None, None
 
     idb = idb.iloc[0]
-    core_pb = core_pb.iloc[0]
-    # Handle missing MS_Plus if running on smaller set
-    ms_plus = ms_plus.iloc[0] if not ms_plus.empty else pd.Series(dtype=float)
+    peers = peers.iloc[0]
+    peers_ex = peers_ex.iloc[0]
 
     rows = []
     for code, disp in important_metrics.items():
-        if code not in idb.index: continue
+        if code not in idb.index:
+            continue
 
         v_idb  = idb.get(code, np.nan)
-        v_core = core_pb.get(code, np.nan)
-        v_ms   = ms_plus.get(code, np.nan) if not ms_plus.empty else np.nan
+        v_all  = peers.get(code, np.nan)
+        v_sel  = peers_ex.get(code, np.nan)
 
-        # Calculate Diffs
-        d_core = (v_idb - v_core) if not pd.isna(v_core) else np.nan
-        d_ms   = (v_idb - v_ms) if not pd.isna(v_ms) else np.nan
+        # diffs
+        d_all = (v_idb - v_all) if not pd.isna(v_all) else np.nan
+        d_sel = (v_idb - v_sel) if not pd.isna(v_sel) else np.nan
 
-        if code in ["ASSET", "LNLS"]:
-            fmt = _fmt_money_millions
-            fmt_diff = _fmt_money_millions_with_sign
-        elif "RRI" in code:
-            # RRI is a ratio (1.0 = Par), not a percent
-            fmt = lambda x: f"{x:.2f}x" if pd.notna(x) else "N/A"
-            fmt_diff = lambda x: f"{x:+.2f}x" if pd.notna(x) else "N/A"
+        if code in CURRENCY_MM_CODES:
+            # values are already measured in millions
+            idb_s = _fmt_money_millions(v_idb)
+            all_s = _fmt_money_millions(v_all)
+            sel_s = _fmt_money_millions(v_sel)
+            diff_all_s = _fmt_money_millions_with_sign(d_all)
+            diff_sel_s = _fmt_money_millions_with_sign(d_sel)
         else:
-            fmt = _fmt_percent_auto
-            fmt_diff = _fmt_percent_auto
+            idb_s = _fmt_percent_auto(v_idb)
+            all_s = _fmt_percent_auto(v_all)
+            sel_s = _fmt_percent_auto(v_sel)
+            diff_all_s = _fmt_percent_auto(d_all)
+            diff_sel_s = _fmt_percent_auto(d_sel)
 
         rows.append({
             "Metric": disp,
-            "MSPBNA": fmt(v_idb),
-            "Core PB Avg": fmt(v_core),
-            "MS+Wealth Avg": fmt(v_ms),
-            "Diff vs Core": fmt_diff(d_core),
-            "Diff vs MS+": fmt_diff(d_ms),
+            "IDB": idb_s,
+            "All Peers": all_s,
+            "Selective Peers": sel_s,
+            "Diff vs All": diff_all_s,
+            "Diff vs Selective": diff_sel_s,
         })
 
     df = pd.DataFrame(rows)
-    # Generate HTML using the existing helper, passing new columns names
-    # Note: You may need to slightly adjust generate_html_email_table to accept dynamic column headers
-    # For now, we adapt the logic inside the existing HTML generator or this wrapper.
     html = generate_html_email_table(df, latest_date)
     return html, df
 
@@ -895,63 +987,62 @@ def generate_reports(
 
 
         # ------------------------------------------------------------------
-        # SCATTERS: PRIVATE BANK STRATEGY (Risk-Adj Coverage & RRI)
+        # SCATTERS (square; smart axes; outliers)
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
-        print("GENERATING PRIVATE BANK SCATTERS")
+        print("GENERATING SCATTER PLOTS (8Q AVG)")
         print("-" * 60)
 
-        # 1. Coverage Discipline: Risk-Adjusted ACL vs. Nonaccruals
-        # (Shows if we are adequately covered given our specific NPL profile)
-        s1_path = peers_dir / f"{base}_scatter_cov_vs_na_{stamp}.png"
+        # Ensure numeric
+        for c in ["NPL_to_Gross_Loans_Rate", "TTM_NCO_Rate", "TTM_Past_Due_Rate"]:
+            if c in rolling8q_df.columns:
+                rolling8q_df[c] = pd.to_numeric(rolling8q_df[c], errors="coerce")
+
+        s1_path = peers_dir / f"{base}_scatter_nco_vs_npl_{stamp}.png"
         plot_scatter_dynamic(
             df=rolling8q_df,
-            x_col="Nonaccrual_to_Gross_Loans_Rate", # X-Axis: Actual Problem Loans
-            y_col="Risk_Adj_Allowance_Coverage",    # Y-Axis: Coverage excl. SBL
+            x_col="NPL_to_Gross_Loans_Rate",
+            y_col="TTM_NCO_Rate",
             subject_cert=subject_bank_cert,
-            peer_avg_cert_primary=90001,  # Core PB
-            peer_avg_cert_alt=90002,      # MS+Wealth
             use_alt_peer_avg=False,
             show_peers_avg_label=True,
             show_idb_label=True,
-            figsize=(9, 9),
+            identify_outliers=True,
+            outliers_topn=outlier_topn,      # <-- no 'outlier_method' here
+            figsize=(scatter_size, scatter_size),
             title_size=16,
+            axis_label_size=12,
+            tick_size=tick_size,
+            tag_size=tag_size,
             economist_style=True,
-            square_axes=False, # Rates might have different scales
+            transparent_bg=True,
+            square_axes=True,
             save_path=str(s1_path)
         )
-        print(f"✓ Scatter saved: Coverage vs Nonaccrual")
+        print(f"✓ Scatter saved: {s1_path}")
 
-        # 2. Wealth Strategy: RRI Residential vs. Wealth Resi Composition
-        # (Are we "buying" market share by under-reserving, or are we conservative?)
-        s2_path = peers_dir / f"{base}_scatter_rri_resi_{stamp}.png"
+        s2_path = peers_dir / f"{base}_scatter_pd_vs_npl_{stamp}.png"
         plot_scatter_dynamic(
             df=rolling8q_df,
-            x_col="Wealth_Resi_Composition",  # X-Axis: How much Jumbo/HELOC do you have?
-            y_col="RRI_Residential",          # Y-Axis: How heavily do you reserve for it?
+            x_col="NPL_to_Gross_Loans_Rate",
+            y_col="TTM_Past_Due_Rate",
             subject_cert=subject_bank_cert,
-            peer_avg_cert_primary=90001,
-            peer_avg_cert_alt=90002,
-            figsize=(9, 9),
+            use_alt_peer_avg=False,
+            show_peers_avg_label=True,
+            show_idb_label=True,
+            identify_outliers=True,
+            outliers_topn=outlier_topn,
+            figsize=(scatter_size, scatter_size),
             title_size=16,
+            axis_label_size=12,
+            tick_size=tick_size,
+            tag_size=tag_size,
             economist_style=True,
+            transparent_bg=True,
+            square_axes=True,
             save_path=str(s2_path)
         )
-        print(f"✓ Scatter saved: RRI Residential Strategy")
-
-        # 3. Credit Chart: MSPBNA vs Core PB (Using Nonaccruals, not NCOs)
-        # Private banks usually have 0 NCOs, so NPLs are the better volatility signal.
-        create_credit_deterioration_chart_ppt(
-            proc_df_with_peers=proc_df_with_peers,
-            subject_bank_cert=subject_bank_cert,
-            start_date="2022-01-01", # Zoom in on recent rate hike cycle
-            bar_metric="Nonaccrual_to_Gross_Loans_Rate", # Bars = NPLs
-            line_metric="Risk_Adj_Allowance_Coverage",   # Lines = Coverage
-            bar_entities=[subject_bank_cert, 90001, 90003], # MSPBNA, Core PB, All Peers
-            line_entities=[subject_bank_cert, 90001],
-            custom_title="Asset Quality: Nonaccruals (Bars) vs Risk-Adj Coverage (Lines)",
-            save_path=str(peers_dir / f"{base}_credit_chart_{stamp}.png")
-        )
+        print(f"✓ Scatter saved: {s2_path}")
 
         # ------------------------------------------------------------------
         # FRED MACRO TABLE (Short Name -> Series ID via FRED_Descriptions)
@@ -1349,12 +1440,9 @@ def plot_scatter_dynamic(
     ax.scatter(Xo, Yo, s=42, alpha=0.9, color=PEER, edgecolor="white", linewidth=0.6, label="Peers")
 
     xi = yi = None
-    GOLD = "#002F6C"  # MSPBNA (Deep Blue)
-    PEER = "#4C78A8"  # Peer (Lighter Blue)
-    GUIDE = "#7F8C8D" # Gray
     if not idb.empty:
         xi = float(to_decimals_series(idb[x_col]).iloc[0]); yi = float(to_decimals_series(idb[y_col]).iloc[0])
-        ax.scatter(xi, yi, s=100, color=GOLD, edgecolor="white", linewidth=1.5, label="MSPBNA", zorder=5)
+        ax.scatter(xi, yi, s=80, color=GOLD, edgecolor="black", linewidth=0.7, label="IDB")
 
     px = py = None
     if not peer_avg.empty:

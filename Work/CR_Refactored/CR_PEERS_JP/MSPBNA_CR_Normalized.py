@@ -1,6 +1,7 @@
 # Standard library imports
 import asyncio
 import csv
+import inspect
 import io
 import logging
 import os
@@ -1487,6 +1488,7 @@ class FFIECBulkLoader:
 
         logging.info(f"      [Merge] Updated {merged_fields} target fields")
 
+        df_main = df_main.copy()  # de-fragment after sequential column assignments
         res = df_main.reset_index()
 
         ric_check_cols = ['RCFDJ466', 'RCONJ466', 'RCFDJJ04', 'RCONJJ04']
@@ -3095,7 +3097,7 @@ class BankMetricsProcessor:
         df_final['RIC_Comm_Best'] = df_final['RIC_Comm_ACL']
         df_final['RIC_CommRE_Best'] = df_final['RIC_CRE_ACL']
 
-        return df_final
+        return df_final.copy()
 
 
     # ==================================================================================
@@ -3358,7 +3360,8 @@ class PeerAnalyzer:
         subject_data = latest_data[latest_data["CERT"] == self.config.subject_bank_cert]
         if subject_data.empty: return pd.DataFrame()
 
-        metrics_to_compare = [c for c in latest_data.columns if c not in ("CERT", "NAME", "REPDTE")]
+        numeric_cols = latest_data.select_dtypes(include=["number"]).columns
+        metrics_to_compare = [c for c in numeric_cols if c not in ("CERT", "REPDTE")]
         comparison_list = []
 
         for metric in metrics_to_compare:
@@ -3392,9 +3395,6 @@ class PeerAnalyzer:
 
                 # Filter data for this specific group
                 group_data = latest_data[latest_data["CERT"].isin(group_certs)][actual_metric].dropna()
-
-                # Force numeric conversion, turning strings into NaNs, then drop them
-                group_data = pd.to_numeric(group_data, errors='coerce').dropna()
 
                 if group_data.empty: continue
 
@@ -4307,6 +4307,139 @@ class ExcelOutputGenerator:
         self.config = config
         self._mdd = _master_dict
         self.audit_df = self._build_audit_trail()
+        self._enrich_audit_with_source_code()
+
+    # ------------------------------------------------------------------
+    #  Static Analysis: Python_Calculation_Code & Dependencies
+    # ------------------------------------------------------------------
+
+    def _enrich_audit_with_source_code(self) -> None:
+        """Append Python_Calculation_Code and Upstream_Derived_Dependencies
+        columns to ``self.audit_df`` for every derived metric.
+
+        Uses ``inspect.getsource`` on ``BankMetricsProcessor.create_derived_metrics``
+        to extract the assignment expression and parse upstream references.
+        """
+        if self.audit_df.empty:
+            self.audit_df["Python_Calculation_Code"] = ""
+            self.audit_df["Upstream_Derived_Dependencies"] = ""
+            return
+
+        # --- 1. Grab source lines ----------------------------------
+        try:
+            src = inspect.getsource(BankMetricsProcessor.create_derived_metrics)
+            src_lines = src.splitlines()
+        except (OSError, TypeError):
+            self.audit_df["Python_Calculation_Code"] = "Requires Manual Audit"
+            self.audit_df["Upstream_Derived_Dependencies"] = ""
+            return
+
+        # --- 2. Build a lookup: metric_code -> extracted code -------
+        derived_codes = set(
+            self.audit_df.loc[
+                (self.audit_df["Is_Derived"] == True)
+                | (self.audit_df["Source_of_Truth"].str.contains("Derived", case=False, na=False)),
+                "Metric_Code",
+            ]
+        )
+
+        # Also treat any metric assigned inside create_derived_metrics as
+        # having extractable code, even if not flagged Is_Derived.
+        all_metric_codes = set(self.audit_df["Metric_Code"])
+
+        code_map: dict[str, str] = {}   # metric_code -> source snippet
+        deps_map: dict[str, str] = {}   # metric_code -> comma-sep dependencies
+
+        # Pre-compile regex for the three assignment targets:
+        #   df_processed['<key>'] = ...
+        #   new_cols['<key>'] = ...
+        #   norm_cols['<key>'] = ...
+        _ASSIGN_PAT = re.compile(
+            r"""(?:df_processed|new_cols|norm_cols|df_final)\[['"]([^'"]+)['"]\]\s*=""",
+        )
+
+        # Also detect f-string loop expansions like:
+        #   new_cols[f'RIC_{seg_name}_ACL_Coverage'] = ...
+        _FSTR_ASSIGN_PAT = re.compile(
+            r"""(?:df_processed|new_cols|norm_cols|df_final)\[f['"]([^'"]+)['"]\]\s*=""",
+        )
+
+        # Map from literal metric code -> (line_index, rhs_code)
+        # Walk every source line and collect assignments.
+        for i, line in enumerate(src_lines):
+            stripped = line.strip()
+
+            # --- Literal key assignments ---
+            m = _ASSIGN_PAT.search(stripped)
+            if m:
+                key = m.group(1)
+                rhs = stripped[m.end():].strip()
+                rhs = self._expand_multiline(src_lines, i, rhs)
+                code_map[key] = rhs
+                continue
+
+            # --- f-string key assignments ---
+            fm = _FSTR_ASSIGN_PAT.search(stripped)
+            if fm:
+                template = fm.group(1)  # e.g. "RIC_{seg_name}_ACL_Coverage"
+                rhs = stripped[fm.end():].strip()
+                rhs = self._expand_multiline(src_lines, i, rhs)
+                # Expand template for every segment name found in the source
+                seg_names = re.findall(
+                    r"""['"](\w+)['"]\s*:\s*\(""", src,
+                )
+                if not seg_names:
+                    seg_names = ["Constr", "CRE", "Resi", "Comm", "Card", "OthCons"]
+                for seg in seg_names:
+                    expanded = template.replace("{seg_name}", seg).replace("{seg}", seg)
+                    if expanded not in code_map:
+                        code_map[expanded] = rhs
+
+        # --- 3. For each metric, extract upstream derived deps ------
+        _KEY_REF_PAT = re.compile(
+            r"""(?:df_processed|new_cols|norm_cols|df_final)(?:\[['"]|\.\bget\s*\(\s*['"])([^'"]+)['"]"""
+        )
+
+        for code, snippet in code_map.items():
+            refs = set(_KEY_REF_PAT.findall(snippet))
+            # Keep only references that are themselves derived / computed
+            # in this function (i.e. they also appear in code_map).
+            upstream = sorted(refs & set(code_map.keys()) - {code})
+            deps_map[code] = ", ".join(upstream) if upstream else ""
+
+        # --- 4. Map back onto the audit DataFrame -------------------
+        calc_col = []
+        deps_col = []
+        for _, row in self.audit_df.iterrows():
+            mc = row["Metric_Code"]
+            is_derived = (
+                row.get("Is_Derived") is True
+                or "Derived" in str(row.get("Source_of_Truth", ""))
+            )
+            if is_derived or mc in code_map:
+                snippet = code_map.get(mc, "Requires Manual Audit")
+                calc_col.append(snippet)
+                deps_col.append(deps_map.get(mc, ""))
+            else:
+                calc_col.append("")
+                deps_col.append("")
+
+        self.audit_df["Python_Calculation_Code"] = calc_col
+        self.audit_df["Upstream_Derived_Dependencies"] = deps_col
+
+    @staticmethod
+    def _expand_multiline(src_lines: list[str], start: int, rhs: str) -> str:
+        """If *rhs* has unbalanced parentheses, append subsequent lines
+        until balanced or a reasonable limit is reached.
+        """
+        open_parens = rhs.count("(") - rhs.count(")")
+        j = start + 1
+        while open_parens > 0 and j < len(src_lines) and (j - start) < 20:
+            next_line = src_lines[j].strip()
+            rhs += " " + next_line
+            open_parens += next_line.count("(") - next_line.count(")")
+            j += 1
+        return rhs.strip()
 
     # ------------------------------------------------------------------
     #  Audit Trail Builder
@@ -4460,6 +4593,8 @@ class ExcelOutputGenerator:
         ws.column_dimensions["D"].width = 30   # Source_of_Truth
         ws.column_dimensions["E"].width = 12   # Is_Derived
         ws.column_dimensions["F"].width = 28   # Usage_Status
+        ws.column_dimensions["G"].width = 70   # Python_Calculation_Code
+        ws.column_dimensions["H"].width = 50   # Upstream_Derived_Dependencies
 
         # Visual fills
         used_fill = PatternFill(start_color="DAEEF3", end_color="DAEEF3", fill_type="solid")  # light blue
