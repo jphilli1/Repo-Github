@@ -33,7 +33,7 @@ def generate_chunk_id(doc_id: str, page_number: int, chunk_index: int, content_s
     return hashlib.md5(composite_key.encode('utf-8')).hexdigest()
 
 
-def generate_lineage_trace(source_file_hash: str, page_index: int, bbox_coords: Optional[List[float]], extraction_method: str) -> str:
+def generate_lineage_trace(source_file_hash: str, page_index: int, bbox_coords: Optional[Tuple[float, ...]], extraction_method: str) -> str:
     """
     Generates a SHA-256 hash for strict audit trails (CANON_004).
     """
@@ -46,7 +46,7 @@ def generate_lineage_trace(source_file_hash: str, page_index: int, bbox_coords: 
 
 class NodeMetadata(BaseModel):
     page_number: int = Field(..., description="1-based page number")
-    bbox: Optional[List[float]] = Field(default=None, min_length=4, max_length=4)
+    bbox: Optional[Tuple[float, float, float, float]] = Field(default=None)
     table_shape: Optional[List[int]] = Field(default=None, min_length=2, max_length=2, description="[rows, cols]")
     edge_density: float = Field(default=0.0, description="Heuristic for image/content complexity")
     source_scope: Literal["primary", "corpus"] = Field(..., description="Scope for disambiguation")

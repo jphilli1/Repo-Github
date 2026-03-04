@@ -1,12 +1,11 @@
 # Split-RAG Extension — API-Free Local RAG Pipeline
 # ABSOLUTE CONSTRAINT: No torch, transformers, llama-index, neo4j, openai, google-genai
 
-# Core parsing (primary engine)
-docling>=2.0.0
-docling-core>=2.0.0
-
-# Fallback parsing
+# Primary parsing engine
 pdfplumber>=0.10.0
+
+# Fallback parsing engine
+pypdfium2>=4.0.0
 
 # In-memory graph database
 networkx>=3.0

@@ -216,7 +216,7 @@ def process_with_pdfplumber(
                     continue
 
                 # Page-level bbox used as fallback for sanitization
-                page_bbox = [0.0, 0.0, page_width, page_height]
+                page_bbox = (0.0, 0.0, page_width, page_height)
 
                 for para_text, para_bbox in paragraphs:
                     if len(para_text.strip()) < 5:
@@ -254,9 +254,24 @@ def process_with_pdfplumber(
                     table_data = tbl.extract()
                     if not table_data:
                         continue
+
+                    # --- Cell-level spatial provenance ---
+                    # Iterate individual cells, sanitize each bbox before
+                    # assembling the table markdown. cell_bboxes stores
+                    # per-cell [x0, y0, x1, y1] for downstream audit.
+                    cell_bboxes: List[Tuple[float, float, float, float]] = []
+                    if hasattr(tbl, "cells") and tbl.cells:
+                        for cell in tbl.cells:
+                            # pdfplumber cells are (x0, top, x1, bottom)
+                            raw_cell_bbox = list(cell) if cell else None
+                            sanitized = sanitize_bbox(
+                                raw_cell_bbox, page_width, page_height, page_bbox
+                            )
+                            cell_bboxes.append(sanitized)
+
                     md_content = _table_to_markdown(table_data)
 
-                    # Table bbox from pdfplumber table object — sanitize
+                    # Table-level bbox from pdfplumber table object — sanitize
                     raw_tbl_bbox = list(tbl.bbox) if hasattr(tbl, "bbox") and tbl.bbox else None
                     tbl_bbox = sanitize_bbox(
                         raw_tbl_bbox, page_width, page_height, page_bbox
@@ -285,6 +300,8 @@ def process_with_pdfplumber(
                         metadata=meta,
                         lineage_trace=lineage,
                     )
+                    # Attach cell-level bbox provenance for audit
+                    node._cell_bboxes = cell_bboxes
                     nodes.append(node)
                     chunk_idx += 1
 
@@ -338,7 +355,7 @@ def _fallback_page_pypdfium2(
 
         page_width = float(page.get_width())
         page_height = float(page.get_height())
-        page_bbox = [0.0, 0.0, page_width, page_height]
+        page_bbox = (0.0, 0.0, page_width, page_height)
 
         for para_text in paragraphs:
             if len(para_text) < 5:
@@ -557,13 +574,13 @@ _DEFAULT_PAGE_HEIGHT: float = 792.0
 
 
 def sanitize_bbox(
-    bbox: Optional[List[float]],
+    bbox,
     page_width: float = _DEFAULT_PAGE_WIDTH,
     page_height: float = _DEFAULT_PAGE_HEIGHT,
-    parent_bbox: Optional[List[float]] = None,
-) -> List[float]:
+    parent_bbox=None,
+) -> Tuple[float, float, float, float]:
     """
-    Ensure a bounding box is a valid [x0, y0, x1, y1] list of floats.
+    Ensure a bounding box is a valid (x0, y0, x1, y1) tuple of floats.
 
     Rules:
         1. If bbox is None/empty/wrong length → inherit parent_bbox or clamp to page dims
@@ -574,15 +591,15 @@ def sanitize_bbox(
     # Fallback: use parent bbox or full page
     if not bbox or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
         if parent_bbox and len(parent_bbox) == 4:
-            return [float(v) for v in parent_bbox]
-        return [0.0, 0.0, float(page_width), float(page_height)]
+            return tuple(float(v) for v in parent_bbox)
+        return (0.0, 0.0, float(page_width), float(page_height))
 
     try:
         x0, y0, x1, y1 = [float(v) for v in bbox]
     except (TypeError, ValueError):
         if parent_bbox and len(parent_bbox) == 4:
-            return [float(v) for v in parent_bbox]
-        return [0.0, 0.0, float(page_width), float(page_height)]
+            return tuple(float(v) for v in parent_bbox)
+        return (0.0, 0.0, float(page_width), float(page_height))
 
     # Clamp to page boundaries
     x0 = max(0.0, min(x0, page_width))
@@ -596,7 +613,7 @@ def sanitize_bbox(
     if y0 > y1:
         y0, y1 = y1, y0
 
-    return [x0, y0, x1, y1]
+    return (x0, y0, x1, y1)
 
 
 def _classify_chunk_type(text: str) -> str:
