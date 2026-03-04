@@ -191,10 +191,13 @@ def process_with_pdfplumber(
     """
     nodes: List[schema.ContextNode] = []
     chunk_idx = 0
+    logger = logging.getLogger("SplitRAG_Factory")
 
     with pdfplumber.open(file_path) as pdf:
         for page_idx, page in enumerate(pdf.pages):
             page_no = page_idx + 1
+            page_width = float(page.width)
+            page_height = float(page.height)
 
             try:
                 # --- Text extraction via .extract_words() ---
@@ -204,12 +207,25 @@ def process_with_pdfplumber(
                 lines = _cluster_words_to_lines(words)
                 paragraphs = _merge_lines_to_paragraphs(lines)
 
+                # --- SCANNED DOCUMENT FAILSAFE ---
+                # Count total alnum chars on page; skip if below threshold
+                page_all_text = " ".join(p[0] for p in paragraphs)
+                if not check_page_readability(
+                    _count_alnum(page_all_text), page_no, logger
+                ):
+                    continue
+
+                # Page-level bbox used as fallback for sanitization
+                page_bbox = [0.0, 0.0, page_width, page_height]
+
                 for para_text, para_bbox in paragraphs:
                     if len(para_text.strip()) < 5:
                         continue
 
                     c_type = _classify_chunk_type(para_text)
-                    bbox_list = list(para_bbox)
+                    bbox_list = sanitize_bbox(
+                        list(para_bbox), page_width, page_height, page_bbox
+                    )
                     chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, para_text)
                     lineage = schema.generate_lineage_trace(
                         file_hash, page_no, bbox_list, "pdfplumber"
@@ -240,8 +256,11 @@ def process_with_pdfplumber(
                         continue
                     md_content = _table_to_markdown(table_data)
 
-                    # Table bbox from pdfplumber table object
-                    tbl_bbox = list(tbl.bbox) if hasattr(tbl, "bbox") and tbl.bbox else None
+                    # Table bbox from pdfplumber table object — sanitize
+                    raw_tbl_bbox = list(tbl.bbox) if hasattr(tbl, "bbox") and tbl.bbox else None
+                    tbl_bbox = sanitize_bbox(
+                        raw_tbl_bbox, page_width, page_height, page_bbox
+                    )
                     t_shape = None
                     if table_data:
                         t_shape = [len(table_data), len(table_data[0]) if table_data[0] else 0]
@@ -295,6 +314,7 @@ def _fallback_page_pypdfium2(
         return []
 
     nodes: List[schema.ContextNode] = []
+    fallback_logger = logging.getLogger("SplitRAG_Factory")
     try:
         pdf_doc = pdfium.PdfDocument(str(file_path))
         page_index = page_no - 1
@@ -307,18 +327,25 @@ def _fallback_page_pypdfium2(
         if not text or len(text.strip()) < 5:
             return []
 
+        # --- SCANNED DOCUMENT FAILSAFE ---
+        if not check_page_readability(
+            _count_alnum(text), page_no, fallback_logger
+        ):
+            return []
+
         # Split into paragraphs by double newline
         paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
 
-        page_width = page.get_width()
-        page_height = page.get_height()
+        page_width = float(page.get_width())
+        page_height = float(page.get_height())
+        page_bbox = [0.0, 0.0, page_width, page_height]
 
         for para_text in paragraphs:
             if len(para_text) < 5:
                 continue
 
-            # Approximate bbox as full page width
-            bbox_list = [0.0, 0.0, float(page_width), float(page_height)]
+            # Approximate bbox as full page — sanitized
+            bbox_list = sanitize_bbox(None, page_width, page_height, page_bbox)
             c_type = _classify_chunk_type(para_text)
 
             chunk_id = schema.generate_chunk_id(doc_id, page_no, chunk_idx, para_text)
@@ -485,6 +512,91 @@ def _merge_lines_to_paragraphs(
     if current_texts:
         paragraphs.append((" ".join(current_texts), (x0_min, y0_min, x1_max, y1_max)))
     return paragraphs
+
+
+# ---------------------------------------------------------------------------
+# Scanned Document Failsafe
+# ---------------------------------------------------------------------------
+
+SCANNED_PAGE_MIN_CHARS: int = 50
+
+
+def check_page_readability(
+    page_text_chars: int, page_no: int, logger: Optional[logging.Logger] = None
+) -> bool:
+    """
+    Validate that a page yielded enough alphanumeric characters to be
+    considered readable. Scanned/image-only pages produce near-zero text
+    from geometry-based extraction (pdfplumber / pypdfium2).
+
+    Returns True if readable, False if SCANNED_UNREADABLE.
+    """
+    if page_text_chars < SCANNED_PAGE_MIN_CHARS:
+        if logger:
+            logger.warning(
+                "SCANNED_UNREADABLE: Page %d yielded only %d alphanumeric chars "
+                "(threshold=%d). Skipping to prevent orphaned graph nodes.",
+                page_no, page_text_chars, SCANNED_PAGE_MIN_CHARS,
+            )
+        return False
+    return True
+
+
+def _count_alnum(text: str) -> int:
+    """Count alphanumeric characters in text."""
+    return sum(1 for c in text if c.isalnum())
+
+
+# ---------------------------------------------------------------------------
+# Bounding Box Sanitization
+# ---------------------------------------------------------------------------
+
+# Default page dimensions (US Letter in points) used when no page dims available
+_DEFAULT_PAGE_WIDTH: float = 612.0
+_DEFAULT_PAGE_HEIGHT: float = 792.0
+
+
+def sanitize_bbox(
+    bbox: Optional[List[float]],
+    page_width: float = _DEFAULT_PAGE_WIDTH,
+    page_height: float = _DEFAULT_PAGE_HEIGHT,
+    parent_bbox: Optional[List[float]] = None,
+) -> List[float]:
+    """
+    Ensure a bounding box is a valid [x0, y0, x1, y1] list of floats.
+
+    Rules:
+        1. If bbox is None/empty/wrong length → inherit parent_bbox or clamp to page dims
+        2. All values coerced to float
+        3. Coordinates clamped to [0, page_width] / [0, page_height]
+        4. Ensure x0 <= x1, y0 <= y1
+    """
+    # Fallback: use parent bbox or full page
+    if not bbox or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        if parent_bbox and len(parent_bbox) == 4:
+            return [float(v) for v in parent_bbox]
+        return [0.0, 0.0, float(page_width), float(page_height)]
+
+    try:
+        x0, y0, x1, y1 = [float(v) for v in bbox]
+    except (TypeError, ValueError):
+        if parent_bbox and len(parent_bbox) == 4:
+            return [float(v) for v in parent_bbox]
+        return [0.0, 0.0, float(page_width), float(page_height)]
+
+    # Clamp to page boundaries
+    x0 = max(0.0, min(x0, page_width))
+    y0 = max(0.0, min(y0, page_height))
+    x1 = max(0.0, min(x1, page_width))
+    y1 = max(0.0, min(y1, page_height))
+
+    # Ensure ordering
+    if x0 > x1:
+        x0, x1 = x1, x0
+    if y0 > y1:
+        y0, y1 = y1, y0
+
+    return [x0, y0, x1, y1]
 
 
 def _classify_chunk_type(text: str) -> str:
