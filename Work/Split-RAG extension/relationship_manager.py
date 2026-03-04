@@ -400,44 +400,37 @@ class HybridRetrievalRouter:
     # ------------------------------------------------------------------
 
     def build_index(self) -> int:
-        """Build TF-IDF index from all chunk nodes in the DKG."""
-        self._node_ids = []
-        self._node_data = []
-        corpus: List[str] = []
+        """
+        Pre-compute subgraphs and validate DKG has indexable chunks.
 
-        for nid, data in self._dkg.graph.nodes(data=True):
-            if data.get("node_type") != "chunk":
-                continue
-            text = data.get("content", "")
-            if not text.strip():
-                continue
-            self._node_ids.append(nid)
-            self._node_data.append(data)
-            corpus.append(text)
+        IMPORTANT: No global TfidfVectorizer is fitted here. Each query
+        instantiates and fits a localized vectorizer scoped to the target
+        subgraph (via _query_graph). This ensures term-frequency matching
+        is highly specific to the routed partition, eliminating noise from
+        irrelevant document sections.
+        """
+        # Count indexable chunks (for return value and validation)
+        chunk_count = 0
+        for _nid, data in self._dkg.graph.nodes(data=True):
+            if data.get("node_type") == "chunk" and data.get("content", "").strip():
+                chunk_count += 1
 
-        if not corpus:
+        if chunk_count == 0:
             self._fitted = False
             return 0
 
-        self._vectorizer = TfidfVectorizer(
-            max_features=self._max_features,
-            ngram_range=self._ngram_range,
-            stop_words="english",
-            sublinear_tf=True,
-        )
-        self._tfidf_matrix = self._vectorizer.fit_transform(corpus)
         self._fitted = True
 
-        # Pre-compute subgraphs
+        # Pre-compute subgraphs for routing
         self._section_subgraphs = self._dkg.get_section_subgraphs()
         self._table_subgraph = self._dkg.get_table_subgraph()
 
         logger.info(
-            "Retrieval index built: %d documents, %d features",
-            len(corpus),
-            len(self._vectorizer.vocabulary_),
+            "Retrieval index ready: %d indexable chunks, %d section subgraphs",
+            chunk_count,
+            len(self._section_subgraphs),
         )
-        return len(corpus)
+        return chunk_count
 
     # ------------------------------------------------------------------
     # Routing
@@ -536,7 +529,17 @@ class HybridRetrievalRouter:
     def _query_graph(
         self, query_text: str, graph: nx.DiGraph, top_k: int
     ) -> List[Dict[str, Any]]:
-        """Execute TF-IDF query against a specific graph's chunk nodes."""
+        """
+        Execute LOCALIZED TF-IDF query against a specific subgraph's chunk nodes.
+
+        SPLIT-RAG DESIGN: The TfidfVectorizer is instantiated and fit ONLY on
+        the raw_text of nodes within the given networkx subgraph. This localized
+        vector space ensures highly specific term-frequency matching, eliminating
+        noise from irrelevant document sections. The vectorizer is NOT shared
+        across subgraphs.
+
+        Results include bounding_box attributes for frontend citation overlay.
+        """
         node_ids: List[str] = []
         node_data: List[Dict[str, Any]] = []
         corpus: List[str] = []

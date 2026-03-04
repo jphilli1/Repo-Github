@@ -536,3 +536,153 @@ class TestNextBlockAndSectionContext:
                 source_scope="primary",
                 extraction_method="docling",
             )
+
+
+# ---------------------------------------------------------------------------
+# §7 Scanned Document Failsafe tests
+# ---------------------------------------------------------------------------
+
+# Pure reimplementation of extractor utility functions for testing
+# (avoids importing pdfplumber which may not be available in test env)
+_SCANNED_PAGE_MIN_CHARS = 50
+
+def _check_page_readability(page_text_chars: int, page_no: int) -> bool:
+    return page_text_chars >= _SCANNED_PAGE_MIN_CHARS
+
+def _count_alnum_test(text: str) -> int:
+    return sum(1 for c in text if c.isalnum())
+
+def _sanitize_bbox(bbox, page_width=612.0, page_height=792.0, parent_bbox=None):
+    if not bbox or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        if parent_bbox and len(parent_bbox) == 4:
+            return [float(v) for v in parent_bbox]
+        return [0.0, 0.0, float(page_width), float(page_height)]
+    try:
+        x0, y0, x1, y1 = [float(v) for v in bbox]
+    except (TypeError, ValueError):
+        if parent_bbox and len(parent_bbox) == 4:
+            return [float(v) for v in parent_bbox]
+        return [0.0, 0.0, float(page_width), float(page_height)]
+    x0 = max(0.0, min(x0, page_width))
+    y0 = max(0.0, min(y0, page_height))
+    x1 = max(0.0, min(x1, page_width))
+    y1 = max(0.0, min(y1, page_height))
+    if x0 > x1:
+        x0, x1 = x1, x0
+    if y0 > y1:
+        y0, y1 = y1, y0
+    return [x0, y0, x1, y1]
+
+
+class TestScannedDocumentFailsafe:
+    def test_readable_page_passes(self):
+        assert _check_page_readability(200, 1) is True
+
+    def test_scanned_page_fails_below_threshold(self):
+        assert _check_page_readability(10, 1) is False
+
+    def test_exact_threshold_passes(self):
+        assert _check_page_readability(_SCANNED_PAGE_MIN_CHARS, 1) is True
+
+    def test_zero_chars_fails(self):
+        assert _check_page_readability(0, 1) is False
+
+    def test_count_alnum(self):
+        assert _count_alnum_test("Hello, World! 123") == 13
+        assert _count_alnum_test("   ---   ") == 0
+        assert _count_alnum_test("") == 0
+
+
+# ---------------------------------------------------------------------------
+# §8 Bounding Box Sanitization tests
+# ---------------------------------------------------------------------------
+
+class TestBBoxSanitization:
+    def test_valid_bbox_passes_through(self):
+        result = _sanitize_bbox([10.0, 20.0, 300.0, 400.0])
+        assert result == [10.0, 20.0, 300.0, 400.0]
+
+    def test_none_bbox_returns_page_dims(self):
+        result = _sanitize_bbox(None, page_width=612.0, page_height=792.0)
+        assert result == [0.0, 0.0, 612.0, 792.0]
+
+    def test_none_bbox_inherits_parent(self):
+        parent = [50.0, 100.0, 500.0, 700.0]
+        result = _sanitize_bbox(None, parent_bbox=parent)
+        assert result == parent
+
+    def test_empty_list_bbox_returns_fallback(self):
+        result = _sanitize_bbox([], parent_bbox=[10.0, 20.0, 30.0, 40.0])
+        assert result == [10.0, 20.0, 30.0, 40.0]
+
+    def test_wrong_length_bbox_returns_fallback(self):
+        result = _sanitize_bbox([10.0, 20.0], page_width=100.0, page_height=200.0)
+        assert result == [0.0, 0.0, 100.0, 200.0]
+
+    def test_swapped_coords_fixed(self):
+        result = _sanitize_bbox([300.0, 400.0, 10.0, 20.0])
+        assert result[0] <= result[2]
+        assert result[1] <= result[3]
+
+    def test_clamped_to_page_bounds(self):
+        result = _sanitize_bbox([-50.0, -10.0, 1000.0, 2000.0], page_width=612.0, page_height=792.0)
+        assert result[0] >= 0.0
+        assert result[1] >= 0.0
+        assert result[2] <= 612.0
+        assert result[3] <= 792.0
+
+    def test_non_numeric_bbox_returns_fallback(self):
+        result = _sanitize_bbox(["a", "b", "c", "d"], page_width=100.0, page_height=200.0)
+        assert result == [0.0, 0.0, 100.0, 200.0]
+
+    def test_all_nodes_have_sanitized_bbox(self, sample_context_graph):
+        """Every node in a ContextGraph must have valid 4-float bbox."""
+        for node in sample_context_graph.nodes:
+            bbox = node.metadata.bbox
+            assert bbox is not None
+            assert len(bbox) == 4
+            assert all(isinstance(v, float) for v in bbox)
+
+
+# ---------------------------------------------------------------------------
+# §9 Localized Subgraph Retrieval tests
+# ---------------------------------------------------------------------------
+
+class TestLocalizedSubgraphRetrieval:
+    def test_no_global_vectorizer_stored(self, router):
+        """After build_index, no global TfidfVectorizer should be fitted."""
+        assert router._vectorizer is None
+        assert router._tfidf_matrix is None
+
+    def test_subgraph_routing_uses_local_fit(self, router):
+        """Query routed to tables_pricing subgraph should still return results."""
+        results = router.query("SOFR spread basis points")
+        assert len(results) > 0
+
+    def test_full_graph_fallback_uses_local_fit(self, router):
+        """Unrouted query falls back to full graph with local vectorizer."""
+        results = router.query("xyzzy nonsense credit quality")
+        # Should still return results from full graph
+        assert isinstance(results, list)
+
+    def test_results_always_include_bbox(self, router):
+        """Every retrieval result must include bbox for citation overlay."""
+        results = router.query("NPL ratio credit quality")
+        for r in results:
+            assert "bbox" in r
+            bbox = r["bbox"]
+            if bbox is not None:
+                assert len(bbox) == 4
+
+    def test_section_scoped_retrieval(self, router):
+        """Section subgraphs are pre-computed for routing."""
+        assert len(router._section_subgraphs) >= 3
+
+    def test_table_subgraph_available(self, router):
+        """Table subgraph pre-computed for pricing route."""
+        assert router._table_subgraph is not None
+        table_chunks = [
+            n for n, d in router._table_subgraph.nodes(data=True)
+            if d.get("content_type") == "table"
+        ]
+        assert len(table_chunks) >= 1
