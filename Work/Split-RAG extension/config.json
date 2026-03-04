@@ -1,0 +1,32 @@
+{
+    "paths": {
+        "input_directory": "input",
+        "output_directory": "output",
+        "log_directory": "logs",
+        "quarantine_directory": "quarantine"
+    },
+    "ingestion": {
+        "use_docling": true,
+        "enable_ocr": false,
+        "enable_table_detection": true,
+        "use_gpu": false,
+        "entity_scan_pages": 20
+    },
+    "graph": {
+        "fuzzy_threshold": 85
+    },
+    "retrieval": {
+        "max_features": 10000,
+        "ngram_range": [1, 2],
+        "top_k": 15,
+        "min_score": 0.01
+    },
+    "router": {
+        "fallback_top_k": 15,
+        "multi_hop_depth": 2
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    }
+}
