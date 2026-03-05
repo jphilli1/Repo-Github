@@ -2736,8 +2736,6 @@ class BankMetricsProcessor:
         new_cols['Total_Delinquency_Rate'] = new_cols['Top_House_Delinquency_Rate']
 
         new_cols['Nonaccrual_to_Gross_Loans_Rate'] = safe_div(df_processed['Total_Nonaccrual'], df_processed['Gross_Loans'])
-        # Report Generator Contract: NPL alias for downstream compatibility
-        new_cols['NPL_to_Gross_Loans_Rate'] = new_cols['Nonaccrual_to_Gross_Loans_Rate']
         new_cols['Allowance_to_Gross_Loans_Rate'] = safe_div(df_processed['Total_ACL'], df_processed['Gross_Loans'])
         new_cols['Risk_Adj_Allowance_Coverage'] = safe_div(df_processed['Total_ACL'], (df_processed['Gross_Loans'] - df_processed['SBL_Balance']))
 
@@ -3099,7 +3097,10 @@ class BankMetricsProcessor:
         df_final['RIC_Comm_Best'] = df_final['RIC_Comm_ACL']
         df_final['RIC_CommRE_Best'] = df_final['RIC_CRE_ACL']
 
-        # Legacy / Report Generator Contract Columns
+        # --- RESTORED DUAL-TIER REPORTING METRICS ---
+        # The downstream reporting tool explicitly looks for these exact variable names
+        # to represent the un-normalized, bank-wide top line.
+        df_final['NPL_to_Gross_Loans_Rate'] = df_final.get('Nonaccrual_to_Gross_Loans_Rate', np.nan)
         df_final['Tier_1_Leverage_Ratio'] = df_final.get('RCFD7204', np.nan)
         df_final['Total_Assets'] = df_final.get('ASSET', np.nan)
         df_final['Net_Charge_Off_Rate'] = df_final.get('TTM_NCO_Rate', np.nan)
