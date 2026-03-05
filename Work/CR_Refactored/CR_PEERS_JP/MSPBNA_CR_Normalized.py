@@ -3326,6 +3326,16 @@ class BankMetricsProcessor:
             if '_Growth_TTM' in col:
                 snapshot[col] = latest[col]
 
+        # 5. Legacy alias mapping for downstream report compatibility
+        _LEGACY_ALIASES = {
+            "Total_Assets": "ASSET",
+            "Tier_1_Leverage_Ratio": "RCFD7204",
+            "Net_Charge_Off_Rate": "TTM_NCO_Rate",
+        }
+        for alias, source in _LEGACY_ALIASES.items():
+            if source in snapshot.columns and alias not in snapshot.columns:
+                snapshot[alias] = snapshot[source]
+
         return snapshot.set_index('CERT')
 
 class PeerAnalyzer:
@@ -4368,8 +4378,8 @@ class ExcelOutputGenerator:
         except Exception:
             for col, default in empty_cols.items():
                 self.audit_df[col] = (
-                    "Requires Manual Audit" if col == "Python_Calculation_Code"
-                    else default
+                    "AST Parse Error — Manual Audit Required"
+                    if col == "Python_Calculation_Code" else default
                 )
             return
 
@@ -4403,7 +4413,7 @@ class ExcelOutputGenerator:
                 trace_col.append(trace_map.get(mc, ""))
                 deps_col.append(deep_deps_map.get(mc, ""))
             elif is_derived:
-                calc_col.append("Requires Manual Audit")
+                calc_col.append("Planned — Not Yet Implemented")
                 trace_col.append("")
                 deps_col.append("")
             else:
@@ -4434,6 +4444,10 @@ class ExcelOutputGenerator:
         """Recursively expand a metric's formula up to ``_MAX_TRACE_DEPTH``
         levels, stopping when a terminal (raw regulatory code) is reached.
 
+        Terminal codes that are NOT derived (i.e. raw regulatory fields like
+        LNLS, ASSET, RCFD1410) are annotated with their MasterDataDictionary
+        definition so the trace is readable by non-coders.
+
         Returns ``(trace_string, all_deps)`` where *trace_string* is a
         pipe-delimited multi-step expansion and *all_deps* is the
         cumulative set of every derived metric touched at any level.
@@ -4441,6 +4455,7 @@ class ExcelOutputGenerator:
         steps: list[str] = []
         all_deps: set[str] = set()
         visited: set[str] = set()
+        terminal_codes: set[str] = set()
 
         frontier = [metric_code]
 
@@ -4462,10 +4477,19 @@ class ExcelOutputGenerator:
                 for dep in sorted(direct):
                     if dep in code_map and dep not in visited:
                         next_frontier.append(dep)
+                    elif dep not in code_map:
+                        terminal_codes.add(dep)
 
             if not next_frontier:
                 break
             frontier = next_frontier
+
+        # Annotate terminal regulatory codes with dictionary definitions
+        for tc in sorted(terminal_codes):
+            info = self._mdd.lookup_metric(tc)
+            name = info.get("Metric_Name", "")
+            if name and name != tc and info.get("Source_of_Truth", "") != "Not Found":
+                steps.append(f"[Regulatory Definition] {tc}: {name}")
 
         return " | ".join(steps), all_deps - {metric_code}
 
@@ -4577,73 +4601,100 @@ class ExcelOutputGenerator:
 
     # ---- AST helpers -------------------------------------------------
 
+    # Growth-prefix names used in calculate_ttm_metrics loops
+    _TTM_GROWTH_PREFIXES = [
+        "CRE", "Constr", "Resi", "Comm", "Card", "OthCons",
+        "SBL", "Fund_Finance", "Total_Loans", "Assets", "Deposits",
+    ]
+
     def _ast_extract_metrics(self) -> tuple[dict[str, str], dict[str, str]]:
-        """Parse *create_derived_metrics* with :mod:`ast` and return
-        ``(code_map, deps_map)`` where each maps metric-code strings to
-        extracted source / comma-separated dependency lists.
+        """Parse *create_derived_metrics* **and** *calculate_ttm_metrics*
+        with :mod:`ast` and return ``(code_map, deps_map)`` where each
+        maps metric-code strings to extracted source / comma-separated
+        dependency lists.
         """
         import ast as _ast
         import textwrap as _tw
 
-        # 1. Obtain dedented method source for standalone parsing
-        src_full = inspect.getsource(BankMetricsProcessor.create_derived_metrics)
-        src = _tw.dedent(src_full)
-        tree = _ast.parse(src)
+        raw_map: dict[str, str] = {}
 
-        # 2. Walk all Assign nodes and collect metric -> RHS source text
-        raw_map: dict[str, str] = {}          # literal or template key -> rhs
-        template_keys: list[str] = []         # f-string templates for expansion
+        # ---------- helper: walk a method and collect assignments ---------
+        def _walk_method(method_ref, extra_vars: frozenset = frozenset()):
+            src = _tw.dedent(inspect.getsource(method_ref))
+            tree = _ast.parse(src)
+            allowed = self._TARGET_VARS | extra_vars
 
-        for node in _ast.walk(tree):
-            if not isinstance(node, _ast.Assign):
-                continue
-            for target in node.targets:
-                if not isinstance(target, _ast.Subscript):
+            for node in _ast.walk(tree):
+                if not isinstance(node, _ast.Assign):
                     continue
+                for target in node.targets:
+                    if not isinstance(target, _ast.Subscript):
+                        continue
+                    var_name = self._ast_var_name(target.value)
+                    if var_name not in allowed:
+                        continue
+                    key = self._ast_extract_key(target.slice)
+                    if key is None:
+                        continue
+                    rhs_src = _ast.get_source_segment(src, node.value)
+                    if rhs_src is None:
+                        try:
+                            rhs_src = _ast.unparse(node.value)
+                        except Exception:
+                            continue
+                    raw_map[key] = " ".join(rhs_src.split())
 
-                var_name = self._ast_var_name(target.value)
-                if var_name not in self._TARGET_VARS:
-                    continue
+        # 1. Primary: create_derived_metrics
+        _walk_method(BankMetricsProcessor.create_derived_metrics)
 
-                key = self._ast_extract_key(target.slice)
-                if key is None:
-                    continue
+        # 2. Secondary: calculate_ttm_metrics (growth, TTM rates)
+        try:
+            _walk_method(
+                BankMetricsProcessor.calculate_ttm_metrics,
+                extra_vars=frozenset({"bank_df", "df"}),
+            )
+        except Exception:
+            pass
 
-                # Extract RHS: prefer get_source_segment for perfect fidelity
-                rhs_src = _ast.get_source_segment(src, node.value)
-                if rhs_src is None:
-                    try:
-                        rhs_src = _ast.unparse(node.value)
-                    except Exception:
-                        rhs_src = "Requires Manual Audit"
+        # 3. Regex fallback for anything the AST walk missed
+        try:
+            cdm_src = _tw.dedent(inspect.getsource(
+                BankMetricsProcessor.create_derived_metrics
+            ))
+            _rx = re.compile(
+                r"""(?:df_processed|new_cols|norm_cols|df_final)"""
+                r"""\[['"]([A-Za-z0-9_]+)['"]\]\s*=""",
+            )
+            for m in _rx.finditer(cdm_src):
+                k = m.group(1)
+                if k not in raw_map:
+                    line_end = cdm_src.find("\n", m.end())
+                    rhs = cdm_src[m.end():line_end].strip().lstrip("= ")
+                    raw_map[k] = " ".join(rhs.split())
+        except Exception:
+            pass
 
-                # Normalise whitespace (collapse inner newlines for readability)
-                rhs_src = " ".join(rhs_src.split())
-                raw_map[key] = rhs_src
-
-                if "{" in key:
-                    template_keys.append(key)
-
-        # 3. Expand f-string templates into concrete metric names
+        # 4. Expand f-string templates into concrete metric names
         code_map: dict[str, str] = {}
         for key, rhs in raw_map.items():
             if "{" not in key:
                 code_map[key] = rhs
             else:
-                # Expand template across all known segment names
                 for seg in self._SEGMENT_NAMES:
                     expanded = (
                         key.replace("{seg_name}", seg)
                            .replace("{seg}", seg)
                            .replace("{...}", seg)
                     )
-                    if expanded not in code_map:
-                        code_map[expanded] = rhs
+                    code_map.setdefault(expanded, rhs)
+                for pfx in self._TTM_GROWTH_PREFIXES:
+                    expanded = key.replace("{prefix}", pfx)
+                    if expanded != key:
+                        code_map.setdefault(expanded, rhs)
 
-        # 4. Build direct dependency map using AST-based RHS walking
+        # 5. Build direct dependency map
         all_keys = set(code_map.keys())
         deps_map: dict[str, str] = {}
-
         for metric_code, rhs_src in code_map.items():
             refs = self._ast_extract_deps(rhs_src, all_keys)
             refs.discard(metric_code)
