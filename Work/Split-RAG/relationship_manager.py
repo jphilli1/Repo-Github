@@ -112,9 +112,9 @@ class DocumentKnowledgeGraph:
         current_section_id: Optional[str] = None
 
         for page_no in sorted(pages.keys()):
-            # Reset per-page state: each page starts with clean context
+            # Reset reading-order linkage per page but carry section state
+            # across pages so multi-page sections stay connected in the DKG.
             prev_chunk_id = None
-            current_section_id = None
 
             page_id = f"PAGE_{ctx.document_id}_{page_no}"
             self.graph.add_node(
@@ -124,6 +124,11 @@ class DocumentKnowledgeGraph:
                 document_id=ctx.document_id,
             )
             self.graph.add_edge(doc_node, page_id, edge_type="HAS_PAGE")
+
+            # If a section from a prior page carries over, link it to this
+            # page so page-centric traversals still discover the section.
+            if current_section_id and not self.graph.has_edge(page_id, current_section_id):
+                self.graph.add_edge(page_id, current_section_id, edge_type="CONTINUES_SECTION")
 
             for node in pages[page_no]:
                 chunk_id = node.chunk_id

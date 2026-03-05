@@ -786,13 +786,12 @@ class TestPageStateResetDKG:
         page2_node = f"PAGE_{ctx.document_id}_2"
         page1_section_id = f"SEC_{nodes[0].chunk_id}"
 
-        # The page 2 chunk must be a child of the PAGE_2 node
+        # Cross-page section continuity: page 2's chunk (no new header)
+        # should remain a child of the section started on page 1.
         parents = list(dkg.graph.predecessors(page2_chunk))
-        assert page2_node in parents, (
-            f"Page 2 chunk should attach to {page2_node}, got parents: {parents}"
-        )
-        assert page1_section_id not in parents, (
-            f"Page 2 chunk must NOT attach to page 1's section"
+        assert page1_section_id in parents, (
+            f"Page 2 chunk should attach to page 1's section {page1_section_id}, "
+            f"got parents: {parents}"
         )
 
     def test_no_cross_page_reading_order(self):
@@ -1862,3 +1861,152 @@ class TestEntityRelationshipEdges:
         # Check for GUARANTEED_BY edge
         edges = [(u, v, d) for u, v, d in dkg.graph.edges(data=True) if d.get("edge_type") == "GUARANTEED_BY"]
         assert len(edges) >= 1
+
+
+# ===========================================================================
+# Test: Cross-Page Section Continuity in DKG
+# ===========================================================================
+
+class TestCrossPageSectionContinuity:
+    """Verify that section state persists across page boundaries in the DKG."""
+
+    def _make_ctx(self, doc_id, file_hash, nodes):
+        return schema.ContextGraph(
+            document_id=doc_id,
+            filename="test.pdf",
+            processed_at="2026-01-01T00:00:00Z",
+            nodes=nodes,
+        )
+
+    def _make_node(self, doc_id, file_hash, page, idx, content_type, content):
+        return schema.ContextNode(
+            chunk_id=schema.generate_chunk_id(doc_id, page, idx, content),
+            content_type=content_type,
+            content=content,
+            metadata=schema.NodeMetadata(
+                page_number=page,
+                source_scope="primary",
+                extraction_method="pdfplumber",
+            ),
+            lineage_trace=schema.generate_lineage_trace(file_hash, page, None, "pdfplumber"),
+        )
+
+    def test_section_carries_across_page_boundary(self):
+        """A section header on page 1 should parent chunks on page 2."""
+        doc_id = "a" * 32
+        fh = "b" * 32
+        header = self._make_node(doc_id, fh, 1, 0, "header", "Financial Covenants")
+        text_p1 = self._make_node(doc_id, fh, 1, 1, "text", "DSCR must exceed 1.25x.")
+        text_p2 = self._make_node(doc_id, fh, 2, 0, "text", "LTV shall not exceed 65%.")
+
+        ctx = self._make_ctx(doc_id, fh, [header, text_p1, text_p2])
+        dkg = DocumentKnowledgeGraph()
+        dkg.build_from_context_graph(ctx)
+
+        section_id = f"SEC_{header.chunk_id}"
+
+        # Both text chunks should be children of the section
+        children = [
+            v for _, v, d in dkg.graph.edges(data=True)
+            if d.get("edge_type") == "HAS_CHILD" and _ == section_id
+        ]
+        assert text_p1.chunk_id in children, "Page-1 text must be child of section"
+        assert text_p2.chunk_id in children, "Page-2 text must be child of section"
+
+    def test_continues_section_edge_added(self):
+        """Page 2 should have a CONTINUES_SECTION edge to the section from page 1."""
+        doc_id = "a" * 32
+        fh = "b" * 32
+        header = self._make_node(doc_id, fh, 1, 0, "header", "Collateral Description")
+        text_p2 = self._make_node(doc_id, fh, 2, 0, "text", "Property located at 123 Main St.")
+
+        ctx = self._make_ctx(doc_id, fh, [header, text_p2])
+        dkg = DocumentKnowledgeGraph()
+        dkg.build_from_context_graph(ctx)
+
+        section_id = f"SEC_{header.chunk_id}"
+        page2_id = f"PAGE_{doc_id}_2"
+
+        cont_edges = [
+            (u, v) for u, v, d in dkg.graph.edges(data=True)
+            if d.get("edge_type") == "CONTINUES_SECTION"
+        ]
+        assert (page2_id, section_id) in cont_edges, \
+            "Page 2 should have CONTINUES_SECTION edge to prior section"
+
+    def test_new_header_on_page2_starts_new_section(self):
+        """A new header on page 2 should start a fresh section, not continue old."""
+        doc_id = "a" * 32
+        fh = "b" * 32
+        h1 = self._make_node(doc_id, fh, 1, 0, "header", "Section A")
+        text_p1 = self._make_node(doc_id, fh, 1, 1, "text", "Content under A.")
+        h2 = self._make_node(doc_id, fh, 2, 0, "header", "Section B")
+        text_p2 = self._make_node(doc_id, fh, 2, 1, "text", "Content under B.")
+
+        ctx = self._make_ctx(doc_id, fh, [h1, text_p1, h2, text_p2])
+        dkg = DocumentKnowledgeGraph()
+        dkg.build_from_context_graph(ctx)
+
+        sec_a = f"SEC_{h1.chunk_id}"
+        sec_b = f"SEC_{h2.chunk_id}"
+
+        children_a = [
+            v for _, v, d in dkg.graph.edges(data=True)
+            if d.get("edge_type") == "HAS_CHILD" and _ == sec_a
+        ]
+        children_b = [
+            v for _, v, d in dkg.graph.edges(data=True)
+            if d.get("edge_type") == "HAS_CHILD" and _ == sec_b
+        ]
+        assert text_p1.chunk_id in children_a
+        assert text_p2.chunk_id in children_b
+        assert text_p2.chunk_id not in children_a, "Page-2 text should NOT be under Section A"
+
+    def test_table_on_next_page_linked_to_prior_section(self):
+        """A table on page 2 should get CONTAINS_TABLE from the section on page 1."""
+        doc_id = "a" * 32
+        fh = "b" * 32
+        header = self._make_node(doc_id, fh, 1, 0, "header", "Debt Schedule")
+        table_p2 = self._make_node(doc_id, fh, 2, 0, "table", "| Tranche | Amount |\n| A | $50MM |")
+
+        ctx = self._make_ctx(doc_id, fh, [header, table_p2])
+        dkg = DocumentKnowledgeGraph()
+        dkg.build_from_context_graph(ctx)
+
+        section_id = f"SEC_{header.chunk_id}"
+        table_edges = [
+            (u, v) for u, v, d in dkg.graph.edges(data=True)
+            if d.get("edge_type") == "CONTAINS_TABLE"
+        ]
+        assert (section_id, table_p2.chunk_id) in table_edges, \
+            "Table on page 2 must be linked to section from page 1 via CONTAINS_TABLE"
+
+    def test_three_page_section_continuity(self):
+        """Section spans pages 1-3 with no new headers; all chunks under same section."""
+        doc_id = "a" * 32
+        fh = "b" * 32
+        header = self._make_node(doc_id, fh, 1, 0, "header", "Risk Factors")
+        t1 = self._make_node(doc_id, fh, 1, 1, "text", "Market risk.")
+        t2 = self._make_node(doc_id, fh, 2, 0, "text", "Credit risk.")
+        t3 = self._make_node(doc_id, fh, 3, 0, "text", "Operational risk.")
+
+        ctx = self._make_ctx(doc_id, fh, [header, t1, t2, t3])
+        dkg = DocumentKnowledgeGraph()
+        dkg.build_from_context_graph(ctx)
+
+        section_id = f"SEC_{header.chunk_id}"
+        children = [
+            v for _, v, d in dkg.graph.edges(data=True)
+            if d.get("edge_type") == "HAS_CHILD" and _ == section_id
+        ]
+        for node in [t1, t2, t3]:
+            assert node.chunk_id in children, \
+                f"Chunk on page {node.metadata.page_number} must be child of section"
+
+        # Pages 2 and 3 should have CONTINUES_SECTION edges
+        cont_edges = {
+            u for u, v, d in dkg.graph.edges(data=True)
+            if d.get("edge_type") == "CONTINUES_SECTION" and v == section_id
+        }
+        assert f"PAGE_{doc_id}_2" in cont_edges
+        assert f"PAGE_{doc_id}_3" in cont_edges
