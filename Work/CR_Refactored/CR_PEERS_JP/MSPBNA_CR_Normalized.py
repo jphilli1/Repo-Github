@@ -3286,7 +3286,26 @@ class BankMetricsProcessor:
             'ASSET', 'LNLS', 'Total_ACL', 'Total_Capital',
             'Allowance_to_Gross_Loans_Rate', 'Nonaccrual_to_Gross_Loans_Rate',
             'Risk_Adj_Allowance_Coverage',
-            'TTM_NCO_Rate', 'TTM_Past_Due_Rate', 'ACL_Integrity_Status'
+            'TTM_NCO_Rate', 'TTM_Past_Due_Rate', 'ACL_Integrity_Status',
+            # Dual-Tier Reporting: legacy series for report_generator.py
+            'NPL_to_Gross_Loans_Rate', 'Tier_1_Leverage_Ratio',
+            'Total_Assets', 'Net_Charge_Off_Rate',
+            'Top_House_Delinquency_Rate', 'Total_Delinquency_Rate',
+            # Normalized (Ex-Commercial/Ex-Consumer) metrics
+            'Norm_NCO_Rate', 'Norm_Nonaccrual_Rate', 'Norm_Delinquency_Rate',
+            'Norm_ACL_Coverage', 'Norm_Gross_Loans', 'Norm_Total_NCO',
+            'Norm_Total_Nonaccrual', 'Norm_SBL_Composition',
+            'Norm_Fund_Finance_Composition', 'Norm_Wealth_Resi_Composition',
+            'Norm_Exclusion_Pct',
+            # Profitability
+            'Loan_Yield_Proxy', 'Norm_Loan_Yield',
+            'Provision_to_Loans_Rate', 'Norm_Provision_Rate',
+            'Norm_Loss_Adj_Yield', 'Norm_Risk_Adj_Return',
+            # Liquidity / Capital
+            'Liquidity_Ratio', 'HQLA_Ratio', 'Cash_to_Assets',
+            'Securities_to_Assets', 'Loans_to_Deposits',
+            'Equity_to_Assets', 'Leverage_Ratio',
+            'Gross_Loans',
         ]
         for m in base_metrics:
             if m in latest.columns:
