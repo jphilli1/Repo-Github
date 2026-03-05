@@ -27,7 +27,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import ValidationError
 
@@ -45,6 +45,16 @@ except ImportError:
 
 # pdfplumber is the PRIMARY engine — always required
 import pdfplumber
+
+# ---------------------------------------------------------------------------
+# RAPIDFUZZ AVAILABILITY PROBE — used for fuzzy section matching
+# ---------------------------------------------------------------------------
+_RAPIDFUZZ_AVAILABLE: bool = False
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    _fuzz = None
 
 
 # ---------------------------------------------------------------------------
@@ -166,10 +176,458 @@ def extract_entities(
                 if match:
                     entities[role] = match.group("entity").strip().strip('",.')
                     break
-    except (OSError, pdfplumber.exceptions.PSException):
+    except Exception:
         pass
 
     return entities
+
+
+# ---------------------------------------------------------------------------
+# Header Hierarchy Parser + Section State Machine
+# ---------------------------------------------------------------------------
+
+def _classify_chunk_type(text: str) -> str:
+    """
+    Heuristic classification of text chunks into schema content_type.
+
+    Rules ordered by specificity:
+    1. ALL CAPS, short → header
+    2. Roman numeral prefix (I., II., III.)
+    3. Numbered section (1., 2., 1.1)
+    4. Lettered section (A., B.)
+    5. Short colon-terminated line
+    6. Title case (heavily gated to avoid names/addresses)
+    """
+    stripped = text.strip()
+    # Rule 1: ALL CAPS, short → header
+    if len(stripped) < 100 and stripped.isupper() and len(stripped) > 3:
+        return "header"
+    # Rule 2: Roman numeral prefix (I., II., III., IV.)
+    if re.match(r'^[IVXLC]+\.\s+', stripped):
+        return "header"
+    # Rule 3: Numbered section (1., 2., 1.1, 2.3)
+    if re.match(r'^\d+(\.\d+)*\.\s+', stripped):
+        return "header"
+    # Rule 4: Lettered section (A., B., C.)
+    if re.match(r'^[A-Z]\.\s+[A-Z]', stripped):
+        return "header"
+    # Rule 5: Short colon-terminated line (Borrower:, Collateral:)
+    if len(stripped) < 60 and re.match(r'^[A-Z][A-Za-z\s/().\-]{2,50}:\s*$', stripped):
+        return "header"
+    # Rule 6: Title case, short, standalone — heavily gated
+    words = stripped.split()
+    if (len(stripped) < 80 and stripped.istitle() and '\n' not in stripped
+            and 2 <= len(words) <= 8
+            and not any(c.isdigit() for c in stripped)
+            and ',' not in stripped
+            and not stripped.endswith('.')):
+        return "header"
+    return "text"
+
+
+def _infer_section_level(text: str) -> int:
+    """Infer hierarchy depth from header text format."""
+    stripped = text.strip()
+    if re.match(r'^[IVXLC]+\.\s+', stripped):
+        return 1       # I., II.
+    if re.match(r'^\d+\.\s+', stripped):
+        return 2       # 1., 2.
+    if re.match(r'^\d+\.\d+', stripped):
+        return 3       # 1.1, 2.3
+    if re.match(r'^[A-Z]\.\s+', stripped):
+        return 2       # A., B.
+    if stripped.isupper():
+        return 1       # ALL CAPS
+    return 2           # default sub-section
+
+
+def _normalize_section_label(text: str) -> str:
+    """Normalize header text to a canonical label for section matching."""
+    if not text:
+        return ""
+    label = re.sub(r'^[IVXLC0-9A-Z]+[\.\)]\s*', '', text.strip())
+    label = label.lower().strip()
+    label = re.sub(r'[^\w\s]', '', label)
+    return re.sub(r'\s+', '_', label).strip('_')
+
+
+# ---------------------------------------------------------------------------
+# Financial Value Normalization
+# ---------------------------------------------------------------------------
+
+def normalize_financial_value(raw: str) -> Optional[float]:
+    """Convert $12MM → 12000000, 3.5x → 3.5, 65% → 0.65"""
+    if not raw:
+        return None
+    cleaned = raw.strip().rstrip('.')
+    # Remove currency symbols
+    cleaned = re.sub(r'^[\$£€]', '', cleaned)
+    # Handle multiplier suffixes (longest match first)
+    multipliers = {'BB': 1e9, 'B': 1e9, 'MM': 1e6, 'M': 1e6, 'K': 1e3, 'T': 1e3}
+    for suffix, mult in sorted(multipliers.items(), key=lambda x: -len(x[0])):
+        if cleaned.upper().endswith(suffix):
+            num_part = cleaned[:len(cleaned) - len(suffix)].replace(',', '').strip()
+            try:
+                return float(num_part) * mult
+            except ValueError:
+                return None
+    # Handle x (multiple)
+    if cleaned.lower().endswith('x'):
+        try:
+            return float(cleaned[:-1].replace(',', '').strip())
+        except ValueError:
+            return None
+    # Handle %
+    if cleaned.endswith('%'):
+        try:
+            return float(cleaned[:-1].replace(',', '').strip()) / 100.0
+        except ValueError:
+            return None
+    # Plain number
+    try:
+        return float(cleaned.replace(',', ''))
+    except ValueError:
+        return None
+
+
+def _extract_scale_hint(raw: str) -> Optional[str]:
+    """Extract original scale notation (MM, B, K, etc.) from raw value string."""
+    if not raw:
+        return None
+    cleaned = raw.strip().rstrip('.')
+    cleaned = re.sub(r'^[\$£€]', '', cleaned)
+    for suffix in ('BB', 'MM', 'B', 'M', 'K', 'T'):
+        if cleaned.upper().endswith(suffix):
+            return suffix
+    return None
+
+
+def _infer_normalized_unit(raw: str, metric_def: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Infer the specific normalized unit from raw value and metric definition."""
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if cleaned.endswith('%'):
+        return "percent"
+    if cleaned.lower().endswith('x'):
+        return "multiple"
+    if re.match(r'^[\$£€]', cleaned):
+        return "currency_usd"
+    if metric_def and metric_def.get("unit_type"):
+        return metric_def["unit_type"]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Two-Stage Document Type Classification
+# ---------------------------------------------------------------------------
+
+def detect_email_blocks(
+    nodes: List[schema.ContextNode], rules: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Stage 1: Detect email blocks in extracted nodes.
+
+    Returns:
+        - email_block_count: int
+        - email_block_ratio: float (chars in email blocks / total chars)
+        - email_block_chunk_ids: List[str]
+        - email_separator_hit_count: int
+    """
+    markers = rules.get("email_block_markers", {})
+    header_patterns = [re.compile(p) for p in markers.get("header_patterns", [
+        r"(?im)^From:\s+", r"(?im)^To:\s+", r"(?im)^Sent:\s+",
+        r"(?im)^Subject:\s+", r"(?im)^Cc:\s+"
+    ])]
+    separator_patterns = [re.compile(p) for p in markers.get("separator_patterns", [
+        r"(?i)-{3,}\s*Original\s+Message\s*-{3,}",
+        r"(?i)-{3,}\s*Forwarded\s+[Mm]essage\s*-{3,}"
+    ])]
+    min_headers = markers.get("min_header_lines", markers.get("min_header_count", 2))
+
+    email_chunks: List[str] = []
+    total_chars = 0
+    email_chars = 0
+    total_sep_hits = 0
+
+    for node in nodes:
+        total_chars += len(node.content)
+        lines = node.content.split('\n')
+        header_hits = sum(1 for line in lines for p in header_patterns if p.search(line))
+        sep_hits = sum(1 for line in lines for p in separator_patterns if p.search(line))
+        total_sep_hits += sep_hits
+        if header_hits >= min_headers or sep_hits > 0:
+            email_chunks.append(node.chunk_id)
+            email_chars += len(node.content)
+
+    return {
+        "email_block_count": len(email_chunks),
+        "email_block_ratio": email_chars / total_chars if total_chars > 0 else 0.0,
+        "email_block_chunk_ids": email_chunks,
+        "email_separator_hit_count": total_sep_hits,
+    }
+
+
+def classify_document_type(
+    text_buffer: str, email_info: Dict[str, Any], rules: Dict[str, Any]
+) -> Tuple[Optional[str], float, Dict[str, float]]:
+    """
+    Stage 2: Weighted document type classification with email dominance check.
+
+    Returns (best_type, confidence, all_scores).
+    Scores dict is exposed for testing/debugging tie-breaker behavior.
+    """
+    doc_types = rules.get("document_types", {})
+    if not doc_types:
+        return None, 0.0, {}
+
+    scores: Dict[str, float] = {}
+    for type_key, type_def in doc_types.items():
+        score = 0.0
+        weights = type_def.get("weights", {})
+        for pattern_str in type_def.get("patterns", []):
+            if re.search(pattern_str, text_buffer):
+                score += weights.get(pattern_str, 1.0)
+        scores[type_key] = score
+
+    # Email dominance check: banker_email wins ONLY if:
+    # 1. email_block_ratio > 0.6 AND (count >= 2 OR strong separator)
+    # 2. No strong LAM/memo signals (credit_memo score < 3)
+    if "banker_email" in scores:
+        requires_dom = doc_types.get("banker_email", {}).get("requires_dominance", True)
+        if requires_dom:
+            ratio = email_info.get("email_block_ratio", 0)
+            count = email_info.get("email_block_count", 0)
+            sep_hits = email_info.get("email_separator_hit_count", 0)
+            if ratio < 0.6 or (count < 2 and sep_hits < 1):
+                scores["banker_email"] = 0.0
+            if scores.get("credit_memo", 0) >= 3.0:
+                scores["banker_email"] = 0.0
+
+    best_type = max(scores, key=scores.get) if scores else None
+    best_score = scores.get(best_type, 0) if best_type else 0
+
+    # Tie-breaker (no mutation): credit_memo wins over any type within 1pt margin
+    # when credit_memo >= 3.0 and banker_email is suppressed
+    credit_score = scores.get("credit_memo", 0)
+    if (credit_score >= 3.0
+            and scores.get("banker_email", 0) == 0.0
+            and best_type != "credit_memo"
+            and (best_score - credit_score) <= 1.0):
+        best_type = "credit_memo"
+        best_score = credit_score
+
+    if best_score <= 0:
+        return None, 0.0, scores
+    confidence = min(best_score / 5.0, 1.0)
+    return best_type, confidence, scores
+
+
+# ---------------------------------------------------------------------------
+# KV-Line Harvester
+# ---------------------------------------------------------------------------
+
+# Entity types treated as numeric for normalization
+_NUMERIC_ENTITIES: Set[str] = {
+    "ltv", "dscr", "cap_rate", "noi", "occupancy", "appraised_value",
+    "loan_amount", "financial_covenant", "minimum_dscr", "maximum_ltv",
+    "adjusted_gross_income",
+}
+
+# Entity types representing credit team roles
+_TEAM_TYPES: Set[str] = {
+    "relationship_manager", "credit_officer", "underwriter", "approver",
+}
+
+# Entity types representing covenants
+_COVENANT_TYPES: Set[str] = {
+    "financial_covenant", "reporting_requirement",
+}
+
+
+def _compute_kv_confidence(
+    node: schema.ContextNode, matched_metric: Optional[Dict[str, Any]]
+) -> float:
+    """Compute confidence score for a KV pair extraction."""
+    base = 0.5
+    if matched_metric:
+        base += 0.2  # ontology match boost
+    if node.metadata.section_label:
+        base += 0.1  # section context boost
+    return min(base, 1.0)
+
+
+def harvest_kv_lines(
+    nodes: List[schema.ContextNode],
+    rules: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Scan short/medium chunks for key: value patterns.
+    Maps keys to ontology aliases. Also supports inline metrics (DSCR 1.25x).
+    Returns list of observation dicts.
+    """
+    ontology = rules.get("financial_metric_ontology", {})
+    # Build alias→canonical lookup
+    alias_map: Dict[str, Dict[str, Any]] = {}
+    for _canonical, defn in ontology.items():
+        for alias in defn.get("aliases", []):
+            alias_map[alias.lower()] = defn
+
+    kv_pattern = re.compile(r'^([\w][\w\s/()\.\-]{1,50})\s*[:\-\u2013\u2014]\s*(.+)$', re.MULTILINE)
+
+    # Inline metric pattern: "DSCR 1.25x", "LTV 65%", "NOI $2.5MM"
+    # Only compile if alias_map is non-empty
+    inline_pattern = None
+    if alias_map:
+        escaped_aliases = '|'.join(re.escape(a) for a in alias_map.keys())
+        inline_pattern = re.compile(
+            r'\b(' + escaped_aliases + r')\s+(\$?[\d,]+\.?\d*\s*(?:x|%|MM|M|B|K)?)\b',
+            re.IGNORECASE
+        )
+
+    observations: List[Dict[str, Any]] = []
+
+    for node in nodes:
+        if node.content_type == "header":
+            continue
+        lines = node.content.split('\n')
+        for line in lines:
+            line = line.strip().lstrip('\u2022*-\u2013\u2014 ')
+            # Try KV pattern first (key: value)
+            m = kv_pattern.match(line)
+            if not m:
+                # Try inline metric pattern (DSCR 1.25x)
+                m_inline = inline_pattern.search(line) if inline_pattern else None
+                if m_inline:
+                    raw_key = m_inline.group(1).strip()
+                    raw_val = m_inline.group(2).strip()
+                    matched_metric = alias_map.get(raw_key.lower())
+                    if matched_metric:
+                        observations.append({
+                            "key": raw_key,
+                            "raw_value": raw_val,
+                            "normalized_value": normalize_financial_value(raw_val),
+                            "metric_name": matched_metric["canonical_name"],
+                            "unit": matched_metric.get("unit_type"),
+                            "normalized_unit": _infer_normalized_unit(raw_val, matched_metric),
+                            "scale_hint": _extract_scale_hint(raw_val),
+                            "section_label": node.metadata.section_label,
+                            "page_number": node.metadata.page_number,
+                            "confidence_score": _compute_kv_confidence(node, matched_metric),
+                            "evidence_chunk_id": node.chunk_id,
+                        })
+                continue
+
+            raw_key, raw_val = m.group(1).strip(), m.group(2).strip()
+            norm_key = _normalize_section_label(raw_key)
+
+            # Try ontology match
+            matched_metric = alias_map.get(raw_key.lower()) or alias_map.get(norm_key)
+            # Try fuzzy match if rapidfuzz available
+            if not matched_metric and _RAPIDFUZZ_AVAILABLE and alias_map:
+                best_score = 0.0
+                for alias_key, defn in alias_map.items():
+                    ratio = _fuzz.ratio(raw_key.lower(), alias_key)
+                    if ratio >= 85 and ratio > best_score:
+                        best_score = ratio
+                        matched_metric = defn
+
+            observation = {
+                "key": raw_key,
+                "raw_value": raw_val,
+                "normalized_value": normalize_financial_value(raw_val),
+                "metric_name": matched_metric["canonical_name"] if matched_metric else norm_key,
+                "unit": matched_metric.get("unit_type") if matched_metric else None,
+                "normalized_unit": _infer_normalized_unit(raw_val, matched_metric),
+                "scale_hint": _extract_scale_hint(raw_val),
+                "section_label": node.metadata.section_label,
+                "page_number": node.metadata.page_number,
+                "confidence_score": _compute_kv_confidence(node, matched_metric),
+                "evidence_chunk_id": node.chunk_id,
+            }
+            observations.append(observation)
+    return observations
+
+
+# ---------------------------------------------------------------------------
+# Section-Scoped Entity Extraction
+# ---------------------------------------------------------------------------
+
+def extract_section_scoped_entities(
+    nodes: List[schema.ContextNode],
+    rules: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Run entity regex patterns against nodes, respecting target_sections.
+    Uses normalized label matching (exact + optional fuzzy >= 92).
+    Collects multiple matches with dedup.
+    """
+    entity_rules = rules.get("entities", {})
+    results: List[Dict[str, Any]] = []
+    seen_entities: Set[Tuple[str, str]] = set()
+
+    for entity_type, rule_def in entity_rules.items():
+        target_sections = rule_def.get("target_sections", [])
+        for node in nodes:
+            # Section scoping — normalized matching
+            if target_sections:
+                node_section = _normalize_section_label(node.metadata.section_label or "")
+                normalized_targets = [_normalize_section_label(t) for t in target_sections]
+
+                # Default: exact normalized match
+                matched = any(node_section == nt for nt in normalized_targets)
+
+                # Optional: check target_sections_regex if defined
+                regex_targets = rule_def.get("target_sections_regex", [])
+                if not matched and regex_targets:
+                    matched = any(re.search(rp, node_section) for rp in regex_targets)
+
+                # Fallback: rapidfuzz similarity >= 92
+                if not matched and _RAPIDFUZZ_AVAILABLE:
+                    matched = any(_fuzz.ratio(node_section, nt) >= 92 for nt in normalized_targets)
+
+                if not matched:
+                    continue
+
+            # Run patterns — collect multiple matches, dedup
+            for pattern in rule_def.get("patterns", []):
+                try:
+                    match = re.search(pattern, node.content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                except re.error:
+                    continue
+                if match:
+                    gd = match.groupdict()
+                    if "value" in gd:
+                        value = gd["value"]
+                    elif "entity" in gd:
+                        value = gd["entity"]
+                    elif match.lastindex:
+                        value = match.group(1)
+                    else:
+                        value = match.group(0)
+
+                    if not value:
+                        continue
+
+                    confidence = 0.7
+                    if target_sections:
+                        confidence += 0.2  # section match boost
+
+                    clean_val = value.strip().strip('",.')
+                    dedup_key = (entity_type, clean_val.lower())
+                    if dedup_key not in seen_entities:
+                        seen_entities.add(dedup_key)
+                        results.append({
+                            "entity_type": entity_type,
+                            "raw_value": clean_val,
+                            "normalized_value": str(normalize_financial_value(value)) if entity_type in _NUMERIC_ENTITIES and normalize_financial_value(value) is not None else None,
+                            "source_section": node.metadata.section_label,
+                            "page_number": node.metadata.page_number,
+                            "confidence_score": confidence,
+                            "evidence_chunk_id": node.chunk_id,
+                        })
+
+    return results
 
 
 # ============================================================================
@@ -188,16 +646,28 @@ def process_with_pdfplumber(
 
     Spatial Provenance: Every node carries [x0, y0, x1, y1] coordinates
     derived from pdfplumber word-level geometry.
+
+    Section state machine persists across pages — sections in credit memos
+    span page breaks. Only prev_chunk_id resets per page (NEXT_BLOCK edges).
     """
     nodes: List[schema.ContextNode] = []
     chunk_idx = 0
     logger = logging.getLogger("SplitRAG_Factory")
+
+    # Section state machine — persists across pages
+    section_stack: List[Dict[str, Any]] = []
+    current_section_id: Optional[str] = None
+    current_section_label: Optional[str] = None
+    prev_chunk_id: Optional[str] = None
 
     with pdfplumber.open(file_path) as pdf:
         for page_idx, page in enumerate(pdf.pages):
             page_no = page_idx + 1
             page_width = float(page.width)
             page_height = float(page.height)
+
+            # Reset only NEXT_BLOCK sequencing per page, NOT section state
+            prev_chunk_id = None
 
             try:
                 # --- Text extraction via .extract_words() ---
@@ -208,7 +678,6 @@ def process_with_pdfplumber(
                 paragraphs = _merge_lines_to_paragraphs(lines)
 
                 # --- SCANNED DOCUMENT FAILSAFE ---
-                # Count total alnum chars on page; skip if below threshold
                 page_all_text = " ".join(p[0] for p in paragraphs)
                 if not check_page_readability(
                     _count_alnum(page_all_text), page_no, logger
@@ -231,12 +700,30 @@ def process_with_pdfplumber(
                         file_hash, page_no, bbox_list, "pdfplumber"
                     )
 
+                    # Section state machine: update on headers
+                    if c_type == "header":
+                        level = _infer_section_level(para_text)
+                        norm_label = _normalize_section_label(para_text)
+                        # Hard reset: level-1 header clears entire stack
+                        if level == 1:
+                            section_stack.clear()
+                        else:
+                            # Pop stack until parent at lower level
+                            while section_stack and section_stack[-1]["level"] >= level:
+                                section_stack.pop()
+                        sec_id = f"SEC_{chunk_id}"
+                        section_stack.append({"id": sec_id, "level": level, "label": norm_label})
+                        current_section_id = sec_id
+                        current_section_label = norm_label
+
                     meta = schema.NodeMetadata(
                         page_number=page_no,
                         bbox=bbox_list,
                         source_scope="primary",
                         extraction_method="pdfplumber",
                         is_active=True,
+                        section_label=current_section_label,
+                        section_level=section_stack[-1]["level"] if section_stack else 0,
                     )
                     node = schema.ContextNode(
                         chunk_id=chunk_id,
@@ -244,6 +731,7 @@ def process_with_pdfplumber(
                         content=para_text,
                         metadata=meta,
                         lineage_trace=lineage,
+                        parent_section_id=current_section_id,
                     )
                     nodes.append(node)
                     chunk_idx += 1
@@ -256,13 +744,9 @@ def process_with_pdfplumber(
                         continue
 
                     # --- Cell-level spatial provenance ---
-                    # Iterate individual cells, sanitize each bbox before
-                    # assembling the table markdown. cell_bboxes stores
-                    # per-cell [x0, y0, x1, y1] for downstream audit.
                     cell_bboxes: List[Tuple[float, float, float, float]] = []
                     if hasattr(tbl, "cells") and tbl.cells:
                         for cell in tbl.cells:
-                            # pdfplumber cells are (x0, top, x1, bottom)
                             raw_cell_bbox = list(cell) if cell else None
                             sanitized = sanitize_bbox(
                                 raw_cell_bbox, page_width, page_height, page_bbox
@@ -289,9 +773,12 @@ def process_with_pdfplumber(
                         page_number=page_no,
                         bbox=tbl_bbox,
                         table_shape=t_shape,
+                        cell_bboxes=cell_bboxes if cell_bboxes else None,
                         source_scope="primary",
                         extraction_method="pdfplumber",
                         is_active=True,
+                        section_label=current_section_label,
+                        section_level=section_stack[-1]["level"] if section_stack else 0,
                     )
                     node = schema.ContextNode(
                         chunk_id=chunk_id,
@@ -299,9 +786,8 @@ def process_with_pdfplumber(
                         content=md_content,
                         metadata=meta,
                         lineage_trace=lineage,
+                        parent_section_id=current_section_id,
                     )
-                    # Attach cell-level bbox provenance for audit
-                    node._cell_bboxes = cell_bboxes
                     nodes.append(node)
                     chunk_idx += 1
 
@@ -447,7 +933,7 @@ def run_extraction(
         primary_success = True
         logger.info("pdfplumber extracted %d nodes from %s", len(nodes), file_path.name)
         return nodes, primary_success, fallback_triggered
-    except (OSError, pdfplumber.exceptions.PSException) as exc:
+    except Exception as exc:
         logger.warning("Primary engine failed for %s: %s", file_path.name, exc)
 
     # --- Attempt Fallback: pypdfium2 ---
@@ -543,10 +1029,7 @@ def check_page_readability(
 ) -> bool:
     """
     Validate that a page yielded enough alphanumeric characters to be
-    considered readable. Scanned/image-only pages produce near-zero text
-    from geometry-based extraction (pdfplumber / pypdfium2).
-
-    Returns True if readable, False if SCANNED_UNREADABLE.
+    considered readable.
     """
     if page_text_chars < SCANNED_PAGE_MIN_CHARS:
         if logger:
@@ -616,16 +1099,6 @@ def sanitize_bbox(
     return (x0, y0, x1, y1)
 
 
-def _classify_chunk_type(text: str) -> str:
-    """Heuristic classification of text chunks into schema content_type."""
-    stripped = text.strip()
-    if len(stripped) < 80 and stripped.isupper():
-        return "header"
-    if re.match(r"^\d+\.\s", stripped):
-        return "header"
-    return "text"
-
-
 def _table_to_markdown(table_data: List[List[Any]]) -> str:
     """Convert pdfplumber table (list of lists) to Markdown."""
     if not table_data:
@@ -672,12 +1145,15 @@ def process_file(
     """
     Full extraction pipeline for a single file.
 
-    Steps:
+    Pipeline order:
         1. Hash file → deterministic document_id
-        2. Entity anchoring (regex-based)
+        2. Entity anchoring (regex-based, borrower/lender/guarantor)
         3. pdfplumber primary → pypdfium2 fallback extraction
-        4. Assemble ContextGraph with ExtractionMetrics
-        5. Validate via Pydantic and serialize to JSON
+        4. Section-scoped entity extraction + KV harvester
+        5. Document type classification (two-stage, email-aware)
+        6. Email block tagging (full-doc scope)
+        7. Assemble ContextGraph with ExtractedIntelligence + ExtractionMetrics
+        8. Validate via Pydantic and serialize to JSON
     """
     start_time = time.time()
 
@@ -690,7 +1166,7 @@ def process_file(
         logger.error("Failed to read file %s: %s", file_path, exc)
         return False
 
-    # 2. Entity anchoring
+    # 2. Entity anchoring (legacy borrower/lender/guarantor)
     logger.info("Scanning entities for %s...", file_path.name)
     entities = extract_entities(file_path, config.max_pages_scan, rules)
 
@@ -709,7 +1185,70 @@ def process_file(
         handle_quarantine(file_path, config.quarantine_dir, "Zero nodes extracted")
         return False
 
-    # 4. Assemble ContextGraph
+    # 4. Section-scoped entity extraction + KV harvester
+    scoped_entities = extract_section_scoped_entities(nodes, rules)
+    kv_observations = harvest_kv_lines(nodes, rules)
+
+    # 5. Document type classification (two-stage, email-aware)
+    first_n = 5
+    first_page_nodes = [n for n in nodes if n.metadata.page_number <= first_n]
+    text_buffer = "\n".join(n.content for n in first_page_nodes)
+    email_info = detect_email_blocks(first_page_nodes, rules)
+    doc_type, doc_type_confidence, _doc_type_scores = classify_document_type(
+        text_buffer, email_info, rules
+    )
+
+    # 6. Email block tagging (full-doc scope, separate from first-N-pages classification)
+    full_doc_email_info = detect_email_blocks(nodes, rules)
+    email_chunk_ids = set(full_doc_email_info.get("email_block_chunk_ids", []))
+    for node in nodes:
+        if node.chunk_id in email_chunk_ids:
+            node.metadata.is_email_block = True
+
+    # 7. Assemble ExtractedIntelligence
+    intelligence_entities = []
+    intelligence_team: List[schema.CreditTeamMember] = []
+    intelligence_covenants = []
+
+    for e in scoped_entities:
+        et = e["entity_type"]
+        if et in _TEAM_TYPES:
+            intelligence_team.append(schema.CreditTeamMember(
+                role=et,
+                name=e["raw_value"],
+                confidence_score=e["confidence_score"],
+                evidence_chunk_id=e.get("evidence_chunk_id"),
+            ))
+        elif et in _COVENANT_TYPES:
+            intelligence_covenants.append(schema.ExtractedEntity(**e))
+        else:
+            intelligence_entities.append(schema.ExtractedEntity(**e))
+
+    financial_metrics = []
+    for obs in kv_observations:
+        financial_metrics.append(schema.MetricObservation(
+            metric_name=obs["metric_name"],
+            raw_value=obs["raw_value"],
+            normalized_value=obs.get("normalized_value"),
+            unit=obs.get("unit"),
+            normalized_unit=obs.get("normalized_unit"),
+            scale_hint=obs.get("scale_hint"),
+            source_section=obs.get("section_label"),
+            page_number=obs.get("page_number"),
+            confidence_score=obs.get("confidence_score", 0.5),
+            evidence_chunk_id=obs.get("evidence_chunk_id"),
+        ))
+
+    intelligence = schema.ExtractedIntelligence(
+        document_type=doc_type,
+        document_type_confidence=doc_type_confidence,
+        entities=intelligence_entities,
+        financial_metrics=financial_metrics,
+        credit_team=intelligence_team,
+        covenants=intelligence_covenants,
+    )
+
+    # Assemble ContextGraph
     fallback_engine_name: Optional[str] = None
     if fallback_triggered:
         fallback_engine_name = "pypdfium2"
@@ -724,6 +1263,8 @@ def process_file(
         primary_engine_used=primary_success,
         fallback_triggered=fallback_triggered,
         fallback_engine=fallback_engine_name,
+        kv_pairs_extracted=len(kv_observations),
+        entities_extracted=len(scoped_entities),
     )
 
     graph = schema.ContextGraph(
@@ -733,11 +1274,12 @@ def process_file(
         borrower_entity=entities.get("borrower"),
         lender_entity=entities.get("lender"),
         guarantor_entity=entities.get("guarantor"),
+        intelligence=intelligence,
         nodes=nodes,
         metrics=metrics,
     )
 
-    # 5. Validate & serialize
+    # 8. Validate & serialize
     output_path = config.output_dir / f"{file_path.stem}_v2.json"
     try:
         json_output = graph.to_json()
