@@ -4322,48 +4322,258 @@ class ExcelOutputGenerator:
         "ADC", "CI",
     ]
 
+    # Human-readable segment labels for the Segment_Name column
+    _SEGMENT_LABELS = {
+        "Constr": "Construction",
+        "CRE": "CRE",
+        "Resi": "Residential",
+        "Comm": "C&I",
+        "Card": "Credit Cards",
+        "OthCons": "Other Consumer",
+        "ADC": "ADC",
+        "CI": "C&I",
+    }
+
+    # Maximum recursion depth for lineage tracing
+    _MAX_TRACE_DEPTH = 10
+
     def _enrich_audit_with_source_code(self) -> None:
-        """Append ``Python_Calculation_Code`` and ``Upstream_Derived_Dependencies``
-        columns to *self.audit_df* for every derived metric.
+        """Append calculation, lineage, dependency, and segment-mapping
+        columns to *self.audit_df*.
 
-        Uses the :mod:`ast` module to parse
-        ``BankMetricsProcessor.create_derived_metrics`` into an Abstract
-        Syntax Tree, then walks every assignment node to extract:
-
-        * The exact RHS source text (via ``ast.get_source_segment``).
-        * All upstream metric-key references (via AST node walking).
+        Columns added:
+            Python_Calculation_Code    – direct RHS expression
+            Full_Calculation_Trace     – recursive multi-step formula trace
+            Upstream_Derived_Dependencies – all unique derived deps across trace
+            Scope                      – Bankwide | Segment-Specific
+            Segment_Name               – N/A | CRE | Residential | …
+            Calculation_Type           – Raw_Regulatory | Normalized_Base |
+                                         Ratio | Trend_Derived
         """
+        empty_cols = {
+            "Python_Calculation_Code": "",
+            "Full_Calculation_Trace": "",
+            "Upstream_Derived_Dependencies": "",
+            "Scope": "",
+            "Segment_Name": "",
+            "Calculation_Type": "",
+        }
         if self.audit_df.empty:
-            self.audit_df["Python_Calculation_Code"] = ""
-            self.audit_df["Upstream_Derived_Dependencies"] = ""
+            for col, default in empty_cols.items():
+                self.audit_df[col] = default
             return
 
         try:
-            code_map, deps_map = self._ast_extract_metrics()
+            code_map, direct_deps_map = self._ast_extract_metrics()
         except Exception:
-            # Absolute last-resort fallback
-            self.audit_df["Python_Calculation_Code"] = "Requires Manual Audit"
-            self.audit_df["Upstream_Derived_Dependencies"] = ""
+            for col, default in empty_cols.items():
+                self.audit_df[col] = (
+                    "Requires Manual Audit" if col == "Python_Calculation_Code"
+                    else default
+                )
             return
 
-        # Map back onto audit rows
+        all_keys = set(code_map.keys())
+
+        # Pre-compute lineage traces and deep dependencies for every metric
+        trace_map: dict[str, str] = {}
+        deep_deps_map: dict[str, str] = {}
+        for mc in code_map:
+            trace, all_deps = self._build_lineage_trace(mc, code_map, all_keys)
+            trace_map[mc] = trace
+            deep_deps_map[mc] = ", ".join(sorted(all_deps)) if all_deps else ""
+
+        # Map columns onto audit rows
         calc_col: list[str] = []
+        trace_col: list[str] = []
         deps_col: list[str] = []
+        scope_col: list[str] = []
+        seg_col: list[str] = []
+        ctype_col: list[str] = []
+
         for _, row in self.audit_df.iterrows():
             mc = row["Metric_Code"]
             is_derived = (
                 row.get("Is_Derived") is True
                 or "Derived" in str(row.get("Source_of_Truth", ""))
             )
-            if is_derived or mc in code_map:
-                calc_col.append(code_map.get(mc, "Requires Manual Audit"))
-                deps_col.append(deps_map.get(mc, ""))
+
+            if mc in code_map:
+                calc_col.append(code_map[mc])
+                trace_col.append(trace_map.get(mc, ""))
+                deps_col.append(deep_deps_map.get(mc, ""))
+            elif is_derived:
+                calc_col.append("Requires Manual Audit")
+                trace_col.append("")
+                deps_col.append("")
             else:
                 calc_col.append("")
+                trace_col.append("")
                 deps_col.append("")
 
+            scope, seg_name, calc_type = self._classify_metric(mc, code_map)
+            scope_col.append(scope)
+            seg_col.append(seg_name)
+            ctype_col.append(calc_type)
+
         self.audit_df["Python_Calculation_Code"] = calc_col
+        self.audit_df["Full_Calculation_Trace"] = trace_col
         self.audit_df["Upstream_Derived_Dependencies"] = deps_col
+        self.audit_df["Scope"] = scope_col
+        self.audit_df["Segment_Name"] = seg_col
+        self.audit_df["Calculation_Type"] = ctype_col
+
+    # ---- Part 1: Recursive Lineage Solver ----------------------------
+
+    def _build_lineage_trace(
+        self,
+        metric_code: str,
+        code_map: dict[str, str],
+        all_keys: set[str],
+    ) -> tuple[str, set[str]]:
+        """Recursively expand a metric's formula up to ``_MAX_TRACE_DEPTH``
+        levels, stopping when a terminal (raw regulatory code) is reached.
+
+        Returns ``(trace_string, all_deps)`` where *trace_string* is a
+        pipe-delimited multi-step expansion and *all_deps* is the
+        cumulative set of every derived metric touched at any level.
+        """
+        steps: list[str] = []
+        all_deps: set[str] = set()
+        visited: set[str] = set()
+
+        frontier = [metric_code]
+
+        for depth in range(1, self._MAX_TRACE_DEPTH + 1):
+            next_frontier: list[str] = []
+            for mc in frontier:
+                if mc in visited:
+                    continue
+                visited.add(mc)
+                rhs = code_map.get(mc)
+                if rhs is None:
+                    continue
+                steps.append(f"[Step {depth}] {mc} = {rhs}")
+                # Find direct dependencies within this RHS
+                direct = self._ast_extract_deps(rhs, all_keys)
+                direct.discard(mc)
+                all_deps |= direct
+                # Queue derived deps for deeper expansion (skip raw/terminal)
+                for dep in sorted(direct):
+                    if dep in code_map and dep not in visited:
+                        next_frontier.append(dep)
+
+            if not next_frontier:
+                break
+            frontier = next_frontier
+
+        return " | ".join(steps), all_deps - {metric_code}
+
+    # ---- Part 2: Segment Mapping & Classification --------------------
+
+    # Prefixes/patterns that indicate segment-specific metrics
+    _SEG_PREFIXES = {
+        "RIC_Constr_": "Construction",
+        "RIC_CRE_": "CRE",
+        "RIC_Resi_": "Residential",
+        "RIC_Comm_": "C&I",
+        "RIC_Card_": "Credit Cards",
+        "RIC_OthCons_": "Other Consumer",
+        "RIC_Fund_Finance_": "Fund Finance",
+        "Constr_": "Construction",
+        "CRE_": "CRE",
+        "Resi_": "Residential",
+        "ADC_": "ADC",
+        "CI_": "C&I",
+        "Wealth_Resi_": "Residential",
+        "Group_CRE_": "CRE",
+        "Group_Commercial_": "C&I",
+        "Group_Residential_": "Residential",
+    }
+
+    # Patterns for Normalized metrics
+    _NORM_PREFIXES = (
+        "Norm_", "Excl_", "Excluded_", "Norm_CRE_", "Norm_ADC_",
+        "Norm_Wealth_", "Norm_SBL_", "Norm_Fund_",
+    )
+
+    def _classify_metric(
+        self,
+        metric_code: str,
+        code_map: dict[str, str],
+    ) -> tuple[str, str, str]:
+        """Return ``(Scope, Segment_Name, Calculation_Type)`` for a metric.
+
+        Scope:
+            ``Bankwide`` – consolidated metric (no segment prefix)
+            ``Segment-Specific`` – tied to a particular loan segment
+
+        Segment_Name:
+            ``N/A`` for bankwide; otherwise the human-readable segment.
+
+        Calculation_Type:
+            ``Raw_Regulatory``   – a raw MDRM/FDIC/FRED code not computed
+            ``Normalized_Base``  – an intermediate normalisation building-block
+            ``Ratio``            – a rate / percentage / coverage metric
+            ``Trend_Derived``    – time-series derived (TTM, delta, velocity)
+        """
+        # --- Calculation_Type -------------------------------------------
+        if metric_code not in code_map:
+            # Not computed in create_derived_metrics -> raw regulatory field
+            calc_type = "Raw_Regulatory"
+        elif any(kw in metric_code for kw in ("_Rate", "_Ratio", "_Coverage",
+                 "_Composition", "_Share", "_Pct", "_Yield", "_Efficiency",
+                 "_Mismatch", "_Elasticity", "ROA_", "ROE_", "NIM_",
+                 "Cost_of_", "Leverage_")):
+            calc_type = "Ratio"
+        elif any(kw in metric_code for kw in ("TTM", "Delta_", "Lagged_",
+                 "_Velocity", "_Q", "_YTD")):
+            calc_type = "Trend_Derived"
+        elif metric_code.startswith(self._NORM_PREFIXES):
+            calc_type = "Normalized_Base"
+        else:
+            # Check RHS content for ratio indicators
+            rhs = code_map.get(metric_code, "")
+            if "safe_div" in rhs:
+                calc_type = "Ratio"
+            elif "rolling" in rhs or "diff()" in rhs or "shift(" in rhs:
+                calc_type = "Trend_Derived"
+            elif metric_code.startswith(("Excl_", "Excluded_")):
+                calc_type = "Normalized_Base"
+            else:
+                calc_type = "Normalized_Base"
+
+        # --- Scope & Segment_Name --------------------------------------
+        scope = "Bankwide"
+        seg_name = "N/A"
+
+        # Check explicit segment prefixes
+        for prefix, label in self._SEG_PREFIXES.items():
+            if metric_code.startswith(prefix):
+                scope = "Segment-Specific"
+                seg_name = label
+                break
+
+        # Also catch Norm_ + segment patterns like Norm_CRE_Investment_Composition
+        if seg_name == "N/A" and scope == "Bankwide":
+            mc_upper = metric_code.upper()
+            for seg_short, seg_label in self._SEGMENT_LABELS.items():
+                # Match patterns like Norm_{seg}_ or Group_{seg}_
+                if f"_{seg_short.upper()}_" in mc_upper:
+                    scope = "Segment-Specific"
+                    seg_name = seg_label
+                    break
+
+        # SBL and Fund Finance are segment-specific
+        if seg_name == "N/A":
+            if "SBL_" in metric_code:
+                scope = "Segment-Specific"
+                seg_name = "SBL"
+            elif "Fund_Finance_" in metric_code:
+                scope = "Segment-Specific"
+                seg_name = "Fund Finance"
+
+        return scope, seg_name, calc_type
 
     # ---- AST helpers -------------------------------------------------
 
@@ -4430,7 +4640,7 @@ class ExcelOutputGenerator:
                     if expanded not in code_map:
                         code_map[expanded] = rhs
 
-        # 4. Build dependency map using AST-based RHS walking
+        # 4. Build direct dependency map using AST-based RHS walking
         all_keys = set(code_map.keys())
         deps_map: dict[str, str] = {}
 
@@ -4678,14 +4888,18 @@ class ExcelOutputGenerator:
         ws = writer.sheets[sheet_name]
 
         # Column widths
-        ws.column_dimensions["A"].width = 25   # Metric_Code
-        ws.column_dimensions["B"].width = 35   # Metric_Name
-        ws.column_dimensions["C"].width = 80   # Description
-        ws.column_dimensions["D"].width = 30   # Source_of_Truth
-        ws.column_dimensions["E"].width = 12   # Is_Derived
-        ws.column_dimensions["F"].width = 28   # Usage_Status
-        ws.column_dimensions["G"].width = 70   # Python_Calculation_Code
-        ws.column_dimensions["H"].width = 50   # Upstream_Derived_Dependencies
+        ws.column_dimensions["A"].width = 25    # Metric_Code
+        ws.column_dimensions["B"].width = 35    # Metric_Name
+        ws.column_dimensions["C"].width = 80    # Description
+        ws.column_dimensions["D"].width = 30    # Source_of_Truth
+        ws.column_dimensions["E"].width = 12    # Is_Derived
+        ws.column_dimensions["F"].width = 28    # Usage_Status
+        ws.column_dimensions["G"].width = 70    # Python_Calculation_Code
+        ws.column_dimensions["H"].width = 100   # Full_Calculation_Trace
+        ws.column_dimensions["I"].width = 50    # Upstream_Derived_Dependencies
+        ws.column_dimensions["J"].width = 18    # Scope
+        ws.column_dimensions["K"].width = 22    # Segment_Name
+        ws.column_dimensions["L"].width = 22    # Calculation_Type
 
         # Visual fills
         used_fill = PatternFill(start_color="DAEEF3", end_color="DAEEF3", fill_type="solid")  # light blue
@@ -4700,11 +4914,16 @@ class ExcelOutputGenerator:
             cell.alignment = Alignment(horizontal="center", wrap_text=True)
 
         # Style data rows: colour by Usage_Status (column F = col index 6)
+        # Full_Calculation_Trace (col H = 8) gets wrap text for readability
+        trace_col_idx = 8
         for row_idx in range(2, ws.max_row + 1):
             status_cell = ws.cell(row=row_idx, column=6)
             fill = used_fill if status_cell.value == "Used in Dashboard" else ref_fill
             for col_idx in range(1, ws.max_column + 1):
-                ws.cell(row=row_idx, column=col_idx).fill = fill
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.fill = fill
+                if col_idx == trace_col_idx:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     def _apply_summary_styles(self, writer, df: pd.DataFrame):
         """Applies conditional formatting to the Summary_Dashboard sheet using openpyxl."""
