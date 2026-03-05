@@ -18,7 +18,20 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+def _find_repo_root(start: Path, marker: str = "schema_v2.py", max_up: int = 5) -> Path:
+    """Walk up from start to find the directory containing marker file."""
+    cur = start.resolve()
+    for _ in range(max_up):
+        if (cur / marker).exists():
+            return cur
+        cur = cur.parent
+    # Fallback to parent.parent (standard repo layout)
+    return start.resolve().parent.parent
+
+
+_REPO_ROOT = _find_repo_root(Path(__file__).parent)
+sys.path.insert(0, str(_REPO_ROOT))
 
 import schema_v2 as schema
 from relationship_manager import (
@@ -877,7 +890,7 @@ class TestLegacyPurge:
     def test_extractor_importable(self):
         """extractor module should exist and be importable (may fail if pdfplumber deps missing)."""
         from pathlib import Path
-        extractor_path = Path(__file__).resolve().parent.parent / "extractor.py"
+        extractor_path = _REPO_ROOT / "extractor.py"
         assert extractor_path.exists(), "extractor.py must exist in the project"
         # Actual import may fail in environments where pdfplumber's cryptography
         # dependency is broken; verify file existence is sufficient.
@@ -1301,7 +1314,7 @@ class TestDocumentTypeClassification:
 
     @pytest.fixture
     def rules_with_doc_types(self):
-        return json.loads(Path(Path(__file__).resolve().parent.parent / "rules.json").read_text())
+        return json.loads((_REPO_ROOT / "rules.json").read_text())
 
     def test_credit_memo_classification(self, rules_with_doc_types):
         text = "Loan Approval Memorandum\nTransaction Summary\nCredit Committee"
