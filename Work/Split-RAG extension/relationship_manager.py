@@ -137,11 +137,15 @@ class DocumentKnowledgeGraph:
                     page_number=node.metadata.page_number,
                     bbox=node.metadata.bbox,
                     table_shape=node.metadata.table_shape,
+                    cell_bboxes=node.metadata.cell_bboxes,
                     source_scope=node.metadata.source_scope,
                     extraction_method=node.metadata.extraction_method,
                     lineage_trace=node.lineage_trace,
                     is_active=node.metadata.is_active,
                     conflict_detected=node.metadata.conflict_detected,
+                    section_label=node.metadata.section_label,
+                    section_level=node.metadata.section_level,
+                    is_email_block=node.metadata.is_email_block,
                 )
 
                 # Section detection: headers start new sections
@@ -251,6 +255,25 @@ class DocumentKnowledgeGraph:
                         )
 
         entities_found = list(entity_registry.values())
+
+        # --- Entity Relationship Edges ---
+        # Create edges between entity nodes based on co-occurrence patterns
+        _RELATIONSHIP_EDGE_MAP = {
+            ("borrower", "guarantor"): "GUARANTEED_BY",
+            ("borrower", "sponsor"): "SPONSORED_BY",
+            ("borrower", "collateral"): "SECURED_BY",
+            ("lender", "borrower"): "BORROWER_OF",
+        }
+        entity_by_type: Dict[str, List[str]] = defaultdict(list)
+        for eid, edata in entity_registry.items():
+            entity_by_type[edata["type"]].append(eid)
+
+        for (type_a, type_b), edge_type in _RELATIONSHIP_EDGE_MAP.items():
+            for eid_a in entity_by_type.get(type_a, []):
+                for eid_b in entity_by_type.get(type_b, []):
+                    if eid_a != eid_b:
+                        self.graph.add_edge(eid_a, eid_b, edge_type=edge_type)
+
         logger.info("Entity extraction: %d unique entities found", len(entities_found))
         return entities_found
 
@@ -854,6 +877,11 @@ def process_document(
     dkg.build_from_context_graph(ctx)
     dkg.extract_entities()
 
+    # Graph pruning: remove degree-0 entity nodes and empty section nodes
+    pruned = prune_empty_nodes(dkg.graph)
+    if pruned > 0:
+        logger.info("Graph pruning: removed %d empty nodes", pruned)
+
     # Load configurable weights
     ct_weights, scope_mult = load_weights_from_config(config_path)
 
@@ -880,6 +908,58 @@ def process_document(
 def _make_entity_id(category: str, keyword: str) -> str:
     raw = f"ENTITY_{category}_{keyword}".lower()
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Graph Pruning Functions
+# ---------------------------------------------------------------------------
+
+def prune_empty_nodes(graph: nx.DiGraph) -> int:
+    """
+    Remove degree-0 entity nodes (no edges at all) and empty section nodes
+    (sections with no chunk children). Returns count of nodes removed.
+    """
+    to_remove: List[str] = []
+    for nid, data in graph.nodes(data=True):
+        if data.get("node_type") == "entity":
+            # Only remove truly orphaned entities (degree-0)
+            if graph.degree(nid) == 0:
+                to_remove.append(nid)
+        elif data.get("node_type") == "section":
+            # Remove section nodes with no chunk children
+            children = [
+                s for s in graph.successors(nid)
+                if graph.nodes[s].get("node_type") == "chunk"
+            ]
+            if not children:
+                to_remove.append(nid)
+    graph.remove_nodes_from(to_remove)
+    return len(to_remove)
+
+
+def collapse_trivial_sections(graph: nx.DiGraph) -> int:
+    """
+    If a section has exactly one child chunk, reparent chunk to page.
+    Optional — off by default. Caller can invoke explicitly.
+    Returns count of collapsed sections.
+    """
+    collapsed = 0
+    for nid, data in list(graph.nodes(data=True)):
+        if data.get("node_type") != "section":
+            continue
+        children = list(graph.successors(nid))
+        chunk_children = [c for c in children if graph.nodes[c].get("node_type") == "chunk"]
+        if len(chunk_children) == 1:
+            parents = list(graph.predecessors(nid))
+            page_parent = next(
+                (p for p in parents if graph.nodes[p].get("node_type") == "page"),
+                None,
+            )
+            if page_parent:
+                graph.add_edge(page_parent, chunk_children[0], edge_type="HAS_CHILD")
+                graph.remove_node(nid)
+                collapsed += 1
+    return collapsed
 
 
 # ============================================================================
