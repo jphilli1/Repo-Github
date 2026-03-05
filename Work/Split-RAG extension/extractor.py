@@ -289,6 +289,7 @@ def process_with_pdfplumber(
                         page_number=page_no,
                         bbox=tbl_bbox,
                         table_shape=t_shape,
+                        cell_bboxes=cell_bboxes if cell_bboxes else None,
                         source_scope="primary",
                         extraction_method="pdfplumber",
                         is_active=True,
@@ -300,8 +301,6 @@ def process_with_pdfplumber(
                         metadata=meta,
                         lineage_trace=lineage,
                     )
-                    # Attach cell-level bbox provenance for audit
-                    node._cell_bboxes = cell_bboxes
                     nodes.append(node)
                     chunk_idx += 1
 
