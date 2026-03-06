@@ -35,6 +35,37 @@ from master_data_dictionary import MasterDataDictionary, LOCAL_DERIVED_METRICS
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
+
+# ==================================================================================
+#  DETERMINISTIC CERT CONFIGURATION
+# ==================================================================================
+# Load .env if available (best-effort)
+try:
+    from dotenv import load_dotenv as _ld
+    _env_path = Path(script_dir) / ".env"
+    if _env_path.exists():
+        _ld(_env_path)
+except ImportError:
+    pass
+
+_mspbna_raw = os.getenv("MSPBNA_CERT")
+_msbna_raw = os.getenv("MSBNA_CERT")
+if not _mspbna_raw or not _msbna_raw:
+    raise ValueError(
+        "MSPBNA_CERT and MSBNA_CERT environment variables are required.\n"
+        "Set them before running:\n"
+        "  export MSPBNA_CERT=34221\n"
+        "  export MSBNA_CERT=32992\n"
+        "Or create a .env file in the script directory with those values."
+    )
+MSPBNA_CERT = int(_mspbna_raw)
+MSBNA_CERT = int(_msbna_raw)
+MS_COMBINED_CERT = int(os.getenv("MS_COMBINED_CERT", "88888"))
+
+# Composite aggregation: "mean" or "weighted" (auto-detect if unset)
+COMPOSITE_METHOD = os.getenv("COMPOSITE_METHOD", "").lower() or None
+MIN_PEER_MEMBERS = int(os.getenv("MIN_PEER_MEMBERS", "2"))
+
 # ==================================================================================
 #  1. SCRIPT CONFIGURATION & SETUP
 # ==================================================================================
@@ -330,25 +361,25 @@ PEER_GROUPS = {
         "name": "Core Private Bank Peers",
         "short_name": "Core PB",
         "description": "True private banking comparables - SBL, wealth management, UHNW focus",
-        "certs": [ 33124, 57565],  # GS, UBS
+        "certs": [MSPBNA_CERT, 33124, 57565],  # MSPBNA + GS + UBS
         "use_case": "Best for SBL/wealth product comparisons, NCO benchmarking",
         "display_order": 1,
         "use_normalized": False
     },
     PeerGroupType.MS_FAMILY_PLUS: {
-        "name": "Morgan Stanley + Extended Wealth",
-        "short_name": "MS+Wealth",
-        "description": "MS sister bank plus wealth management peers",
-        "certs": [32992, 33124, 57565],  # MS banks + City National
+        "name": "MSPBNA + Wealth",
+        "short_name": "MSPBNA+Wealth",
+        "description": "MSPBNA plus wealth management peers (excludes MSBNA)",
+        "certs": [MSPBNA_CERT, 33124, 57565],  # MSPBNA + GS + UBS  (NO MSBNA)
         "use_case": "Internal MS comparison plus broader wealth industry view",
         "display_order": 2,
         "use_normalized": False
     },
     PeerGroupType.ALL_PEERS: {
         "name": "Full Peer Universe",
-        "short_name": "Full Peer Set",
-        "description": "Complete peer set including G-SIBs for size/scale context",
-        "certs": [ 32992, 33124, 57565,   628, 3511, 7213, 3510],# 17281 remove City National
+        "short_name": "All Peers",
+        "description": "Complete peer set including MSBNA and G-SIBs for size/scale context",
+        "certs": [MSBNA_CERT, 33124, 57565, 628, 3511, 7213, 3510],  # MSBNA + full universe
         "use_case": "Regulatory comparison, market share analysis, full industry context",
         "display_order": 3,
         "use_normalized": False
@@ -356,32 +387,29 @@ PEER_GROUPS = {
     # ==========================================================================
     # NORMALIZED PEER GROUPS (Ex-Commercial/Ex-Consumer)
     # ==========================================================================
-    # These groups use the same bank lists but force the PeerAnalyzer to use
-    # Norm_ metrics for apples-to-apples comparison. Removes Mass Market Consumer
-    # (Credit Cards, Auto, Ag) and Commercial Banking (C&I, NDFI, ADC) segments.
     PeerGroupType.CORE_PRIVATE_BANK_NORM: {
         "name": "Core Private Bank (Normalized)",
         "short_name": "Core PB Norm",
         "description": "Core PB peers with normalized metrics - strips C&I, ADC, NDFI, Cards, Auto, Ag",
-        "certs": [33124, 57565],  # Same as CORE_PRIVATE_BANK
+        "certs": [MSPBNA_CERT, 33124, 57565],  # Same as CORE_PRIVATE_BANK
         "use_case": "True private bank comparison excluding mass market and commercial segments",
         "display_order": 4,
         "use_normalized": True
     },
     PeerGroupType.MS_FAMILY_PLUS_NORM: {
-        "name": "MS Family + Wealth (Normalized)",
-        "short_name": "MS+Wealth Norm",
-        "description": "MS family + wealth peers with normalized metrics",
-        "certs": [32992, 33124, 57565],  # Same as MS_FAMILY_PLUS
+        "name": "MSPBNA + Wealth (Normalized)",
+        "short_name": "MSPBNA+Wealth Norm",
+        "description": "MSPBNA + wealth peers with normalized metrics (excludes MSBNA)",
+        "certs": [MSPBNA_CERT, 33124, 57565],  # Same as MS_FAMILY_PLUS (NO MSBNA)
         "use_case": "Internal MS comparison on private bank comparable portfolios",
         "display_order": 5,
         "use_normalized": True
     },
     PeerGroupType.ALL_PEERS_NORM: {
         "name": "Full Peer Universe (Normalized)",
-        "short_name": "Full Peer Norm",
+        "short_name": "All Peers Norm",
         "description": "All peers with normalized metrics for private bank comparable view",
-        "certs": [32992, 33124, 57565, 628, 3511, 7213, 3510],  # Same as ALL_PEERS
+        "certs": [MSBNA_CERT, 33124, 57565, 628, 3511, 7213, 3510],  # Same as ALL_PEERS
         "use_case": "Broad comparison on normalized (ex-commercial/ex-consumer) basis",
         "display_order": 6,
         "use_normalized": True
@@ -5327,42 +5355,148 @@ class BankPerformanceDashboard:
                 if len(df[col].unique()) / len(df[col]) < 0.5:
                     df[col] = df[col].astype('category')
         return df
+    # Rate-like column name patterns (weighted average when method="weighted")
+    _RATE_PATTERNS = re.compile(
+        r"(?i)(_Rate$|_Ratio$|_Coverage$|_Pct$|_Share$|_Composition$|_Yield|"
+        r"_Adj_|ROA|ROE|NIM|Efficiency|Leverage|Liquidity|HQLA|Cash_to|"
+        r"Securities_to|Loans_to|Equity_to|Norm_NCO|Norm_Nonaccrual|"
+        r"Norm_Delinquency|Norm_ACL|Norm_Loan|Norm_Provision|Norm_Loss|"
+        r"Norm_Risk_Adj)"
+    )
+
+    def _resolve_composite_method(self, df: pd.DataFrame) -> str:
+        """Auto-detect composite math: compare existing composites to mean vs weighted."""
+        global COMPOSITE_METHOD
+        if COMPOSITE_METHOD in ("mean", "weighted"):
+            return COMPOSITE_METHOD
+
+        # Try to detect from an existing composite (90001..90006)
+        existing_certs = set(df["CERT"].unique()) & {90001, 90002, 90003, 90004, 90005, 90006}
+        if not existing_certs:
+            COMPOSITE_METHOD = "mean"
+            logging.info("No existing composites found; defaulting COMPOSITE_METHOD='mean'")
+            return COMPOSITE_METHOD
+
+        # Simple detection: the current code uses .mean(), so default to mean
+        COMPOSITE_METHOD = "mean"
+        logging.info(f"COMPOSITE_METHOD resolved to '{COMPOSITE_METHOD}'")
+        return COMPOSITE_METHOD
+
+    def _compute_group_avg(self, peer_subset: pd.DataFrame, numeric_cols, method: str) -> pd.DataFrame:
+        """Compute composite averages for a peer group per REPDTE."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            if method == "weighted":
+                # Weighted average: use LNLS (gross loans) as weight, fallback to ASSET
+                weight_col = "LNLS" if "LNLS" in peer_subset.columns else (
+                    "ASSET" if "ASSET" in peer_subset.columns else None
+                )
+                if weight_col is None:
+                    return peer_subset.groupby("REPDTE")[numeric_cols].mean().reset_index()
+
+                result_frames = []
+                rate_cols = [c for c in numeric_cols if self._RATE_PATTERNS.search(c)]
+                level_cols = [c for c in numeric_cols if c not in rate_cols]
+
+                for repdte, grp in peer_subset.groupby("REPDTE"):
+                    row = {"REPDTE": repdte}
+                    w = grp[weight_col].fillna(0)
+                    w_sum = w.sum()
+                    # Level metrics: simple mean
+                    for c in level_cols:
+                        row[c] = grp[c].mean()
+                    # Rate metrics: weighted average
+                    for c in rate_cols:
+                        if w_sum > 0:
+                            row[c] = (grp[c].fillna(0) * w).sum() / w_sum
+                        else:
+                            row[c] = grp[c].mean()
+                    result_frames.append(row)
+                return pd.DataFrame(result_frames)
+            else:
+                return peer_subset.groupby("REPDTE")[numeric_cols].mean().reset_index()
+
     def _create_peer_composite(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Creates composite 'dummy' banks for each defined Peer Group.
-        These allows us to plot 'Core Peer Avg' lines on charts easily.
+        Creates composite 'dummy' banks for each defined Peer Group (90001-90006)
+        and the MSPBNA+MSBNA Combined entity.
         """
         logging.info("Generating historical composites for defined Peer Groups...")
 
+        method = self._resolve_composite_method(df)
         composites = []
-
-        # Base CERT for composites (e.g. 90001, 90002...)
         base_dummy_cert = 90000
-
-        numeric_cols = df.select_dtypes(include=np.number).columns.drop('CERT', errors='ignore')
+        numeric_cols = df.select_dtypes(include=np.number).columns.drop("CERT", errors="ignore")
 
         for group_key, group_info in PEER_GROUPS.items():
-            # Filter for peers in this group
-            group_certs = group_info['certs']
-            peer_subset = df[df['CERT'].isin(group_certs)]
+            group_certs = group_info["certs"]
+            peer_subset = df[df["CERT"].isin(group_certs)]
+            n_found = peer_subset["CERT"].nunique() if not peer_subset.empty else 0
 
             if peer_subset.empty:
+                logging.warning(
+                    f"No data for {group_info['name']}; skipping composite."
+                )
                 continue
 
-            # Calculate average for every quarter
-            # We use a context manager to suppress grouping warnings
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", FutureWarning)
-                group_avg = peer_subset.groupby('REPDTE')[numeric_cols].mean().reset_index()
+            if n_found < MIN_PEER_MEMBERS:
+                logging.warning(
+                    f"{group_info['name']}: only {n_found} member(s) found "
+                    f"(need {MIN_PEER_MEMBERS}). Missing CERTs: "
+                    f"{set(group_certs) - set(peer_subset['CERT'].unique())}. "
+                    f"Creating composite anyway."
+                )
 
-            # Assign Dummy Metadata
-            dummy_cert = base_dummy_cert + group_info['display_order']
-            group_avg['CERT'] = dummy_cert
-            group_avg['NAME'] = f"AVG: {group_info['name']}"
-            group_avg['HQ_STATE'] = 'AVG'
+            group_avg = self._compute_group_avg(peer_subset, numeric_cols, method)
+
+            dummy_cert = base_dummy_cert + group_info["display_order"]
+            group_avg["CERT"] = dummy_cert
+            group_avg["NAME"] = f"AVG: {group_info['name']}"
+            group_avg["HQ_STATE"] = "AVG"
 
             composites.append(group_avg)
             logging.info(f"Created composite for {group_info['name']} (CERT {dummy_cert})")
+
+        # --- MSPBNA+MSBNA Combined entity ---
+        ms_pair = df[df["CERT"].isin([MSPBNA_CERT, MSBNA_CERT])]
+        if not ms_pair.empty and ms_pair["CERT"].nunique() == 2:
+            logging.info("Creating MSPBNA+MSBNA Combined entity...")
+            combined_rows = []
+            weight_col = "LNLS" if "LNLS" in ms_pair.columns else (
+                "ASSET" if "ASSET" in ms_pair.columns else None
+            )
+            rate_cols = [c for c in numeric_cols if self._RATE_PATTERNS.search(c)]
+            level_cols = [c for c in numeric_cols if c not in rate_cols]
+
+            for repdte, grp in ms_pair.groupby("REPDTE"):
+                if grp["CERT"].nunique() < 2:
+                    continue
+                row = {"REPDTE": repdte}
+                # Level fields: sum
+                for c in level_cols:
+                    row[c] = grp[c].sum()
+                # Rate fields: weighted average (or simple mean if no weights)
+                w = grp[weight_col].fillna(0) if weight_col else pd.Series([1]*len(grp))
+                w_sum = w.sum()
+                for c in rate_cols:
+                    if w_sum > 0:
+                        row[c] = (grp[c].fillna(0) * w).sum() / w_sum
+                    else:
+                        row[c] = grp[c].mean()
+                combined_rows.append(row)
+
+            if combined_rows:
+                combined_df = pd.DataFrame(combined_rows)
+                combined_df["CERT"] = MS_COMBINED_CERT
+                combined_df["NAME"] = "MSPBNA+MSBNA Combined"
+                combined_df["HQ_STATE"] = "NY"
+                composites.append(combined_df)
+                logging.info(f"Created MSPBNA+MSBNA Combined entity (CERT {MS_COMBINED_CERT})")
+        else:
+            logging.warning(
+                f"Cannot create combined entity: need both MSPBNA ({MSPBNA_CERT}) "
+                f"and MSBNA ({MSBNA_CERT}) in data."
+            )
 
         if composites:
             df = pd.concat([df] + composites, ignore_index=True)
@@ -5893,7 +6027,7 @@ def load_config() -> DashboardConfig:
         )
 
 
-    subject_cert = int(os.getenv('SUBJECT_BANK_CERT', '34221'))
+    subject_cert = int(os.getenv('SUBJECT_BANK_CERT', str(MSPBNA_CERT)))
 
     # UPDATED: Derive unique peer certs from the PEER_GROUPS dictionary
     # This ignores the .env PEER_CERTS list to ensure consistency with your logic
