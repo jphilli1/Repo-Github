@@ -1,0 +1,538 @@
+{
+    "entities": {
+        "borrower": {
+            "patterns": [
+                "\"Borrower\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Borrower\"\\)",
+                "Between\\s+(?P<lender>.+?)\\s+\\(\"Lender\"\\)\\s+and\\s+(?P<entity>.+?)\\s+\\(\"Borrower\"\\)",
+                "BORROWER:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "lender": {
+            "patterns": [
+                "\"Lender\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Lender\"\\)",
+                "LENDER:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "guarantor": {
+            "patterns": [
+                "\"Guarantor\"\\s+means\\s+(?P<entity>.+?)(?=\\.|\\n|,)",
+                "(?P<entity>.+?)\\s+\\(the\\s+\"Guarantor\"\\)",
+                "GUARANTOR:\\s+(?P<entity>.+?)(?=\\n)"
+            ]
+        },
+        "sponsor": {
+            "patterns": [
+                "(?ims)Sponsor\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Parent\\s+Entity\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?P<value>.+?)\\s+\\(the\\s+\"Sponsor\"\\)"
+            ],
+            "target_sections": ["borrower", "transaction_overview", "transaction_summary", "relationship_summary", "credit_summary"]
+        },
+        "parent_company": {
+            "patterns": [
+                "(?ims)Parent\\s+Company\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Parent\\s+Entity\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Ultimate\\s+Parent\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["borrower", "relationship_summary", "transaction_overview"]
+        },
+        "subsidiary": {
+            "patterns": [
+                "(?ims)Subsidiary\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Subsidiaries\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["borrower", "relationship_summary"]
+        },
+        "co_borrower": {
+            "patterns": [
+                "(?ims)Co[\\-\\s]?Borrower\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["borrower", "transaction_overview"]
+        },
+        "counterparty": {
+            "patterns": [
+                "(?ims)Counterparty\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Primary\\s+Obligor\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["borrower", "transaction_overview"]
+        },
+        "relationship_name": {
+            "patterns": [
+                "(?ims)Relationship\\s+Name\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Relationship\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["borrower", "relationship_summary", "transaction_overview"]
+        },
+        "facility_name": {
+            "patterns": [
+                "(?ims)Facility\\s+Name\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Facility\\s+Borrower\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Facility\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["transaction_overview", "loan_terms", "proposed_facility", "facility"]
+        },
+        "property_address": {
+            "patterns": [
+                "(?ims)Property\\s+Address\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Collateral\\s+Property\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Location\\s+of\\s+Collateral\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Property\\s+Location\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["collateral", "property_description", "cre_summary", "property", "collateral_description"]
+        },
+        "property_type": {
+            "patterns": [
+                "(?ims)Property\\s+Type\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Asset\\s+Type\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Type\\s+of\\s+Property\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["collateral", "property_description", "cre_summary", "property"]
+        },
+        "collateral_type": {
+            "patterns": [
+                "(?ims)Collateral\\s+Type\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Primary\\s+Collateral\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Collateral\\s+Description\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["collateral", "collateral_description", "collateral_schedule", "security"]
+        },
+        "collateral_description": {
+            "patterns": [
+                "(?ims)Collateral\\s+Description\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n{2}|$)",
+                "(?ims)Description\\s+of\\s+Collateral\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n{2}|$)"
+            ],
+            "target_sections": ["collateral", "collateral_description", "security"]
+        },
+        "loan_purpose": {
+            "patterns": [
+                "(?ims)Loan\\s+Purpose\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Purpose\\s+of\\s+(?:Loan|Facility|Credit)\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Purpose\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["transaction_overview", "loan_terms", "proposed_facility", "transaction_summary"]
+        },
+        "financial_covenant": {
+            "patterns": [
+                "(?ims)(?:Minimum|Min\\.?)\\s+DSCR\\s*[:\\-–—]?\\s*(?P<value>[0-9.]+\\s*x?)",
+                "(?ims)(?:Maximum|Max\\.?)\\s+LTV\\s*[:\\-–—]?\\s*(?P<value>[0-9.]+\\s*%?)",
+                "(?ims)Leverage\\s+(?:not\\s+to\\s+exceed|shall\\s+not\\s+exceed|covenant)\\s*[:\\-–—]?\\s*(?P<value>[0-9.]+\\s*x?)",
+                "(?ims)(?:Borrower|shall|must)\\s+(?:shall\\s+)?maintain\\s+(?:a\\s+)?(?:minimum\\s+)?DSCR\\s*(?:[≥>]|of\\s+at\\s+least)\\s*(?P<value>[0-9.]+\\s*x?)",
+                "(?ims)(?:Borrower|shall|must)\\s+(?:shall\\s+)?maintain\\s+(?:a\\s+)?(?:maximum\\s+)?LTV\\s*(?:[≤<]|not\\s+(?:to\\s+)?exceed)\\s*(?P<value>[0-9.]+\\s*%?)",
+                "(?ims)Debt\\s+Yield\\s*[:\\-–—]?\\s*(?:(?:minimum|min\\.?)\\s*)?(?P<value>[0-9.]+\\s*%?)",
+                "(?ims)Net\\s+Worth\\s+(?:Covenant|Requirement)\\s*[:\\-–—]?\\s*(?P<value>\\$?[0-9,.]+(?:\\s*(?:MM|M|K|B))?)",
+                "(?ims)Liquidity\\s+(?:Covenant|Requirement)\\s*[:\\-–—]?\\s*(?P<value>\\$?[0-9,.]+(?:\\s*(?:MM|M|K|B))?)"
+            ],
+            "target_sections": ["covenants", "financial_covenants", "terms_and_conditions", "loan_terms", "conditions"]
+        },
+        "reporting_requirement": {
+            "patterns": [
+                "(?ims)Reporting\\s+Requirements?\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n{2}|$)",
+                "(?ims)Financial\\s+Reporting\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n{2}|$)"
+            ],
+            "target_sections": ["covenants", "reporting", "conditions", "terms_and_conditions"]
+        },
+        "relationship_manager": {
+            "patterns": [
+                "(?ims)Relationship\\s+Manager\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)RM\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Banker\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["credit_team", "approval", "recommendation", "transaction_overview"]
+        },
+        "credit_officer": {
+            "patterns": [
+                "(?ims)Credit\\s+Officer\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Credit\\s+Analyst\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["credit_team", "approval", "recommendation"]
+        },
+        "underwriter": {
+            "patterns": [
+                "(?ims)Underwriter\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Underwriting\\s+Officer\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["credit_team", "approval"]
+        },
+        "approver": {
+            "patterns": [
+                "(?ims)Approved\\s+By\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Prepared\\s+By\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Reviewed\\s+By\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)"
+            ],
+            "target_sections": ["approval", "credit_team", "recommendation", "sign_off"]
+        },
+        "email_sender": {
+            "patterns": [
+                "(?im)^From:\\s*(?P<value>.+?)(?=\\n)"
+            ]
+        },
+        "email_recipient": {
+            "patterns": [
+                "(?im)^To:\\s*(?P<value>.+?)(?=\\n)"
+            ]
+        },
+        "email_subject": {
+            "patterns": [
+                "(?im)^Subject:\\s*(?P<value>.+?)(?=\\n)"
+            ]
+        },
+        "email_date": {
+            "patterns": [
+                "(?im)^(?:Sent|Date):\\s*(?P<value>.+?)(?=\\n)"
+            ]
+        },
+        "pledge_type": {
+            "patterns": [
+                "(?ims)Pledge\\s+(?:Type|of)\\s*[:\\-–—]?\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Account\\s+Pledge\\s*[:\\-–—]?\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Pledge\\s+of\\s+Securities\\b(?:\\s*[:\\-–—]\\s*(?P<value>.+?))?(?=\\n|$)"
+            ],
+            "target_sections": ["collateral", "security", "pledge", "collateral_structure"]
+        },
+        "pledged_assets": {
+            "patterns": [
+                "(?ims)Pledged\\s+Assets?\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Marketable\\s+Securities\\s+Pledge\\s*[:\\-–—]?\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)Secured\\s+[Bb]y\\s+(?P<value>.+?)(?=\\.|\\n|$)",
+                "(?ims)Collateral\\s+includes\\s+(?P<value>.+?)(?=\\.|\\n|$)"
+            ],
+            "target_sections": ["collateral", "security", "pledge", "collateral_structure"]
+        },
+        "tax_status": {
+            "patterns": [
+                "(?ims)Tax\\s+Status\\s*[:\\-–—]\\s*(?P<value>.+?)(?=\\n|$)",
+                "(?ims)(?:Pass[\\-\\s]?Through|S[\\-\\s]?Corp|LLC|Partnership)\\s+(?:Entity|Structure)"
+            ],
+            "target_sections": ["tax", "borrower", "entity_structure"]
+        },
+        "adjusted_gross_income": {
+            "patterns": [
+                "(?ims)(?:Adjusted\\s+Gross\\s+Income|AGI)\\s*[:\\-–—]\\s*(?P<value>\\$?[0-9,.]+(?:\\s*(?:MM|M|K|B))?)"
+            ],
+            "target_sections": ["tax", "financial_summary", "personal_financial_statement"]
+        }
+    },
+    "entity_keywords": {
+        "financial_metric": [
+            "NPL ratio", "net interest margin", "capital adequacy",
+            "loan-to-value", "debt service coverage", "return on equity",
+            "tier 1 capital", "leverage ratio", "provision coverage",
+            "DSCR", "LTV", "NOI", "cap rate", "occupancy rate",
+            "interest coverage", "debt yield", "net worth"
+        ],
+        "contract_term": [
+            "maturity date", "interest rate", "principal amount",
+            "collateral", "covenant", "default event", "prepayment",
+            "amortization", "guarantee", "subordination",
+            "loan amount", "facility amount", "commitment amount",
+            "tenor", "draw period", "repayment"
+        ],
+        "regulatory": [
+            "Basel III", "Basel IV", "Dodd-Frank", "Volcker Rule",
+            "IFRS 9", "CECL", "stress test", "risk-weighted assets"
+        ],
+        "pricing": [
+            "SOFR", "LIBOR", "spread", "basis points", "margin",
+            "commitment fee", "origination fee", "prepayment penalty",
+            "floor rate", "cap rate", "unused fee"
+        ],
+        "cre_metric": [
+            "appraised value", "net operating income", "capitalization rate",
+            "occupancy", "vacancy", "property value", "market value",
+            "replacement cost", "stabilized value", "as-is value"
+        ],
+        "covenant": [
+            "minimum DSCR", "maximum LTV", "leverage covenant",
+            "liquidity covenant", "net worth covenant", "debt yield",
+            "financial covenant", "reporting requirement",
+            "borrower shall maintain", "required to maintain",
+            "must not exceed", "shall not exceed"
+        ],
+        "credit_team": [
+            "relationship manager", "credit officer", "underwriter",
+            "approver", "credit analyst", "portfolio manager",
+            "credit committee", "risk committee"
+        ],
+        "collateral": [
+            "pledge of securities", "account pledge", "real estate collateral",
+            "marketable securities", "secured by", "collateral includes",
+            "first lien", "second lien", "UCC filing"
+        ],
+        "tax": [
+            "adjusted gross income", "AGI", "K-1", "tax return",
+            "pass-through", "S-Corp", "LLC", "taxable income"
+        ]
+    },
+    "document_types": {
+        "credit_memo": {
+            "label": "Credit Memo / LAM",
+            "patterns": [
+                "(?i)Loan\\s+Approval\\s+Memor",
+                "(?i)Credit\\s+Approval\\s+Memo",
+                "(?i)\\bLAM\\b",
+                "(?i)Approval\\s+Memorandum",
+                "(?i)Credit\\s+Memorandum",
+                "(?i)Credit\\s+Memo\\b",
+                "(?i)Credit\\s+Committee\\b",
+                "(?i)Request\\s+for\\s+Approval",
+                "(?i)Approval\\s+Request",
+                "(?i)Proposed\\s+Facility",
+                "(?i)Transaction\\s+Summary",
+                "(?i)Recommendation\\s*:"
+            ],
+            "weights": {
+                "(?i)Loan\\s+Approval\\s+Memor": 5,
+                "(?i)\\bLAM\\b": 5,
+                "(?i)Approval\\s+Memorandum": 5,
+                "(?i)Credit\\s+Approval\\s+Memo": 5,
+                "(?i)Credit\\s+Memorandum": 4,
+                "(?i)Credit\\s+Memo\\b": 3,
+                "(?i)Credit\\s+Committee\\b": 3,
+                "(?i)Request\\s+for\\s+Approval": 3,
+                "(?i)Approval\\s+Request": 3,
+                "(?i)Proposed\\s+Facility": 2,
+                "(?i)Transaction\\s+Summary": 2,
+                "(?i)Recommendation\\s*:": 2
+            }
+        },
+        "annual_review": {
+            "label": "Annual Review",
+            "patterns": [
+                "(?i)Annual\\s+(?:Credit\\s+)?Review",
+                "(?i)Relationship\\s+Review",
+                "(?i)Annual\\s+Monitoring",
+                "(?i)Periodic\\s+Review"
+            ],
+            "weights": {
+                "(?i)Annual\\s+(?:Credit\\s+)?Review": 4,
+                "(?i)Relationship\\s+Review": 3,
+                "(?i)Annual\\s+Monitoring": 3,
+                "(?i)Periodic\\s+Review": 2
+            }
+        },
+        "loan_modification": {
+            "label": "Loan Modification",
+            "patterns": [
+                "(?i)Loan\\s+Modification",
+                "(?i)Modification\\s+(?:Request|Agreement)",
+                "(?i)Amendment\\s+(?:Request|Agreement)",
+                "(?i)Facility\\s+Amendment"
+            ],
+            "weights": {
+                "(?i)Loan\\s+Modification": 4,
+                "(?i)Modification\\s+(?:Request|Agreement)": 4,
+                "(?i)Amendment\\s+(?:Request|Agreement)": 3,
+                "(?i)Facility\\s+Amendment": 3
+            }
+        },
+        "credit_monitoring_report": {
+            "label": "Credit Monitoring Report",
+            "patterns": [
+                "(?i)Credit\\s+Monitoring\\s+Report",
+                "(?i)Monitoring\\s+Report",
+                "(?i)Credit\\s+Risk\\s+Review",
+                "(?i)Portfolio\\s+Review"
+            ],
+            "weights": {
+                "(?i)Credit\\s+Monitoring\\s+Report": 4,
+                "(?i)Monitoring\\s+Report": 3,
+                "(?i)Credit\\s+Risk\\s+Review": 4,
+                "(?i)Portfolio\\s+Review": 2
+            }
+        },
+        "term_sheet": {
+            "label": "Term Sheet",
+            "patterns": [
+                "(?i)Term\\s+Sheet",
+                "(?i)Indicative\\s+Terms",
+                "(?i)Summary\\s+of\\s+Terms",
+                "(?i)Preliminary\\s+Terms"
+            ],
+            "weights": {
+                "(?i)Term\\s+Sheet": 5,
+                "(?i)Indicative\\s+Terms": 4,
+                "(?i)Summary\\s+of\\s+Terms": 4,
+                "(?i)Preliminary\\s+Terms": 3
+            }
+        },
+        "appraisal_summary": {
+            "label": "Appraisal Summary",
+            "patterns": [
+                "(?i)Appraisal\\s+(?:Summary|Report)",
+                "(?i)Property\\s+Valuation",
+                "(?i)Market\\s+Value\\s+(?:Summary|Estimate)",
+                "(?i)CRE\\s+Appraisal"
+            ],
+            "weights": {
+                "(?i)Appraisal\\s+(?:Summary|Report)": 5,
+                "(?i)Property\\s+Valuation": 4,
+                "(?i)Market\\s+Value\\s+(?:Summary|Estimate)": 3,
+                "(?i)CRE\\s+Appraisal": 4
+            }
+        },
+        "financial_statement_review": {
+            "label": "Financial Statement Review",
+            "patterns": [
+                "(?i)Financial\\s+Statement\\s+(?:Review|Analysis)",
+                "(?i)Financial\\s+Spreads?\\b",
+                "(?i)Spreading\\s+Analysis",
+                "(?i)Financial\\s+Analysis"
+            ],
+            "weights": {
+                "(?i)Financial\\s+Statement\\s+(?:Review|Analysis)": 4,
+                "(?i)Financial\\s+Spreads?\\b": 4,
+                "(?i)Spreading\\s+Analysis": 4,
+                "(?i)Financial\\s+Analysis": 2
+            }
+        },
+        "presentation_deck": {
+            "label": "Presentation Deck",
+            "patterns": [
+                "(?i)Credit\\s+Committee\\s+Presentation",
+                "(?i)Risk\\s+Committee\\s+(?:Deck|Presentation)",
+                "(?i)Board\\s+Presentation",
+                "(?i)Investment\\s+Committee"
+            ],
+            "weights": {
+                "(?i)Credit\\s+Committee\\s+Presentation": 4,
+                "(?i)Risk\\s+Committee\\s+(?:Deck|Presentation)": 4,
+                "(?i)Board\\s+Presentation": 3,
+                "(?i)Investment\\s+Committee": 2
+            }
+        },
+        "banker_email": {
+            "label": "Banker Email",
+            "patterns": [
+                "(?im)^From:\\s+.+\\n(?:Sent|Date):\\s+",
+                "(?im)^Subject:\\s+"
+            ],
+            "weights": {
+                "(?im)^From:\\s+.+\\n(?:Sent|Date):\\s+": 2,
+                "(?im)^Subject:\\s+": 1
+            },
+            "requires_dominance": true
+        }
+    },
+    "email_block_markers": {
+        "header_patterns": [
+            "(?im)^From:\\s+",
+            "(?im)^To:\\s+",
+            "(?im)^Sent:\\s+",
+            "(?im)^Date:\\s+",
+            "(?im)^Subject:\\s+",
+            "(?im)^Cc:\\s+"
+        ],
+        "separator_patterns": [
+            "(?i)-{3,}\\s*Original\\s+Message\\s*-{3,}",
+            "(?i)-{3,}\\s*Forwarded\\s+[Mm]essage\\s*-{3,}",
+            "(?i)_{5,}",
+            "(?i)On\\s+.+wrote:"
+        ],
+        "min_header_lines": 2,
+        "max_header_span_lines": 20
+    },
+    "financial_metric_ontology": {
+        "dscr": {
+            "canonical_name": "dscr",
+            "aliases": ["DSCR", "Debt Service Coverage", "Debt Service Coverage Ratio", "DS Coverage", "Debt Svc Coverage"],
+            "value_patterns": ["([0-9]+\\.?[0-9]*)\\s*x", "([0-9]+\\.?[0-9]*)"],
+            "unit_type": "multiple"
+        },
+        "ltv": {
+            "canonical_name": "ltv",
+            "aliases": ["LTV", "Loan-to-Value", "Loan to Value", "L-T-V"],
+            "value_patterns": ["([0-9]+\\.?[0-9]*)\\s*%", "([0-9]+\\.?[0-9]*)"],
+            "unit_type": "percent"
+        },
+        "noi": {
+            "canonical_name": "noi",
+            "aliases": ["NOI", "Net Operating Income"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "revenue": {
+            "canonical_name": "revenue",
+            "aliases": ["Revenue", "Total Revenue", "Net Revenue", "Gross Revenue"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "ebitda": {
+            "canonical_name": "ebitda",
+            "aliases": ["EBITDA", "Adjusted EBITDA", "Normalized EBITDA", "Adj. EBITDA"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "net_income": {
+            "canonical_name": "net_income",
+            "aliases": ["Net Income", "Net Earnings", "Net Profit"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "total_leverage": {
+            "canonical_name": "total_leverage",
+            "aliases": ["Total Leverage", "Leverage", "Debt/EBITDA", "Total Debt/EBITDA"],
+            "value_patterns": ["([0-9]+\\.?[0-9]*)\\s*x", "([0-9]+\\.?[0-9]*)"],
+            "unit_type": "multiple"
+        },
+        "senior_leverage": {
+            "canonical_name": "senior_leverage",
+            "aliases": ["Senior Leverage", "Senior Debt/EBITDA"],
+            "value_patterns": ["([0-9]+\\.?[0-9]*)\\s*x", "([0-9]+\\.?[0-9]*)"],
+            "unit_type": "multiple"
+        },
+        "interest_coverage": {
+            "canonical_name": "interest_coverage",
+            "aliases": ["Interest Coverage", "Interest Coverage Ratio", "ICR"],
+            "value_patterns": ["([0-9]+\\.?[0-9]*)\\s*x", "([0-9]+\\.?[0-9]*)"],
+            "unit_type": "multiple"
+        },
+        "cap_rate": {
+            "canonical_name": "cap_rate",
+            "aliases": ["Cap Rate", "Capitalization Rate", "Going-In Cap Rate", "Exit Cap Rate"],
+            "value_patterns": ["([0-9]+\\.?[0-9]*)\\s*%", "([0-9]+\\.?[0-9]*)"],
+            "unit_type": "percent"
+        },
+        "occupancy": {
+            "canonical_name": "occupancy",
+            "aliases": ["Occupancy", "Occupancy Rate", "Physical Occupancy", "Economic Occupancy"],
+            "value_patterns": ["([0-9]+\\.?[0-9]*)\\s*%"],
+            "unit_type": "percent"
+        },
+        "appraised_value": {
+            "canonical_name": "appraised_value",
+            "aliases": ["Appraised Value", "As-Is Value", "Market Value", "Stabilized Value"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "loan_amount": {
+            "canonical_name": "loan_amount",
+            "aliases": ["Loan Amount", "Facility Amount", "Commitment Amount", "Principal Amount", "Credit Facility"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "cash": {
+            "canonical_name": "cash",
+            "aliases": ["Cash", "Cash Balance", "Cash and Equivalents", "Cash + Availability"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "liquidity": {
+            "canonical_name": "liquidity",
+            "aliases": ["Liquidity", "Total Liquidity", "Available Liquidity"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        },
+        "debt": {
+            "canonical_name": "debt",
+            "aliases": ["Total Debt", "Debt", "Outstanding Debt", "Funded Debt"],
+            "value_patterns": ["\\$?([0-9,.]+)\\s*(?:MM|M|K|B)?"],
+            "unit_type": "currency"
+        }
+    },
+    "stopwords": [
+        "the", "is", "at", "which", "on", "and", "a", "an", "of", "to",
+        "in", "for", "with", "by", "from", "as", "or", "be", "are", "was"
+    ]
+}

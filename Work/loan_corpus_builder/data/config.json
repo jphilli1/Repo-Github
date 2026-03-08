@@ -1,0 +1,58 @@
+{
+  "paths": {
+    "source_roots": [],
+    "target_root": "corpus_output",
+    "sqlite_db": "ldcb_registry.db",
+    "parquet_dir": "exports",
+    "log_dir": "logs",
+    "quarantine_dir": "quarantine",
+    "review_dir": "review_required",
+    "manifest_dir": "manifests"
+  },
+  "traversal": {
+    "max_depth": 8,
+    "followlinks": false,
+    "batch_size": 500,
+    "file_extensions": [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".msg", ".eml", ".txt", ".rtf"],
+    "min_file_size_bytes": 512,
+    "max_file_size_bytes": 524288000
+  },
+  "qualification": {
+    "relationship_folder_min_depth": 1,
+    "relationship_folder_max_depth": 3,
+    "loan_folder_min_depth": 2,
+    "loan_folder_max_depth": 5
+  },
+  "classification": {
+    "min_confidence_threshold": 0.25,
+    "ar_weak_evidence_penalty": 0.5,
+    "ar_requires_supporting_signal": true,
+    "max_pages_for_metadata_scan": 5
+  },
+  "quality_gate": {
+    "min_page_count": 1,
+    "max_page_count": 500,
+    "min_meaningful_size_bytes": 2048,
+    "draft_penalty": 0.3
+  },
+  "selection": {
+    "retain_years": 3,
+    "top_n_per_year": 2
+  },
+  "corpus": {
+    "copy_method": "shutil_copy2",
+    "collision_rename": true,
+    "preserve_timestamps": true,
+    "generate_manifest": true
+  },
+  "hashing": {
+    "document_id_algorithm": "md5",
+    "lineage_algorithm": "sha256"
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    "file_rotation_mb": 50,
+    "max_backup_count": 5
+  }
+}
