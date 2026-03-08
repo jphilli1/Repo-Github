@@ -1,0 +1,176 @@
+{
+  "skip_markers": {
+    "folder_level": [
+      "prospect",
+      "pipeline",
+      "declined",
+      "withdrawn",
+      "paid off",
+      "sold",
+      "inactive",
+      "off books",
+      "archive",
+      "old",
+      "closed"
+    ],
+    "admin_folders": [
+      "template",
+      "templates",
+      "admin",
+      "system",
+      "_archive",
+      "_old",
+      "backup",
+      "temp",
+      "tmp",
+      ".snapshot"
+    ]
+  },
+  "draft_suppression_markers": [
+    "draft",
+    "redline",
+    "markup",
+    "compare",
+    "clean",
+    "copy",
+    "tmp",
+    "wip",
+    "unsigned"
+  ],
+  "document_types": {
+    "annual_review": {
+      "label": "Annual Review",
+      "aliases": [
+        "annual review",
+        "ar",
+        "annual rev",
+        "review memo",
+        "annual credit review",
+        "acr",
+        "credit review"
+      ],
+      "filename_patterns": [
+        "(?i)annual[\\s_-]*review",
+        "(?i)annual[\\s_-]*rev\\b",
+        "(?i)annual[\\s_-]*credit[\\s_-]*review",
+        "(?i)\\bacr\\b",
+        "(?i)review[\\s_-]*memo"
+      ],
+      "folder_context_patterns": [
+        "(?i)annual[\\s_-]*review",
+        "(?i)\\bar\\b",
+        "(?i)credit[\\s_-]*review"
+      ],
+      "weights": {
+        "filename_strong": 5,
+        "filename_weak_ar": 2,
+        "folder_context": 3,
+        "combined_weak_ar_plus_folder": 5
+      },
+      "weak_tokens": ["ar"]
+    },
+    "loan_modification": {
+      "label": "Loan Modification / Amendment",
+      "aliases": [
+        "modification",
+        "amendment",
+        "extension",
+        "restructure",
+        "mod",
+        "loan mod",
+        "amended and restated",
+        "a&r",
+        "waiver"
+      ],
+      "filename_patterns": [
+        "(?i)\\bmodification\\b",
+        "(?i)\\bamendment\\b",
+        "(?i)\\bextension\\b",
+        "(?i)\\brestructure\\b",
+        "(?i)\\bmod\\b",
+        "(?i)amended[\\s_-]*and[\\s_-]*restated",
+        "(?i)\\ba\\s*&\\s*r\\b",
+        "(?i)\\bwaiver\\b"
+      ],
+      "folder_context_patterns": [
+        "(?i)modification",
+        "(?i)amendment",
+        "(?i)extension",
+        "(?i)restructure"
+      ],
+      "weights": {
+        "filename_strong": 5,
+        "folder_context": 3
+      },
+      "weak_tokens": []
+    },
+    "credit_memo": {
+      "label": "Credit Memo / LAM",
+      "aliases": [
+        "lam",
+        "credit memo",
+        "credit memorandum",
+        "approval memo",
+        "loan approval memo",
+        "loan approval memorandum",
+        "credit approval",
+        "ca memo"
+      ],
+      "filename_patterns": [
+        "(?i)\\blam\\b",
+        "(?i)credit[\\s_-]*memo",
+        "(?i)credit[\\s_-]*memorandum",
+        "(?i)approval[\\s_-]*memo",
+        "(?i)loan[\\s_-]*approval[\\s_-]*memo",
+        "(?i)loan[\\s_-]*approval[\\s_-]*memorandum",
+        "(?i)credit[\\s_-]*approval",
+        "(?i)\\bca[\\s_-]*memo\\b"
+      ],
+      "folder_context_patterns": [
+        "(?i)credit[\\s_-]*memo",
+        "(?i)\\blam\\b",
+        "(?i)approval[\\s_-]*memo"
+      ],
+      "weights": {
+        "filename_strong": 5,
+        "folder_context": 3
+      },
+      "weak_tokens": []
+    }
+  },
+  "relationship_patterns": [
+    "(?i)^\\d{4,}[\\s_-]",
+    "(?i)^[A-Z][a-z]+[\\s_,]+(LLC|Inc|Corp|LP|LLP|Ltd|Co\\.?|NA|N\\.?A\\.?)",
+    "(?i)^(client|borrower|relationship)[\\s_-]*\\d+"
+  ],
+  "loan_patterns": [
+    "(?i)\\bloan[\\s_-]*\\d+",
+    "(?i)\\bfacility[\\s_-]*(\\d+|[A-Z])",
+    "(?i)\\bterm[\\s_-]*loan\\b",
+    "(?i)\\brevolver\\b",
+    "(?i)\\brevolving[\\s_-]*credit\\b",
+    "(?i)\\bline[\\s_-]*of[\\s_-]*credit\\b",
+    "(?i)\\bloc\\b",
+    "(?i)\\bconstruction[\\s_-]*loan\\b",
+    "(?i)\\bbridge[\\s_-]*loan\\b",
+    "(?i)\\bmortgage\\b",
+    "(?i)\\bcre\\b"
+  ],
+  "year_extraction_patterns": [
+    "(?:^|[\\s_-])(20[0-2]\\d)(?:[\\s_.-]|$)",
+    "(?:^|[\\s_-])(19[89]\\d)(?:[\\s_.-]|$)",
+    "(?i)FY[\\s_-]?(20[0-2]\\d)",
+    "(?i)CY[\\s_-]?(20[0-2]\\d)"
+  ],
+  "quarantine_reason_codes": {
+    "UNCLASSIFIED": "No document type matched above confidence threshold",
+    "OVERSIZED": "File exceeds maximum size limit",
+    "UNDERSIZED": "File below minimum meaningful size",
+    "CORRUPTED": "File metadata extraction failed",
+    "NO_RELATIONSHIP": "Could not resolve parent relationship folder",
+    "NO_LOAN": "Could not resolve parent loan folder",
+    "DUPLICATE_HASH": "Exact duplicate of another candidate (same MD5)",
+    "STALE_ORPHAN": "File in folder marked as inactive with no recent activity",
+    "EXTENSION_MISMATCH": "File extension does not match detected content type"
+  }
+}
