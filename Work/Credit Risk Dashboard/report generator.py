@@ -441,7 +441,7 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
                 font-weight: 500;
                 color: #2c3e50;
             }}
-            .idb-value {{
+            .mspbna-value {{
                 background-color: #fff3cd;
                 font-weight: 600;
                 color: #856404;
@@ -508,7 +508,7 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
         html += f"""
                     <tr>
                         <td class="metric-name">{row['Metric']}</td>
-                        <td class="idb-value">{row['MSPBNA']}</td>
+                        <td class="mspbna-value">{row['MSPBNA']}</td>
                         <td>{row['All Peers']}</td>
                         <td>{row['Core PB']}</td>
                         <td class="{diff_all_class}">{row['Diff vs All']}</td>
@@ -541,7 +541,7 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
 
 def generate_credit_metrics_email_table(
     proc_df_with_peers: pd.DataFrame,
-    subject_bank_cert: int = 19977
+    subject_bank_cert: int = 34221
 ) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
     """
     Build the email HTML table; ASSET & LNLS are shown as $ (millions), others as %.
@@ -564,48 +564,48 @@ def generate_credit_metrics_email_table(
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    idb = latest_data[latest_data["CERT"] == subject_bank_cert]
+    subj = latest_data[latest_data["CERT"] == subject_bank_cert]
     peers = latest_data[latest_data["CERT"] == 90003]       # All Peers composite
     peers_ex = latest_data[latest_data["CERT"] == 90001]    # Core PB composite
 
-    if idb.empty or peers.empty or peers_ex.empty:
+    if subj.empty or peers.empty or peers_ex.empty:
         print("Missing data for one or more entities")
         return None, None
 
-    idb = idb.iloc[0]
+    subj = subj.iloc[0]
     peers = peers.iloc[0]
     peers_ex = peers_ex.iloc[0]
 
     rows = []
     for code, disp in important_metrics.items():
-        if code not in idb.index:
+        if code not in subj.index:
             continue
 
-        v_idb  = idb.get(code, np.nan)
+        v_subj = subj.get(code, np.nan)
         v_all  = peers.get(code, np.nan)
         v_sel  = peers_ex.get(code, np.nan)
 
         # diffs
-        d_all = (v_idb - v_all) if not pd.isna(v_all) else np.nan
-        d_sel = (v_idb - v_sel) if not pd.isna(v_sel) else np.nan
+        d_all = (v_subj - v_all) if not pd.isna(v_all) else np.nan
+        d_sel = (v_subj - v_sel) if not pd.isna(v_sel) else np.nan
 
         if code in CURRENCY_MM_CODES:
             # values are already measured in millions
-            idb_s = _fmt_money_millions(v_idb)
-            all_s = _fmt_money_millions(v_all)
-            sel_s = _fmt_money_millions(v_sel)
+            subj_s = _fmt_money_millions(v_subj)
+            all_s  = _fmt_money_millions(v_all)
+            sel_s  = _fmt_money_millions(v_sel)
             diff_all_s = _fmt_money_millions_with_sign(d_all)
             diff_sel_s = _fmt_money_millions_with_sign(d_sel)
         else:
-            idb_s = _fmt_percent_auto(v_idb)
-            all_s = _fmt_percent_auto(v_all)
-            sel_s = _fmt_percent_auto(v_sel)
+            subj_s = _fmt_percent_auto(v_subj)
+            all_s  = _fmt_percent_auto(v_all)
+            sel_s  = _fmt_percent_auto(v_sel)
             diff_all_s = _fmt_percent_auto(d_all)
             diff_sel_s = _fmt_percent_auto(d_sel)
 
         rows.append({
             "Metric": disp,
-            "MSPBNA": idb_s,
+            "MSPBNA": subj_s,
             "All Peers": all_s,
             "Core PB": sel_s,
             "Diff vs All": diff_all_s,
@@ -621,7 +621,7 @@ def generate_flexible_html_table(
     proc_df_with_peers: pd.DataFrame,
     metrics_to_display: Dict[str, str],
     title: str,
-    subject_bank_cert: int = 19977,
+    subject_bank_cert: int = 34221,
     col_names: Optional[Dict[str, str]] = None
 ) -> str:
     """
@@ -645,7 +645,7 @@ def generate_flexible_html_table(
     latest_data = proc_df_with_peers[proc_df_with_peers['REPDTE'] == latest_date]
 
     # Get all banks and peer groups to be included in the table
-    certs_to_include = [subject_bank_cert, 99999, 99998]
+    certs_to_include = [subject_bank_cert, 90001, 90002, 90003]
 
     # Define default column names
     if col_names is None:
@@ -686,7 +686,7 @@ def generate_flexible_html_table(
             .value-cell {{ text-align: center; }}
             tr:nth-child(even) {{ background-color: #f7fafc; }}
             tr:hover {{ background-color: #edf2f7; }}
-            .idb-row {{ background-color: #fff3cd; font-weight: 600; }}
+            .mspbna-row {{ background-color: #fff3cd; font-weight: 600; }}
         </style>
     </head>
     <body>
@@ -723,7 +723,7 @@ def generate_flexible_html_table(
         hq = latest_row.get('HQ_STATE', 'N/A')
 
         # Special styling for MSPBNA
-        row_class = "idb-row" if cert == subject_bank_cert else ""
+        row_class = "mspbna-row" if cert == subject_bank_cert else ""
 
         html += f"""
                     <tr class="{row_class}">
@@ -1293,6 +1293,16 @@ def generate_reports(
         print("\n" + "-" * 60)
         print("GENERATING SCATTER PLOTS (8Q AVG)")
         print("-" * 60)
+
+        # B7: Conditionally exclude MS_COMBINED_CERT from all-bank outputs
+        if report_view == "MSPBNA_WEALTH_NORM":
+            proc_df_with_peers = proc_df_with_peers[
+                proc_df_with_peers["CERT"] != ms_combined_cert
+            ].copy()
+            rolling8q_df = rolling8q_df[
+                rolling8q_df["CERT"] != ms_combined_cert
+            ].copy()
+            print(f"REPORT_VIEW={report_view}: excluded MS_COMBINED_CERT ({ms_combined_cert}) from all-bank outputs")
 
         # --- B6.1: Standard scatters ---
         std_scatter_df = rolling8q_df.copy()
