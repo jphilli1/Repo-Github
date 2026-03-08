@@ -42,6 +42,7 @@
     &quot;Python.MSPBNA_CR_Normalized.executor&quot;: &quot;Run&quot;,
     &quot;Python.master_data_dictionary.executor&quot;: &quot;Run&quot;,
     &quot;Python.report generator.executor&quot;: &quot;Run&quot;,
+    &quot;Python.report_generator (1).executor&quot;: &quot;Run&quot;,
     &quot;RunOnceActivity.MCP Project settings loaded&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
