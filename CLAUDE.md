@@ -112,40 +112,32 @@ The LDCB package already exists at `Work/loan_corpus_builder/`. When I ask you t
 |--------|---------------|--------|
 | `__init__.py` | Package init, version string | Done |
 | `__main__.py` | `python -m` entry point | Done |
-| `main.py` | CLI orchestrator, argparse, full pipeline stages 1–6 | Done — has bugs (see below) |
+| `main.py` | CLI orchestrator, argparse, full pipeline stages 1–7 (incl. dedup, dry-run, incremental, page-count, tqdm) | Done |
 | `config.py` | Typed config/rules loaders (`LDCBConfig`, `LDCBRules` dataclasses with `__slots__`) | Done |
-| `models.py` | Pydantic v2 models for all registry entities, enums, ID helpers | Done — has bugs (see below) |
+| `models.py` | Pydantic v2 models for all registry entities, enums, ID helpers | Done |
 | `logging_utils.py` | Structured logging with `RotatingFileHandler` | Done |
-| `traversal/__init__.py` | `TraversalEngine` — `os.walk`, extension/size filters, yields `FileRecord` | Done — but bypassed by main.py |
+| `traversal/__init__.py` | `TraversalEngine` — `os.walk`, extension/size filters, yields `FileRecord`, optional tqdm | Done |
 | `qualification/__init__.py` | `FolderQualifier` — relationship/loan pattern matching, skip markers | Done |
 | `classification/__init__.py` | `DocumentClassifier` + `QualityGate` — pattern scoring, AR weak-evidence rule | Done |
 | `mapping/__init__.py` | `CanonicalMapper` — exact → fuzzy → normalized fallback, alias CSV loading | Done |
 | `selection/__init__.py` | `SelectionEngine` — year-window + top-N ranking with tie-break sort | Done |
-| `corpus/__init__.py` | `CorpusBuilder` — `shutil.copy2`, collision rename, hash verification, manifests | Done |
+| `corpus/__init__.py` | `CorpusBuilder` — `shutil.copy2`, collision rename, hash verification, manifests, tqdm progress | Done |
 | `adapters/__init__.py` | `SQLiteRegistry` (8 tables, WAL mode) + `ParquetExporter` | Done |
 | `data/config.json` | All pipeline config (paths, thresholds, sizes) | Done |
 | `data/rules.json` | All business rules (skip markers, doc types, patterns, weights) | Done |
 | `data/relationship_aliases.csv` | Alias mapping — header only, no seeded data | Stub |
 | `data/loan_aliases.csv` | Alias mapping — header only, no seeded data | Stub |
 | `tests/__init__.py` | Empty test directory stub | Stub |
-### Known Bugs (Fix When Touching Affected Module)
-**BUG-001: `CandidateRecord.sort_key` is dead code.**
-`models.py` defines `modified_time` and `file_size` as hardcoded properties returning `0`. The `sort_key` computed field therefore always produces the same value. The *actual* sort happens in `selection/__init__.py` via `_candidate_sort_key()` which takes `file_size` and `modified_time` as parameters from the `file_metadata` dict. Fix: remove the dead `sort_key` computed field and the two stub properties from `CandidateRecord`, or wire file metadata into the model properly.
-**BUG-002: `main.py` bypasses `TraversalEngine`.**
-`main.py` runs its own `os.walk` loop with inline file filtering instead of calling `TraversalEngine.scan()`. This means any future enhancements to the traversal engine (batch yielding, progress reporting, skip-path caching) won't take effect. Fix: refactor `main.py` Stage 1 to use `TraversalEngine.scan()` and integrate qualification in a callback or post-filter.
-**BUG-003: Type mismatch in `qualify_file_context`.**
-`qualification/__init__.py` type-hints `relationships` as `dict[str, RelationshipRecord]`, but `main.py` passes `dict[str, object]`. Fix: use proper typed dicts in `main.py`.
-### Known Gaps (Implement When Relevant)
-**GAP-001: No dry-run logic.**
-The `--dry-run` CLI flag is parsed but never checked. The pipeline always copies files. Fix: gate `CorpusBuilder.build()` behind the dry-run flag and emit a selection summary instead.
-**GAP-002: No content-hash deduplication.**
-`generate_content_hash()` exists in `models.py` but is never called during classification or selection. Identical files with different names/paths will be selected independently. Fix: add a dedup pass between quality gate and selection — group by content hash, keep the best-ranked candidate per hash.
-**GAP-003: No page count extraction.**
-`QualityGate.evaluate()` checks `candidate.page_count` but nothing populates it. All candidates pass the page-count check trivially. Fix: add a lightweight PDF metadata reader (PyPDF2 or pikepdf) to extract page count for `.pdf` files during classification. For `.docx`, use `python-docx` paragraph/section count as proxy.
-**GAP-004: No progress reporting.**
-No `tqdm` integration despite it being in the approved library list. Large shares (100K+ files) run silently. Fix: wrap the main traversal and copy loops in `tqdm` progress bars.
-**GAP-005: No incremental/delta run support.**
-The pipeline re-scans everything on each run. `get_existing_file_ids()` exists in the adapter but is never called. Fix: check existing file IDs at start of traversal, skip files already registered with matching `file_id` (same path + size + mtime).
+### Known Bugs — RESOLVED
+**BUG-001: `CandidateRecord.sort_key` was dead code.** FIXED — Removed dead `sort_key` computed field and stub `modified_time`/`file_size` properties from `CandidateRecord` in `models.py`. Actual sort remains in `selection/__init__.py` via `_candidate_sort_key()`.
+**BUG-002: `main.py` bypassed `TraversalEngine`.** FIXED — Refactored `main.py` Stage 1 to use `TraversalEngine.scan()` instead of inline `os.walk`.
+**BUG-003: Type mismatch in `qualify_file_context`.** FIXED — `main.py` now uses `dict[str, RelationshipRecord]` and `dict[str, LoanRecord]` matching the qualification module's type hints.
+### Known Gaps — RESOLVED
+**GAP-001: Dry-run logic.** FIXED — `--dry-run` flag now gates `CorpusBuilder.build()` and emits a selection summary instead.
+**GAP-002: Content-hash deduplication.** FIXED — Added `_deduplicate_by_content_hash()` pass (Stage 3b) between quality gate and selection. Groups by MD5 content hash, keeps best-ranked candidate per hash, quarantines duplicates with `DUPLICATE_CONTENT` reason code.
+**GAP-003: Page count extraction.** FIXED — Added `_extract_page_count()`, `_extract_pdf_page_count()`, and `_extract_docx_page_count()` in `main.py`. Uses PyPDF2/pypdf for PDFs, python-docx for DOCX (paragraph-count heuristic, ~25 paragraphs/page). Graceful fallback if libraries unavailable.
+**GAP-004: Progress reporting.** FIXED — Added `tqdm` integration in `main.py` (qualifying & classifying loop), `corpus/__init__.py` (copy loop), and `traversal/__init__.py` (optional import). Graceful no-op if tqdm not installed.
+**GAP-005: Incremental/delta run support.** FIXED — Pipeline now calls `registry.get_existing_file_ids(run_id)` at startup and skips files already registered with matching `file_id` for the same run ID.
 ---
 ## DEFAULT CODE STRUCTURE
 Unless I specify otherwise, produce **single-file scripts**. Each script should be self-contained with:

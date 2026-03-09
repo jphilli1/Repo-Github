@@ -58,7 +58,15 @@ class CorpusBuilder:
 
         copy_records: list[CopyRecord] = []
 
-        for sel in selections:
+        # GAP-004: tqdm progress bar for copy loop
+        sel_iter = selections
+        try:
+            from tqdm import tqdm
+            sel_iter = tqdm(selections, desc="Copying to corpus", unit="file")
+        except ImportError:
+            pass
+
+        for sel in sel_iter:
             candidate = candidates_by_id.get(sel.candidate_id)
             if candidate is None:
                 logger.error("Selection %s references unknown candidate %s", sel.selection_id, sel.candidate_id)

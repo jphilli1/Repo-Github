@@ -13,6 +13,11 @@ from ..models import FileRecord, generate_document_id
 
 logger = logging.getLogger("ldcb.traversal")
 
+try:
+    from tqdm import tqdm as _tqdm
+except ImportError:
+    _tqdm = None
+
 
 class TraversalEngine:
     """Walk source roots and yield FileRecord for every qualifying file.
