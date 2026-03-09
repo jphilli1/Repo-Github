@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="719b80cb-459f-4b71-aeb0-98da196baf3b" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/CR_PEERS_JP.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/CR_PEERS_JP.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/runConfigurations/MSPBNA_CR_Normalized.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20180930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20181231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20190331.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20190630.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20190930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20191231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20200331.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20200630.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20200930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20201231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20210331.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20210630.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20210930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20211231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20220331.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20220630.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20220930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20221231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20230331.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20230630.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20230930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20231231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20240331.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20240630.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20240930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20241231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20250331.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20250630.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20250930.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/FFIEC_Bulk_Call_20251231.csv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20180930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20181231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20190331_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20190630_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20190930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20191231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20200331_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20200630_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20200930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20201231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20210331_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20210630_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20210930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20211231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20220331_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20220630_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20220930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20221231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20230331_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20230630_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20230930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20231231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20240331_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20240630_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20240930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20241231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20250331_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20250630_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20250930_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/ffiec_cache/zips/ffiec_20251231_bulk_tsv.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Bank_Performance_Dashboard_20260304_195319.xlsx" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Bank_Performance_Dashboard_20260304_231346.xlsx" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Bank_Performance_Dashboard_20260304_234815.xlsx" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Bank_Performance_Dashboard_20260308_141805.xlsx" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Bank_Performance_Dashboard_20260308_165620.xlsx" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Bank_Performance_Dashboard_20260308_201543.xlsx" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260304_231346_scatter_nco_vs_npl_20260304.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260304_231346_scatter_pd_vs_npl_20260304.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260304_234815_scatter_nco_vs_npl_20260304.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260304_234815_scatter_pd_vs_npl_20260304.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260308_141805_scatter_nco_vs_npl_20260308.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260308_141805_scatter_pd_vs_npl_20260308.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260308_165620_scatter_nco_vs_npl_20260308.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260308_165620_scatter_pd_vs_npl_20260308.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260308_201543_scatter_nco_vs_npl_20260308.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/Peers/Bank_Performance_Dashboard_20260308_201543_scatter_pd_vs_npl_20260308.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/output/PowerBI_Setup.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/report_generator.py" beforeDir="false" afterPath="$PROJECT_DIR$/report_generator.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "customColor": "",
+  "associatedIndex": 3
+}]]></component>
+  <component name="ProjectId" id="3AhfVXkDsMhCAqHoKDvDYXD3Y8i" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.MSPBNA_CR_Normalized.executor": "Run",
+    "RunOnceActivity.MCP Project settings loaded": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
+    "git-widget-placeholder": "main",
+    "junie.onboarding.icon.badge.shown": "true",
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
+    "to.speed.mode.migration.done": "true"
+  }
+}]]></component>
+  <component name="RunManager">
+    <configuration name="MSPBNA_CR_Normalized" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="CR_PEERS_JP" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/MSPBNA_CR_Normalized.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Python.MSPBNA_CR_Normalized" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-2653e85de345-6d6dccd035ac-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.31033.139" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="719b80cb-459f-4b71-aeb0-98da196baf3b" name="Changes" comment="" />
+      <created>1773049750101</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1773049750101</updated>
+    </task>
+    <servers />
+  </component>
+</project>
