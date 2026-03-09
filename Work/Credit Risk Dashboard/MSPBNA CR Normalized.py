@@ -27,9 +27,6 @@ from scipy import stats
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as tqdm_asyncio
 
-# --- Consolidated Data Dictionary (same package) ---
-from master_data_dictionary import MasterDataDictionary, LOCAL_DERIVED_METRICS
-
 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -290,24 +287,574 @@ FDIC_FIELDS_TO_FETCH = [
 ]
 
 
+FDIC_FIELD_DESCRIPTIONS = {
+    # Key Balance Sheet & Income Statement
+    "ASSET":    {"short": "Total Assets", "long": "Total assets held by the institution."},
+    "DEP":      {"short": "Total Deposits", "long": "Total deposits held by the institution."},
+    "LIAB":     {"short": "Total Liabilities", "long": "Total liabilities of the institution."},
+    "EQ":       {"short": "Total Bank Equity Capital", "long": "Total equity capital of the institution."},
 
-# ==================================================================================
-#  MASTER DATA DICTIONARY (replaces hardcoded FDIC_FIELD_DESCRIPTIONS)
-# ==================================================================================
-# Single instance — lives in the same package as master_data_dictionary.py.
-# Tier 1: Federal Reserve MDRM CSV | Tier 2: FDIC API | Tier 3: Local/Derived
-_master_dict = MasterDataDictionary(
-    cache_dir=os.path.join(script_dir, ".data_dictionary_cache")
-)
+    # Raw Balance Sheet Series (RESTORED)
+    "RCFD2170": {"short": "Total Assets (Raw)", "long": "Total assets - raw RCFD series."},
+    "RCFD2948": {"short": "Total Liabilities (Raw)", "long": "Total liabilities - raw RCFD series."},
+    "RCFD3210": {"short": "Total Equity Capital (Raw)", "long": "Total equity capital - raw RCFD series."},
+    "RCFD2200": {"short": "Total Deposits (Raw)", "long": "Total deposits - raw RCFD series."},
+    "RCFD1400": {"short": "Gross Loans (Raw)", "long": "Gross loans and leases - raw RCFD series."},
+    "RCFD3123": {"short": "Allowance for Loan Losses (Raw)", "long": "Allowance for loan and lease losses - raw RCFD series."},
+
+    # Liquidity Components (RESTORED)
+    "RCFD0010": {"short": "Cash & Due From Banks", "long": "Cash and balances due from depository institutions."},
+    "RCFD0081": {"short": "Fed Funds Sold", "long": "Federal funds sold and securities purchased under agreements to resell."},
+    "RCFD1754": {"short": "HTM Securities", "long": "Held-to-maturity securities at amortized cost."},
+    "RCFD1773": {"short": "AFS Securities", "long": "Available-for-sale securities at fair value."},
+    "RCFD3545": {"short": "Trading Assets", "long": "Trading assets."},
+
+    # Unused Commitments (RESTORED)
+    "RCFD3423": {"short": "Unused Commitments", "long": "Total unused commitments."},
+    "RCFD3814": {"short": "Unused Credit Card Lines", "long": "Unused credit card lines."},
+    "RCFD6550": {"short": "Unused CRE Commitments", "long": "Unused commercial real estate loan commitments."},
+
+    # Raw Income Statement (RESTORED)
+    "RIAD4340": {"short": "Net Income (Raw)", "long": "Net income - raw RIAD series."},
+    "RIAD4107": {"short": "Total Interest Income (Raw)", "long": "Total interest income - raw RIAD series."},
+    "RIAD4073": {"short": "Total Interest Expense (Raw)", "long": "Total interest expense - raw RIAD series."},
+    "RIAD4079": {"short": "Total Noninterest Income (Raw)", "long": "Total noninterest income - raw RIAD series."},
+    "RIAD4093": {"short": "Total Noninterest Expense (Raw)", "long": "Total noninterest expense - raw RIAD series."},
+    "RIAD4301": {"short": "Retained Earnings (Raw)", "long": "Retained earnings - raw RIAD series."},
+    "RIAD4010": {"short": "Interest Income on Loans (Raw)", "long": "Interest and fee income on loans - raw RIAD series."},
+    "RIAD4115": {"short": "Interest Expense on Deposits (Raw)", "long": "Interest expense on deposits - raw RIAD series."},
+    "RIAD4608": {"short": "Total Charge-Offs (Raw)", "long": "Total charge-offs on loans and leases - raw RIAD series."},
+    "RIAD4609": {"short": "Total Recoveries (Raw)", "long": "Total recoveries on loans and leases - raw RIAD series."},
+
+    # Agricultural Exclusion (NEW)
+    "RIAD4635": {"short": "Ag Charge-Offs", "long": "Charge-offs on agricultural loans."},
+    "RIAD4645": {"short": "Ag Recoveries", "long": "Recoveries on agricultural loans."},
+    "RCFD5341": {"short": "Ag Nonaccrual", "long": "Nonaccrual agricultural loans."},
+
+    # Foreign/Banks Exclusion (NEW)
+    "RCFD2081": {"short": "Foreign Gov Loans", "long": "Loans to foreign governments and official institutions."},
+    "RCFD2005": {"short": "Loans to Banks", "long": "Loans to depository institutions."},
+
+    # C&I NCO Proxy
+    "RIAD4638": {"short": "C&I NCOs (Total)", "long": "Net charge-offs on commercial and industrial loans."},
+
+    # Derived Liquidity Metrics (NEW)
+    "Liquid_Assets": {"short": "Liquid Assets", "long": "Cash + Fed Funds Sold + AFS Securities."},
+    "Liquidity_Ratio": {"short": "Liquidity Ratio", "long": "Liquid Assets / Total Assets."},
+    "HQLA": {"short": "High Quality Liquid Assets", "long": "Cash + Fed Funds Sold + HTM Securities + AFS Securities."},
+    "HQLA_Ratio": {"short": "HQLA Ratio", "long": "High Quality Liquid Assets / Total Assets."},
+    "Cash_to_Assets": {"short": "Cash to Assets", "long": "Cash and balances due from depository institutions / Total Assets."},
+    "Securities_to_Assets": {"short": "Securities to Assets", "long": "(HTM + AFS Securities) / Total Assets."},
+    "Loans_to_Deposits": {"short": "Loans to Deposits", "long": "Gross Loans / Total Deposits."},
+
+    # Capital Ratios (NEW)
+    "Equity_to_Assets": {"short": "Equity to Assets", "long": "Total Equity Capital / Total Assets."},
+    "Leverage_Ratio": {"short": "Leverage Ratio (Raw)", "long": "Total Assets / Total Equity Capital."},
+
+    # Raw Profitability (NEW - backup for FDIC derived)
+    "ROA_Raw": {"short": "ROA (Raw)", "long": "Return on Assets calculated from raw RIAD series (annualized)."},
+    "ROE_Raw": {"short": "ROE (Raw)", "long": "Return on Equity calculated from raw RIAD series (annualized)."},
+    "NIM_Raw": {"short": "Net Interest Margin (Raw)", "long": "Net Interest Margin calculated from raw RIAD series (annualized)."},
+    "Efficiency_Ratio_Raw": {"short": "Efficiency Ratio (Raw)", "long": "Noninterest Expense / (Noninterest Income + Net Interest Income)."},
+    "Yield_on_Loans_Raw": {"short": "Yield on Loans (Raw)", "long": "Interest income on loans (annualized) / Gross Loans."},
+    "Cost_of_Deposits_Raw": {"short": "Cost of Deposits (Raw)", "long": "Interest expense on deposits (annualized) / Total Deposits."},
+    "Unused_Commitment_Ratio": {"short": "Unused Commitment Ratio", "long": "Unused Commitments / Gross Loans."},
+
+    "MUTUAL":       {"short": "Ownership Type", "long": "A non-stock institution, or mutual institution, is owned and controlled solely by its depositors. A mutual does not issue capital stock. (1=Yes, a mutual) An institution which sells stock to raise capital is called a stock institution. It is owned by the shareholders who benefit from profits earned by the institution. (0=No, not a mutual.)"},
+    "RWA":       {"short": "Total Risk Weighted Assets", "long": "Total risk-weighted assets calculated under the standardized approach. (Schedule RC-R, Part II, item 31)"},
+    "LNLS":     {"short": "Gross Loans & Leases", "long": "Total loans and leases, gross, before deducting the allowance for loan and lease losses."},
+    "LNATRES":  {"short": "Loan Loss Allowance (no OBS)", "long": "Allowance for Loan and Lease Losses without OBS."},
+    "AOBS": {"short": "Allowance for Off-Balance Sheet Exposures", "long": "Allowance for Credit Losses on Off-Balance Sheet Credit Exposures."},
+    "NONIIAY":  {"short": "Noninterest Income (YTD)", "long": "Total noninterest income, year-to-date."},
+    "ELNATRY":  {"short": "Noninterest Expense (YTD)", "long": "Total noninterest expense, year-to-date."},
+    "EINTEXP":  {"short": "Interest Expense (YTD)", "long": "Total interest expense, year-to-date."},
+    "Total_ACL":{"short": "Total Allowance for Credit Losses", "long": "Sum of the allowance for on-balance-sheet loans and off-balance-sheet credit exposures."},
+    "LNREOTH":  {"short": "Income-Prod. CRE Bal", "long": "Loans Secured by Other Nonfarm Nonresidential Properties (Income-Producing)."},
 
 
-def _get_metric_short_name(code: str) -> str:
-    """Quick helper: resolve a metric code to its short display name."""
-    result = _master_dict.lookup_metric(code)
-    if result["Source_of_Truth"] == "Not Found":
-        return code
-    return result["Metric_Name"]
+    # Key Ratios & Capital
+    "ROA":      {"short": "ROA", "long": "Return on Assets, annualized."},
+    "ROE":      {"short": "ROE", "long": "Return on Equity, annualized."},
+    "NIMY":     {"short": "Net Interest Margin", "long": "Net Interest Margin, annualized, year-to-date."},
+    "EEFFR":    {"short": "Efficiency Ratio", "long": "Efficiency Ratio."},
+    "RBCT1CER": {"short": "Common Equity Tier 1 Capital Ratio", "long": "Common Equity Tier 1 Capital Ratio."},
+    # Capital
+    "RBCT2": {"short": "Tier 2 Capital", "long": "Tier 2 risk-based capital including qualifying allowances for credit losses."},
+    "RB2LNRES": {"short": "Total Loan Loss Allowance", "long": "( YTD, $ ) Loan Loss Allowance Included in Tier 2 Capital"},
+    "RBCRWAJ": {"short": "Total Risk-Based Capital Ratio", "long": "Total risk-based capital (Tier 1 + Tier 2)."},
+    "RWAJ": {"short": "RWA", "long": "Risk Weighted Assets"},
+    "RBC1RWAJ": {"short": "Tier 1 Capital Ratio", "long": "Tier 1 risk-based capital."},
+    "RBCT1J": {"short": "Tier 1 Capital", "long": "Tier 1 risk-based capital."},
+    "EQCS": {"short": "Common Stock", "long": "Common stock par value and paid-in capital."},
+    "EQSUR": {"short": "EQSUR", "long": "EQSUR (exclude all EQSUR related to preferred stock)."},
+    "EQUP": {"short": "Retained Earnings", "long": "Retained earnings."},
+    "LEVRATIO": {"short": "Tier 1 Leverage Ratio", "long": "Tier 1 capital as a percentage of average total assets. (Schedule RC-R, Part I, item 31)"},
+    "CET1R": {"short": "Common Equity Tier 1 Capital Ratio", "long": "CET1 capital as a percentage of risk-weighted assets. (Schedule RC-R, Part I, item 28)"},
+    "EQCCOMPI": {"short": "Accumulated Other Comprehensive Income", "long": "Accumulated other comprehensive income (can be negative)."},
+    "EQO": {"short": "Other Equity Capital Components", "long": "Other equity capital components."},
+    "EQPP": {"short": "Perpetual Preferred Stock", "long": "Perpetual preferred stock and related EQSUR."},
 
+
+    "NTLNLS":   {"short": "Total Net Charge-Offs (YTD)", "long": "Total net charge-offs on loans and leases, year-to-date."},
+    "P3LNLS":   {"short": "Total Loans PD 30-89 Days", "long": "Total loans and leases 30-89 days past due."},
+    "P9LNLS":   {"short": "Total Loans PD 90+ Days", "long": "Total loans and leases 90 or more days past due."},
+    # Additional derived metrics
+    "Total_Capital": {"short": "Total Capital", "long": "Total risk-based capital available for regulatory purposes."},
+    "Common_Stock_Pct": {"short": "Common Stock %", "long": "Common stock as a percentage of total equity capital."},
+    "EQSUR_Pct": {"short": "EQSUR %", "long": "EQSUR as a percentage of total equity capital."},
+    "Retained_Earnings_Pct": {"short": "Retained Earnings %", "long": "Retained earnings (net of EQCCOMPI) as a percentage of total equity capital."},
+    "Preferred_Stock_Pct": {"short": "Preferred Stock %", "long": "Perpetual preferred stock as a percentage of total equity capital."},
+    "CI_to_Capital_Risk": {"short": "C&I / Total Capital", "long": "Commercial & Industrial loans as a percentage of total capital."},
+
+    # TTM Capital Composition
+    "TTM_Common_Stock_Pct": {"short": "TTM Common Stock %", "long": "Trailing 12-month average common stock percentage of total equity."},
+    "TTM_EQSUR_Pct": {"short": "TTM EQSUR %", "long": "Trailing 12-month average EQSUR percentage of total equity."},
+    "TTM_Retained_Earnings_Pct": {"short": "TTM Retained Earnings %", "long": "Trailing 12-month average retained earnings percentage of total equity."},
+    "TTM_Preferred_Stock_Pct": {"short": "TTM Preferred Stock %", "long": "Trailing 12-month average preferred stock percentage of total equity."},
+    # Asset Quality - Top of House
+    "NCLNLS":   {"short": "Total Noncurrent Loans", "long": "Total loans and leases past due 90 days or more plus nonaccrual loans."},
+
+    # ===== DERIVED METRICS (MSPBNA V6 PRIVATE BANK VIEW) =====
+
+    # --- 1. BANK LEVEL PROFITABILITY & COVERAGE ---
+    "Cost_of_Funds": {"short": "Cost of Funds", "long": "Annualized cost of interest-bearing liabilities (Quarterly Interest Expense * 4 / Average Interest-Bearing Liabilities)."},
+    "Allowance_to_Gross_Loans_Rate": {"short": "ACL / Total Loans", "long": "Total Allowance for Credit Losses as a percentage of Total Gross Loans."},
+    "Risk_Adj_Allowance_Coverage": {"short": "ACL / (Loans - SBL)", "long": "Risk-Adjusted Coverage: Total Allowance divided by (Total Loans minus Securities-Based Lending). Excludes SBL as it is fully collateralized by marketable securities and requires minimal reserves."},
+    "Nonaccrual_to_Gross_Loans_Rate": {"short": "Nonaccrual / Loans", "long": "Total nonaccrual loans as a percentage of total gross loans."},
+    "TTM_NCO_Rate": {"short": "Total NCO Rate", "long": "Trailing 12-Month sum of Net Charge-Offs as a percentage of TTM Average Gross Loans."},
+
+    # --- 2. LOAN COMPOSITION (PORTFOLIO MIX) ---
+    "SBL_Composition": {"short": "SBL %", "long": "Securities-Based Lending (Loans for purchasing or carrying securities) as a % of Total Loans."},
+    "Fund_Finance_Composition": {"short": "Fund Finance %", "long": "Loans to Nondepository Financial Institutions (PE/VC Capital Call Lines) as a % of Total Loans."},
+    "Wealth_Resi_Composition": {"short": "Wealth Resi %", "long": "Wealth Residential (Jumbo 1-4 Family First Liens + HELOCs) as a % of Total Loans."},
+    "Corp_CI_Composition": {"short": "Corp C&I %", "long": "Traditional Commercial & Industrial loans to operating companies as a % of Total Loans."},
+    "CRE_OO_Composition": {"short": "CRE Owner-Occ %", "long": "Owner-Occupied Nonfarm Nonresidential CRE (Business Cash Flow dependent) as a % of Total Loans."},
+    "CRE_Investment_Composition": {"short": "CRE Invest. %", "long": "Investment CRE (Construction, Multifamily, Non-OO Nonfarm) as a % of Total Loans."},
+    "Consumer_Auto_Composition": {"short": "Auto %", "long": "Automobile loans as a % of Total Loans."},
+    "Consumer_Other_Composition": {"short": "Cons. Other %", "long": "Other Consumer loans (Credit Cards, Unsecured, Other Revolving) as a % of Total Loans."},
+
+    # --- 3. SEGMENT RISK: SECURITIES BASED LENDING (SBL) ---
+    "SBL_TTM_NCO_Rate": {"short": "SBL NCO Rate", "long": "Net Charge-offs for SBL (Estimated/Allocated from All Other Loans) as a % of SBL Loans."},
+    "SBL_TTM_PD30_Rate": {"short": "SBL PD 30-89", "long": "Past Due 30-89 Days for SBL (Proxy: All Other Loans) as a % of SBL Loans."},
+    "SBL_NA_Rate": {"short": "SBL Nonaccrual", "long": "Nonaccrual Rate for SBL (Proxy: All Other Loans)."},
+
+    # --- 4. SEGMENT RISK: FUND FINANCE ---
+    "Fund_Finance_TTM_PD30_Rate": {"short": "Fund Fin. PD 30-89", "long": "Past Due 30-89 Days for Nondepository Fin. Institutions (Memo Item)."},
+    "Fund_Finance_NA_Rate": {"short": "Fund Fin. Nonaccrual", "long": "Nonaccrual Rate for Nondepository Fin. Institutions (Memo Item)."},
+
+    # --- 5. SEGMENT RISK: WEALTH RESIDENTIAL ---
+    "Wealth_Resi_TTM_NCO_Rate": {"short": "Wealth Resi NCOs", "long": "Net Charge-offs for 1-4 Family First Liens & HELOCs as a % of Avg Segment Loans."},
+    "Wealth_Resi_TTM_PD30_Rate": {"short": "Wealth Resi PD 30-89", "long": "Past Due 30-89 Days for 1-4 Family First Liens & HELOCs."},
+    "Wealth_Resi_NA_Rate": {"short": "Wealth Resi Nonaccrual", "long": "Nonaccrual Rate for 1-4 Family First Liens & HELOCs."},
+
+    # --- 6. SEGMENT RISK: COMMERCIAL & INDUSTRIAL ---
+    "Corp_CI_TTM_NCO_Rate": {"short": "C&I NCO Rate", "long": "Net Charge-offs for C&I Loans as a % of Avg C&I Loans."},
+    "Corp_CI_TTM_PD30_Rate": {"short": "C&I PD 30-89", "long": "Past Due 30-89 Days for C&I Loans."},
+    "Corp_CI_NA_Rate": {"short": "C&I Nonaccrual", "long": "Nonaccrual Rate for C&I Loans."},
+
+    # --- 7. SEGMENT RISK: CRE (OWNER OCCUPIED) ---
+    "CRE_OO_TTM_NCO_Rate": {"short": "CRE OO NCO Rate", "long": "Net Charge-offs for Owner-Occupied CRE as a % of Avg OO CRE Loans."},
+    "CRE_OO_TTM_PD30_Rate": {"short": "CRE OO PD 30-89", "long": "Past Due 30-89 Days for Owner-Occupied CRE."},
+    "CRE_OO_NA_Rate": {"short": "CRE OO Nonaccrual", "long": "Nonaccrual Rate for Owner-Occupied CRE."},
+
+    # --- 8. SEGMENT RISK: CRE (INVESTMENT) ---
+    "CRE_Investment_TTM_NCO_Rate": {"short": "CRE Inv. NCO Rate", "long": "Net Charge-offs for Investment CRE (Constr/Multi/Non-OO) as a % of Avg Inv. CRE Loans."},
+    "CRE_Investment_TTM_PD30_Rate": {"short": "CRE Inv. PD 30-89", "long": "Past Due 30-89 Days for Investment CRE."},
+    "CRE_Investment_NA_Rate": {"short": "CRE Inv. Nonaccrual", "long": "Nonaccrual Rate for Investment CRE."},
+    "CRE_Concentration_Capital_Risk": {"short": "Inv. CRE / Capital", "long": "Total Investment CRE Loans (Construction + Multifamily + Non-OO) as a percentage of Tier 1 Capital + ACL. (Proxy for Reg Concentration)."},
+
+    # --- 9. SEGMENT RISK: CONSUMER (AUTO & OTHER) ---
+    "Consumer_Auto_TTM_NCO_Rate": {"short": "Auto NCO Rate", "long": "Net Charge-offs for Auto Loans as a % of Avg Auto Loans."},
+    "Consumer_Other_TTM_NCO_Rate": {"short": "Cons. Other NCOs", "long": "Net Charge-offs for Credit Cards & Other Consumer Loans as a % of Avg Segment Loans."},
+    # --- 10. SEGMENT GROWTH METRICS (TTM / YEAR-OVER-YEAR) ---
+    "Total_Loan_Growth_TTM": {"short": "Total Loan Growth", "long": "Trailing 12-Month (Year-over-Year) growth rate of Total Gross Loans."},
+    "SBL_Growth_TTM": {"short": "SBL Growth", "long": "TTM growth rate of the Securities-Based Lending portfolio."},
+    "Fund_Finance_Growth_TTM": {"short": "Fund Finance Growth", "long": "TTM growth rate of Loans to Nondepository Financial Institutions."},
+    "Wealth_Resi_Growth_TTM": {"short": "Wealth Resi Growth", "long": "TTM growth rate of the Wealth Residential portfolio (1-4 Family First Liens + HELOCs)."},
+    "Corp_CI_Growth_TTM": {"short": "C&I Growth", "long": "TTM growth rate of the Commercial & Industrial portfolio."},
+    "CRE_OO_Growth_TTM": {"short": "CRE OO Growth", "long": "TTM growth rate of Owner-Occupied Commercial Real Estate."},
+    "CRE_Investment_Growth_TTM": {"short": "CRE Inv. Growth", "long": "TTM growth rate of Investment CRE (Construction + Multifamily + Non-OO)."},
+    "Consumer_Auto_Growth_TTM": {"short": "Auto Growth", "long": "TTM growth rate of the Automobile Loan portfolio."},
+    "Consumer_Other_Growth_TTM": {"short": "Cons. Other Growth", "long": "TTM growth rate of Other Consumer Loans (Credit Cards + Unsecured)."},
+
+    # ===== LOAN BALANCES =====
+    "LNCI":     {"short": "C&I Loan Balances", "long": "Commercial and Industrial Loans."},
+
+    "LNRECONS": {"short": "Construction & Dev Loan Bal", "long": "Construction and Land Development Loans."},
+    "LNREMULT": {"short": "Multifamily CRE Loan Bal", "long": "Loans Secured by Multifamily (5 or more) Residential Properties."},
+    "LNRENROW": {"short": "Nonfarm CRE Owner-Occ Bal", "long": "Loans Secured by Nonfarm Nonresidential Properties (Owner-Occupied)."},
+    "LNREAG":   {"short": "Farmland Loan Bal", "long": "Loans Secured by Farmland."},
+    "LNRERES":  {"short": "1-4 Family Resi Loan Bal", "long": "Loans Secured by 1-4 Family Residential Properties."},
+    "LNRELOC":  {"short": "HELOC Balances", "long": "Home Equity Lines of Credit."},
+    "LNCON":    {"short": "Consumer Loan Balances", "long": "Loans to Individuals for Household, Family, and Other Personal Expenditures."},
+    "LNCRCD":   {"short": "Credit Card Loan Balances", "long": "Credit Card Loans."},
+    "LNAUTO":   {"short": "Auto Loan Balances", "long": "Automobile Loans."},
+    "LNOTHER":  {"short": "Other Loan Balances", "long": "Other Loans."},
+    "LS":       {"short": "Lease Balances", "long": "Lease Financing Receivables."},
+    "LNAG":     {"short": "Agricultural Loan Balances", "long": "Agricultural Loans."},
+
+    # ===== NET CHARGE-OFFS (YTD) BY CATEGORY =====
+    "NTCI":     {"short": "C&I NCOs", "long": "Net Charge-Offs on Commercial and Industrial Loans."},
+    "NTRECONS": {"short": "Construction & Dev NCOs", "long": "Net Charge-Offs on Construction and Land Development Loans."},
+    "NTREMULT": {"short": "Multifamily CRE NCOs", "long": "Net Charge-Offs on Loans Secured by Multifamily Residential Properties."},
+    "NTLSNFOO": {"short": "Nonfarm CRE Owner-Occ NCOs", "long": "Net Charge-Offs on Loans Secured by Nonfarm Nonresidential Properties (Owner-Occupied)."},
+    "NTREAG":   {"short": "Farmland NCOs", "long": "Net Charge-Offs on Loans Secured by Farmland."},
+    "NTRERES":  {"short": "1-4 Family Resi NCOs", "long": "Net Charge-Offs on Loans Secured by 1-4 Family Residential Properties."},
+    "NTRELOC":  {"short": "HELOC NCOs", "long": "Net Charge-Offs on Home Equity Lines of Credit."},
+    "NTCON":    {"short": "Consumer NCOs", "long": "Net Charge-Offs on Loans to Individuals."},
+    "NTCRCD":   {"short": "Credit Card NCOs", "long": "Net Charge-Offs on Credit Card Loans."},
+    "NTAUTO":   {"short": "Auto Loan NCOs", "long": "Net Charge-Offs on Automobile Loans."},
+    "NTLS":     {"short": "Lease NCOs", "long": "Net Charge-Offs on Leases."},
+    "NTOTHER":  {"short": "Other Loan NCOs", "long": "Net Charge-Offs on Other Loans."},
+    "NTAG":     {"short": "Agricultural NCOs", "long": "Net Charge-Offs on Agricultural Loans."},
+
+    # ===== PAST DUE 30-89 DAYS BY CATEGORY =====
+    "P3CI":     {"short": "C&I PD 30-89", "long": "Commercial and Industrial Loans 30-89 Days Past Due."},
+    "P3RENROW": {"short": "1-4 Fam CRE Non-Owner PD 30-89", "long": "Loans Secured by 1-4 Family Residential (Non-owner Occupied) 30-89 Days Past Due."},
+    "P3RECONS": {"short": "Construction PD 30-89", "long": "Construction and Land Development Loans 30-89 Days Past Due."},
+    "P3LREMUL": {"short": "Multifamily PD 30-89", "long": "Loans Secured by Multifamily Residential Properties 30-89 Days Past Due."},
+    "P3LRENRS": {"short": "Nonfarm Nonres Income CRE 30-89", "long": "Loans Secured by Multifamily Residential Properties 30-89 Days Past Due."},
+    "P3RENROT": {"short": "Nonfarm CRE Owner-Occ PD 30-89", "long": "Loans Secured by Nonfarm Nonresidential (Owner-Occupied) 30-89 Days Past Due."},
+    "P3REAG":   {"short": "Farmland PD 30-89", "long": "Loans Secured by Farmland 30-89 Days Past Due."},
+    "P3RERES":  {"short": "1-4 Family Resi PD 30-89", "long": "Loans Secured by 1-4 Family Residential Properties 30-89 Days Past Due."},
+    "P3RELOC":  {"short": "HELOC PD 30-89", "long": "Home Equity Lines of Credit 30-89 Days Past Due."},
+    "P3CON":    {"short": "Consumer PD 30-89", "long": "Loans to Individuals 30-89 Days Past Due."},
+    "P3CRCD":   {"short": "Credit Card PD 30-89", "long": "Credit Card Loans 30-89 Days Past Due."},
+    "P3AUTO":   {"short": "Auto PD 30-89", "long": "Automobile Loans 30-89 Days Past Due."},
+    "P3OTHLN":  {"short": "Other Loans PD 30-89", "long": "Other Loans 30-89 Days Past Due."},
+    "P3LS":     {"short": "Leases PD 30-89", "long": "Leases 30-89 Days Past Due."},
+    "P3AG":     {"short": "Agricultural PD 30-89", "long": "Agricultural Loans 30-89 Days Past Due."},
+
+    # ===== PAST DUE 90+ DAYS BY CATEGORY =====
+    "P9CI":     {"short": "C&I PD 90+", "long": "Commercial and Industrial Loans 90+ Days Past Due."},
+    "P9RENROW": {"short": "1-4 Fam CRE Non-Owner PD 90+", "long": "Loans Secured by 1-4 Family Residential (Non-owner Occupied) 90+ Days Past Due."},
+    "P9RECONS": {"short": "Construction PD 90+", "long": "Construction and Land Development Loans 90+ Days Past Due."},
+    "P9REMULT": {"short": "Multifamily PD 90+", "long": "Loans Secured by Multifamily Residential Properties 90+ Days Past Due."},
+    "P9RENROT": {"short": "Nonfarm CRE Owner-Occ PD 90+", "long": "Loans Secured by Nonfarm Nonresidential (Owner-Occupied) 90+ Days Past Due."},
+    "P9RENRES": {"short": "Nonfarm CRE Owner-Occ PD 90+", "long": "Loans Secured by Nonfarm Nonresidential (Income Producing) 90+ Days Past Due."},
+    "P9REAG":   {"short": "Farmland PD 90+", "long": "Loans Secured by Farmland 90+ Days Past Due."},
+    "P9RERES":  {"short": "1-4 Family Resi PD 90+", "long": "Loans Secured by 1-4 Family Residential Properties 90+ Days Past Due."},
+    "P9RELOC":  {"short": "HELOC PD 90+", "long": "Home Equity Lines of Credit 90+ Days Past Due."},
+    "P9CON":    {"short": "Consumer PD 90+", "long": "Loans to Individuals 90+ Days Past Due."},
+    "P9CRCD":   {"short": "Credit Card PD 90+", "long": "Credit Card Loans 90+ Days Past Due."},
+    "P9AUTO":   {"short": "Auto PD 90+", "long": "Automobile Loans 90+ Days Past Due."},
+    "P9OTHLN":  {"short": "Other Loans PD 90+", "long": "Other Loans 90+ Days Past Due."},
+    "P9LS":     {"short": "Leases PD 90+", "long": "Leases 90+ Days Past Due."},
+    "P9AG":     {"short": "Agricultural PD 90+", "long": "Agricultural Loans 90+ Days Past Due."},
+
+    # ===== NONACCRUAL BY CATEGORY =====
+    "NACI":     {"short": "C&I Nonaccrual", "long": "Commercial and Industrial Loans on Nonaccrual Status."},
+    "NALRERES": {"short": "1-4 REsi Nonaccrual", "long": "Loans Secured by 1-4 Family Residential (Non-owner Occupied) on Nonaccrual Status."},
+    "NARECONS": {"short": "Construction Nonaccrual", "long": "Construction and Land Development Loans on Nonaccrual Status."},
+    "NAREMULT": {"short": "Multifamily Nonaccrual", "long": "Loans Secured by Multifamily Residential Properties on Nonaccrual Status."},
+    "NARENROW": {"short": "Owner-Occupied CRE Owner-Occ Nonaccrual", "long": "Loans Secured by Nonfarm Nonresidential (Owner-Occupied) on Nonaccrual Status."},
+    "NARENRES": {"short": "Nonfarm Nonres Income CRE Nonaccrual", "long": "Loans Secured by Nonfarm Nonresidential (Income Producing) on Nonaccrual Status."},
+    "NAREAG":   {"short": "Farmland Nonaccrual", "long": "Loans Secured by Farmland on Nonaccrual Status."},
+    "NARERES":  {"short": "1-4 Family Resi Nonaccrual", "long": "Loans Secured by 1-4 Family Residential Properties on Nonaccrual Status."},
+    "NARELOC":  {"short": "HELOC Nonaccrual", "long": "Home Equity Lines of Credit on Nonaccrual Status."},
+    "NACON":    {"short": "Consumer Nonaccrual", "long": "Loans to Individuals on Nonaccrual Status."},
+    "NACRCD":   {"short": "Credit Card Nonaccrual", "long": "Credit Card Loans on Nonaccrual Status."},
+    "NAAUTO":   {"short": "Auto Nonaccrual", "long": "Automobile Loans on Nonaccrual Status."},
+    "NAOTHLN":  {"short": "Other Loans Nonaccrual", "long": "Other Loans on Nonaccrual Status."},
+    "NALS":     {"short": "Leases Nonaccrual", "long": "Leases on Nonaccrual Status."},
+    "NAAG":     {"short": "Agricultural Nonaccrual", "long": "Agricultural Loans on Nonaccrual Status."},
+    # Allowance totals
+    "RCFD1545": {
+        "short": "Loans for purchasing/carrying securities (Consolidated)",
+        "long": "Loans for purchasing or carrying securities, including margin loans (Column A: Consolidated Bank)."
+    },
+    "RCON1545": {
+        "short": "Loans for purchasing/carrying securities (Domestic)",
+        "long": "Loans for purchasing or carrying securities, including margin loans (Column B: Domestic Offices)."
+    },
+
+    "RCFDJ454": {
+        "short": "Loans to nondepository financial institutions (Consolidated)",
+        "long": "Loans to nondepository financial institutions (Column A: Consolidated Bank)."
+    },
+    "RCONJ454": {
+        "short": "Loans to nondepository financial institutions (Domestic)",
+        "long": "Loans to nondepository financial institutions (Column B: Domestic Offices)."
+    },
+
+    # These two DO exist in your ZIP, but they are deposit-size captions (not ACL)
+    "RCONJ473": {
+        "short": "Total time deposits $100k–$250k (Domestic)",
+        "long": "Total time deposits of $100,000 through $250,000 (Domestic Offices)."
+    },
+    "RCONJ474": {
+        "short": "Total time deposits >$250k (Domestic)",
+        "long": "Total time deposits of more than $250,000 (Domestic Offices)."
+    },
+
+    # RI-C II (RIC-9 table in taxonomy): Amortized cost (Col A) and Allowance balance (Col B)
+    "RCFDJJ04": {"short": "Construction loans – Amortized cost", "long": "Amortized cost for construction loans (Column A: Amortized Cost)."},
+    "RCFDJJ05": {"short": "Commercial real estate loans – Amortized cost", "long": "Amortized cost for commercial real estate loans (Column A: Amortized Cost)."},
+    "RCFDJJ06": {"short": "Residential real estate loans – Amortized cost", "long": "Amortized cost for residential real estate loans (Column A: Amortized Cost)."},
+    "RCFDJJ07": {"short": "Commercial loans – Amortized cost", "long": "Amortized cost for commercial loans (Column A: Amortized Cost)."},
+    "RCFDJJ08": {"short": "Credit cards – Amortized cost", "long": "Amortized cost for credit cards (Column A: Amortized Cost)."},
+    "RCFDJJ09": {"short": "Other consumer loans – Amortized cost", "long": "Amortized cost for other consumer loans (Column A: Amortized Cost)."},
+    "RCFDJJ11": {"short": "Total (items 1.a–5) – Amortized cost", "long": "Amortized cost for total (sum of items 1.a. through 5) (Column A: Amortized Cost)."},
+
+    "RCFDJJ12": {"short": "Construction loans – Allowance balance", "long": "Allowance balance for construction loans (Column B: Allowance Balance)."},
+    "RCFDJJ13": {"short": "Commercial real estate loans – Allowance balance", "long": "Allowance balance for commercial real estate loans (Column B: Allowance Balance)."},
+    "RCFDJJ14": {"short": "Residential real estate loans – Allowance balance", "long": "Allowance balance for residential real estate loans (Column B: Allowance Balance)."},
+    "RCFDJJ15": {"short": "Commercial loans – Allowance balance", "long": "Allowance balance for commercial loans (Column B: Allowance Balance)."},
+    "RCFDJJ16": {"short": "Credit cards – Allowance balance", "long": "Allowance balance for credit cards (Column B: Allowance Balance)."},
+    "RCFDJJ17": {"short": "Other consumer loans – Allowance balance", "long": "Allowance balance for other consumer loans (Column B: Allowance Balance)."},
+    "RCFDJJ19": {"short": "Total (items 1.a–5) – Allowance balance", "long": "Allowance balance for total (sum of items 1.a. through 5) (Column B: Allowance Balance)."},
+
+    "RCFDJJ20": {"short": "Construction loans – ACL % of amortized cost", "long": "ACL as a percent of amortized cost for construction loans (Column C: Allowance as a percent of amortized cost)."},
+    "RCFDJJ21": {"short": "Commercial real estate loans – ACL % of amortized cost", "long": "ACL as a percent of amortized cost for commercial real estate loans (Column C: Allowance as a percent of amortized cost)."},
+    "RCFDJJ23": {"short": "Residential real estate loans – ACL % of amortized cost", "long": "ACL as a percent of amortized cost for residential real estate loans (Column C: Allowance as a percent of amortized cost)."},
+    # 1. RI-C II: Amortized Cost (Denominator)
+    # -------------------------------------------------------------------------
+    "RIC_Constr_Cost": {
+        "short": "Construction – Amortized Cost",
+        "long": "Total amortized cost of construction and land development loans (Source: JJ04)."
+    },
+    "RIC_CRE_Cost": {
+        "short": "CRE – Amortized Cost",
+        "long": "Total amortized cost of commercial real estate loans (Source: JJ05)."
+    },
+    "RIC_Resi_Cost": {
+        "short": "Residential – Amortized Cost",
+        "long": "Total amortized cost of residential real estate loans (Source: JJ06)."
+    },
+    "RIC_Comm_Cost": {
+        "short": "C&I – Amortized Cost",
+        "long": "Total amortized cost of commercial and industrial loans (Source: JJ07)."
+    },
+    "RIC_Card_Cost": {
+        "short": "Credit Card – Amortized Cost",
+        "long": "Total amortized cost of credit card loans (Source: JJ08)."
+    },
+    "RIC_OthCons_Cost": {
+        "short": "Other Consumer – Amortized Cost",
+        "long": "Total amortized cost of other consumer loans (Source: JJ09)."
+    },
+
+    # -------------------------------------------------------------------------
+    # 2. RI-C II: Allowance for Credit Losses (Numerator)
+    # -------------------------------------------------------------------------
+    "RIC_Constr_ACL": {
+        "short": "Construction – ACL Balance",
+        "long": "Allowance for credit losses allocated to construction loans (Source: JJ12)."
+    },
+    "RIC_CRE_ACL": {
+        "short": "CRE – ACL Balance",
+        "long": "Allowance for credit losses allocated to CRE loans (Source: JJ13)."
+    },
+    "RIC_Resi_ACL": {
+        "short": "Residential – ACL Balance",
+        "long": "Allowance for credit losses allocated to residential loans (Source: JJ14)."
+    },
+    "RIC_Comm_ACL": {
+        "short": "C&I – ACL Balance",
+        "long": "Allowance for credit losses allocated to C&I loans (Source: JJ15)."
+    },
+    "RIC_Card_ACL": {
+        "short": "Credit Card – ACL Balance",
+        "long": "Allowance for credit losses allocated to credit cards (Source: JJ16)."
+    },
+    "RIC_OthCons_ACL": {
+        "short": "Other Consumer – ACL Balance",
+        "long": "Allowance for credit losses allocated to other consumer loans (Source: JJ17)."
+    },
+
+    # -------------------------------------------------------------------------
+    # 3. Risk Status (Nonaccrual, Past Due) - The "Risk Stack"
+    # -------------------------------------------------------------------------
+    "RIC_CRE_Nonaccrual": {
+        "short": "CRE – Nonaccrual",
+        "long": "Nonaccrual loans secured by CRE. Uses Row-Wise Max resolution: Max(Total Reported, Sum of Subcomponents) to handle reporting differences."
+    },
+    "RIC_CRE_PD30": {
+        "short": "CRE – Past Due 30-89 Days",
+        "long": "Loans secured by CRE past due 30-89 days and still accruing."
+    },
+    "RIC_CRE_PD90": {
+        "short": "CRE – Past Due 90+ Days",
+        "long": "Loans secured by CRE past due 90+ days and still accruing."
+    },
+    # (Repeat pattern for other segments if explicit tagging is required,
+    # but the logic applies universally)
+
+    # -------------------------------------------------------------------------
+    # 4. Net Charge-Offs (TTM) - The "Velocity"
+    # -------------------------------------------------------------------------
+    "RIC_Constr_NCO_TTM": {
+        "short": "Construction – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for construction loans (Calculated from quarterly flows)."
+    },
+    "RIC_CRE_NCO_TTM": {
+        "short": "CRE – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for CRE loans. Resolves granularity differences row-by-row."
+    },
+    "RIC_Resi_NCO_TTM": {
+        "short": "Residential – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for residential loans."
+    },
+    "RIC_Comm_NCO_TTM": {
+        "short": "C&I – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for C&I loans."
+    },
+    "RIC_Card_NCO_TTM": {
+        "short": "Credit Card – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for credit cards."
+    },
+    "RIC_OthCons_NCO_TTM": {
+        "short": "Other Consumer – NCO (TTM)",
+        "long": "Trailing 12-Month Sum of Net Charge-Offs for other consumer loans."
+    },
+
+    # -------------------------------------------------------------------------
+    # 5. Advanced Risk Ratios (The "So What")
+    # -------------------------------------------------------------------------
+
+    # A. Risk-Adjusted Coverage
+    "RIC_CRE_Risk_Adj_Coverage": {
+        "short": "CRE – Risk-Adj Coverage (x)",
+        "long": "Ratio of ACL to Nonaccrual Loans. Indicates how many dollars of reserves exist for every dollar of currently bad loans. Target > 1.0x."
+    },
+    "RIC_Resi_Risk_Adj_Coverage": {
+        "short": "Residential – Risk-Adj Coverage (x)",
+        "long": "Ratio of ACL to Nonaccrual Loans for residential portfolio."
+    },
+    "RIC_Comm_Risk_Adj_Coverage": {
+        "short": "C&I – Risk-Adj Coverage (x)",
+        "long": "Ratio of ACL to Nonaccrual Loans for C&I portfolio."
+    },
+
+    # B. Burn Rate (Years of Reserves)
+    "RIC_CRE_Years_of_Reserves": {
+        "short": "CRE – Years of Reserves",
+        "long": "Theoretical duration reserves would last at current loss rates (ACL / TTM NCOs). Higher is better."
+    },
+    "RIC_Card_Years_of_Reserves": {
+        "short": "Card – Years of Reserves",
+        "long": "Theoretical duration reserves would last at current loss rates (ACL / TTM NCOs)."
+    },
+
+    # C. Mismatches (Allocation & Risk)
+    "RIC_CRE_Alloc_Mismatch": {
+        "short": "CRE – Allocation Mismatch (%)",
+        "long": "Difference between Share of Total ACL and Share of Total Loans. Positive = Over-reserved relative to volume."
+    },
+    "RIC_CRE_Risk_Mismatch": {
+        "short": "CRE – Risk Mismatch (%)",
+        "long": "Difference between Share of Total ACL and Share of Total Nonaccruals. Positive = Conservative (Reserves > Risk Share); Negative = Exposed."
+    },
+
+    # D. Standard Rates
+    "RIC_CRE_NCO_Rate": {
+        "short": "CRE – NCO Rate (TTM) %",
+        "long": "Trailing 12-Month Net Charge-Offs divided by current Amortized Cost."
+    },
+    "RIC_CRE_Nonaccrual_Rate": {
+        "short": "CRE – Nonaccrual Rate %",
+        "long": "Nonaccrual loans divided by Amortized Cost."
+    },
+    "RIC_CRE_Delinquency_Rate": {
+        "short": "CRE – Total Delinquency %",
+        "long": "Total Past Due (30-89 days + 90+ days) divided by Amortized Cost."
+    },
+
+    # =========================================================================
+    # NORMALIZED METRICS (Ex-Commercial/Ex-Consumer View)
+    # =========================================================================
+    # These metrics strip out Mass Market Consumer (Credit Cards, Auto, Ag) and
+    # Commercial Banking (C&I, NDFI, ADC) segments to create apples-to-apples
+    # comparison for private banking focused on SBL, Wealth Resi, and Fund Finance.
+
+    # --- Exclusion Balances ---
+    "Excl_CI_Balance": {
+        "short": "Excluded C&I Balance",
+        "long": "Domestic Commercial & Industrial loans excluded from normalized view (RCON1763)."
+    },
+    "Excl_NDFI_Balance": {
+        "short": "Excluded NDFI Balance",
+        "long": "Loans to Nondepository Financial Institutions excluded from normalized view (RCONJ454)."
+    },
+    "Excl_ADC_Balance": {
+        "short": "Excluded ADC Balance",
+        "long": "Construction, land development and other land loans excluded from normalized view (RCON1420)."
+    },
+    "Excl_CreditCard_Balance": {
+        "short": "Excluded Credit Card Balance",
+        "long": "Credit Card loans excluded from normalized view (RCFDB538)."
+    },
+    "Excl_Auto_Balance": {
+        "short": "Excluded Auto Balance",
+        "long": "Auto loans excluded from normalized view (RCFDK137)."
+    },
+    "Excl_Ag_Balance": {
+        "short": "Excluded Ag Balance",
+        "long": "Agricultural loans excluded from normalized view (RCFD1590)."
+    },
+
+    # --- Total Exclusions ---
+    "Excluded_Balance": {
+        "short": "Total Excluded Balance",
+        "long": "Sum of all loan segments excluded from normalized peer comparison (C&I + NDFI + ADC + Credit Cards + Auto + Ag)."
+    },
+    "Excluded_NCO": {
+        "short": "Total Excluded NCOs",
+        "long": "Sum of net charge-offs from excluded segments (used to normalize NCO rate)."
+    },
+    "Excluded_Nonaccrual": {
+        "short": "Total Excluded Nonaccruals",
+        "long": "Sum of nonaccrual balances from excluded segments (used to normalize NA rate)."
+    },
+
+    # --- Normalized Master Metrics ---
+    "Norm_Gross_Loans": {
+        "short": "Normalized Gross Loans",
+        "long": "Gross Loans minus Excluded Balance. Represents the 'Private Bank comparable' loan book."
+    },
+    "Norm_Total_NCO": {
+        "short": "Normalized NCOs (TTM)",
+        "long": "Total NCOs minus Excluded NCOs. Trailing 12-month net charge-offs on the normalized portfolio."
+    },
+    "Norm_Total_Nonaccrual": {
+        "short": "Normalized Nonaccruals",
+        "long": "Total Nonaccruals minus Excluded Nonaccruals. Nonaccrual balance on the normalized portfolio."
+    },
+
+    # --- Normalized Ratios ---
+    "Norm_NCO_Rate": {
+        "short": "Normalized NCO Rate",
+        "long": "Norm_Total_NCO / Norm_Gross_Loans. NCO rate on the private bank comparable portfolio."
+    },
+    "Norm_Nonaccrual_Rate": {
+        "short": "Normalized Nonaccrual Rate",
+        "long": "Norm_Total_Nonaccrual / Norm_Gross_Loans. Nonaccrual rate on the private bank comparable portfolio."
+    },
+    "Norm_Delinquency_Rate": {
+        "short": "Normalized Delinquency Rate",
+        "long": "Total delinquent loans (30-89 + 90+) on normalized portfolio divided by normalized gross loans."
+    },
+    "Norm_ACL_Coverage": {
+        "short": "Normalized ACL Coverage",
+        "long": "ACL / Norm_Gross_Loans. Reserve coverage on the private bank comparable portfolio."
+    },
+    "Norm_Loan_Yield": {
+        "short": "Normalized Loan Yield",
+        "long": "Interest Income on Loans (TTM) / Norm_Gross_Loans. Yield on the private bank comparable portfolio."
+    },
+    "Norm_Provision_Rate": {
+        "short": "Normalized Provision Rate",
+        "long": "Provision Expense (TTM) / Norm_Gross_Loans. Provision rate on the private bank comparable portfolio."
+    },
+    "Norm_Loss_Adj_Yield": {
+        "short": "Normalized Loss-Adj Yield",
+        "long": "Norm_Loan_Yield minus Norm_NCO_Rate. Risk-adjusted return after credit losses."
+    },
+    "Norm_Risk_Adj_Return": {
+        "short": "Normalized Risk-Adj Return",
+        "long": "Norm_Loan_Yield minus Norm_Nonaccrual_Rate. Return adjusted for credit risk exposure."
+    },
+}
 
 from enum import Enum
 
@@ -1487,7 +2034,6 @@ class FFIECBulkLoader:
 
         logging.info(f"      [Merge] Updated {merged_fields} target fields")
 
-        df_main = df_main.copy()  # de-fragment after sequential column assignments
         res = df_main.reset_index()
 
         ric_check_cols = ['RCFDJ466', 'RCONJ466', 'RCFDJJ04', 'RCONJJ04']
@@ -3096,7 +3642,7 @@ class BankMetricsProcessor:
         df_final['RIC_Comm_Best'] = df_final['RIC_Comm_ACL']
         df_final['RIC_CommRE_Best'] = df_final['RIC_CRE_ACL']
 
-        return df_final.copy()
+        return df_final
 
 
     # ==================================================================================
@@ -3330,7 +3876,7 @@ class BankMetricsProcessor:
 class PeerAnalyzer:
     def __init__(self, config: 'DashboardConfig'):
         self.config = config
-        self._mdd = _master_dict
+        self.metric_descriptions = FDIC_FIELD_DESCRIPTIONS.copy()
 
         # Define metric mappings for normalized peer groups
         # When use_normalized=True, these standard metrics are replaced with Norm_ versions
@@ -3359,8 +3905,7 @@ class PeerAnalyzer:
         subject_data = latest_data[latest_data["CERT"] == self.config.subject_bank_cert]
         if subject_data.empty: return pd.DataFrame()
 
-        numeric_cols = latest_data.select_dtypes(include=["number"]).columns
-        metrics_to_compare = [c for c in numeric_cols if c not in ("CERT", "REPDTE")]
+        metrics_to_compare = list(self.metric_descriptions.keys())
         comparison_list = []
 
         for metric in metrics_to_compare:
@@ -3370,7 +3915,7 @@ class PeerAnalyzer:
             subject_value = subject_data[metric].iloc[0]
             record = {
                 "Metric Code": metric,
-                "Metric Name": _get_metric_short_name(metric),
+                "Metric Name": self.metric_descriptions.get(metric, {}).get("short", metric),
                 "Your_Bank": subject_value
             }
 
@@ -3475,7 +4020,7 @@ class PeerAnalyzer:
             subject_value = subject_data[metric].iloc[0]
             record = {
                 "Metric Code": metric,
-                "Metric Name": _get_metric_short_name(metric),
+                "Metric Name": self.metric_descriptions.get(metric, {}).get("short", metric),
                 "Your_Bank": subject_value
             }
 
@@ -4294,126 +4839,10 @@ class MacroTrendAnalyzer:
 class ExcelOutputGenerator:
     """Generates the final Excel dashboard output file."""
 
-    # FFIEC 031/041 schedule patterns (Description column text matching)
-    _SCHEDULE_PATTERNS = {
-        "RC-C (Loans and Leases)": r"RC-C",
-        "RC-N (Past Due and Nonaccrual)": r"RC-N",
-        "RI-B Part I (Charge-offs and Recoveries)": r"RI-B.*(?:charge|recover)",
-        "RI-B Part II (Changes in ACL)": r"RI-B.*(?:allowance|ACL|credit loss)",
-    }
-
     def __init__(self, config: 'DashboardConfig'):
         self.config = config
-        self._mdd = _master_dict
-        self.audit_df = self._build_audit_trail()
-
-    # ------------------------------------------------------------------
-    #  Audit Trail Builder
-    # ------------------------------------------------------------------
-
-    def _build_audit_trail(self) -> pd.DataFrame:
-        """Build the Data_Dictionary_Audit ledger.
-
-        Columns: Metric_Code, Metric_Name, Description, Source_of_Truth,
-                 Is_Derived, Usage_Status
-
-        *Used in Dashboard*  — every FDIC field, FRED series, and derived
-        metric the dashboard actually fetches or computes.
-
-        *Schedule Reference (Unused)* — all remaining MDRM items from
-        FFIEC 031/041 schedules RC-C, RC-N, RI-B Part I, RI-B Part II
-        that are NOT already marked as Used.
-        """
-        rows: list[dict] = []
-        used_codes: set[str] = set()
-
-        # --- 1. FDIC fields used by the dashboard ---
-        for code in FDIC_FIELDS_TO_FETCH:
-            info = self._mdd.lookup_metric(code)
-            rows.append({
-                "Metric_Code": code,
-                "Metric_Name": info["Metric_Name"],
-                "Description": info["Description"],
-                "Source_of_Truth": info["Source_of_Truth"],
-                "Is_Derived": False,
-                "Usage_Status": "Used in Dashboard",
-            })
-            used_codes.add(code.upper())
-
-        # --- 2. FRED series used by the dashboard ---
-        for _category, series_dict in FRED_SERIES_TO_FETCH.items():
-            for fred_code, meta in series_dict.items():
-                if fred_code.upper() in used_codes:
-                    continue
-                rows.append({
-                    "Metric_Code": fred_code,
-                    "Metric_Name": meta.get("short", fred_code),
-                    "Description": meta.get("long", ""),
-                    "Source_of_Truth": "FRED (Federal Reserve Economic Data)",
-                    "Is_Derived": False,
-                    "Usage_Status": "Used in Dashboard",
-                })
-                used_codes.add(fred_code.upper())
-
-        # --- 3. Local / Derived metrics used by the dashboard ---
-        for code, meta in LOCAL_DERIVED_METRICS.items():
-            if code.upper() in used_codes:
-                continue
-            rows.append({
-                "Metric_Code": code,
-                "Metric_Name": meta.get("short", code),
-                "Description": meta.get("long", ""),
-                "Source_of_Truth": "Tier 3 — Local/Derived",
-                "Is_Derived": True,
-                "Usage_Status": "Used in Dashboard",
-            })
-            used_codes.add(code.upper())
-
-        # --- 4. MDRM Schedule Reference rows (RC-C, RC-N, RI-B) ---
-        mdrm_df = self._mdd.get_mdrm_dataframe()
-        if mdrm_df is not None and not mdrm_df.empty:
-            call_report_mask = mdrm_df["Reporting Form"].isin(
-                ["FFIEC 031", "FFIEC 041", "FFIEC 051"]
-            )
-            cr_df = mdrm_df[call_report_mask].copy()
-            desc_col = cr_df["Description"].fillna("")
-
-            for schedule_label, pattern in self._SCHEDULE_PATTERNS.items():
-                matched = cr_df[desc_col.str.contains(pattern, case=False, na=False)]
-                for _, row in matched.iterrows():
-                    mnemonic = str(row.get("Mnemonic", "")).strip()
-                    item_code = str(row.get("Item Code", "")).strip()
-                    composite = f"{mnemonic}{item_code}" if mnemonic and item_code else (mnemonic or item_code)
-                    if not composite or composite.upper() in used_codes:
-                        continue
-                    rows.append({
-                        "Metric_Code": composite,
-                        "Metric_Name": str(row.get("Item Name", composite)).strip(),
-                        "Description": str(row.get("Description", "")).strip()[:500],
-                        "Source_of_Truth": f"MDRM — {schedule_label}",
-                        "Is_Derived": False,
-                        "Usage_Status": "Schedule Reference (Unused)",
-                    })
-                    used_codes.add(composite.upper())
-
-        audit = pd.DataFrame(rows)
-        if not audit.empty:
-            # Sort: Used first, then Reference; within each group, alphabetical
-            status_order = {"Used in Dashboard": 0, "Schedule Reference (Unused)": 1}
-            audit["_sort"] = audit["Usage_Status"].map(status_order).fillna(2)
-            audit.sort_values(["_sort", "Metric_Code"], inplace=True, ignore_index=True)
-            audit.drop(columns="_sort", inplace=True)
-
-        logging.info(
-            "Audit trail built: %d Used, %d Schedule Reference.",
-            len(audit[audit["Usage_Status"] == "Used in Dashboard"]),
-            len(audit[audit["Usage_Status"] == "Schedule Reference (Unused)"]),
-        )
-        return audit
-
-    # ------------------------------------------------------------------
-    #  Excel Writer
-    # ------------------------------------------------------------------
+        self.fdic_desc_df = pd.DataFrame.from_dict(FDIC_FIELD_DESCRIPTIONS, orient='index').reset_index()
+        self.fdic_desc_df.rename(columns={'index': 'Metric Code', 'short': 'Metric Name', 'long': 'Description'}, inplace=True)
 
     def write_excel_output(self, file_path: str, **kwargs):
         """Writes all DataFrames to a single styled Excel file with multiple sheets."""
@@ -4427,57 +4856,23 @@ class ExcelOutputGenerator:
                         logging.error(f"Sheet '{sheet_name}' too large ({n_rows} rows).")
                     write_index = sheet_name in ["Latest_Peer_Snapshot", "Averages_8Q_All_Metrics", "Data_Validation_Report"]
                     df.to_excel(writer, sheet_name=sheet_name, index=write_index)
-
-            # Write the audit trail sheet
-            if not self.audit_df.empty:
-                self.audit_df.to_excel(writer, sheet_name="Data_Dictionary_Audit", index=False)
-
             logging.info("All data written, starting styling...")
-            self._style_audit_sheet(writer)
+            self._style_metric_descriptions_sheet(writer)
             self._apply_summary_styles(writer, kwargs.get("Summary_Dashboard"))
             self._apply_snapshot_styles(writer, kwargs.get("Latest_Peer_Snapshot"))
             self._apply_macro_analysis_styles(writer, kwargs.get("Macro_Analysis"))
         logging.info("Excel file written and styled successfully.")
 
-    # ------------------------------------------------------------------
-    #  Styling helpers
-    # ------------------------------------------------------------------
-
-    def _style_audit_sheet(self, writer):
-        """Format the Data_Dictionary_Audit sheet with visual row distinction."""
-        sheet_name = "Data_Dictionary_Audit"
-        if sheet_name not in writer.sheets:
-            return
+    def _style_metric_descriptions_sheet(self, writer):
+        """Styles the FDIC metric descriptions sheet."""
+        sheet_name = 'FDIC_Metric_Descriptions'
+        if sheet_name not in writer.sheets: return
 
         logging.info(f"Styling {sheet_name} sheet...")
-        ws = writer.sheets[sheet_name]
-
-        # Column widths
-        ws.column_dimensions["A"].width = 25   # Metric_Code
-        ws.column_dimensions["B"].width = 35   # Metric_Name
-        ws.column_dimensions["C"].width = 80   # Description
-        ws.column_dimensions["D"].width = 30   # Source_of_Truth
-        ws.column_dimensions["E"].width = 12   # Is_Derived
-        ws.column_dimensions["F"].width = 28   # Usage_Status
-
-        # Visual fills
-        used_fill = PatternFill(start_color="DAEEF3", end_color="DAEEF3", fill_type="solid")  # light blue
-        ref_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")   # light grey
-        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        header_font = Font(bold=True, color="FFFFFF")
-
-        # Style header row (row 1)
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", wrap_text=True)
-
-        # Style data rows: colour by Usage_Status (column F = col index 6)
-        for row_idx in range(2, ws.max_row + 1):
-            status_cell = ws.cell(row=row_idx, column=6)
-            fill = used_fill if status_cell.value == "Used in Dashboard" else ref_fill
-            for col_idx in range(1, ws.max_column + 1):
-                ws.cell(row=row_idx, column=col_idx).fill = fill
+        worksheet = writer.sheets[sheet_name]
+        worksheet.column_dimensions['A'].width = 25 # Metric Code
+        worksheet.column_dimensions['B'].width = 35 # Metric Name
+        worksheet.column_dimensions['C'].width = 80 # Description
 
     def _apply_summary_styles(self, writer, df: pd.DataFrame):
         """Applies conditional formatting to the Summary_Dashboard sheet using openpyxl."""
@@ -4790,7 +5185,7 @@ class BankPerformanceDashboard:
                     analysis_report["sparse_series"].append({
                         "field": field,
                         "coverage_pct": round(coverage_pct, 1),
-                        "description": _get_metric_short_name(field)
+                        "description": FDIC_FIELD_DESCRIPTIONS.get(field, {}).get("short", "Unknown")
                     })
                 else:
                     analysis_report["available_series"].append({
@@ -5169,7 +5564,8 @@ class BankPerformanceDashboard:
             Normalized_Comparison=norm_comp_df,  # NEW: Ex-Commercial/Ex-Consumer view
             Latest_Peer_Snapshot=snapshot_df,
             Averages_8Q_All_Metrics=avg_8q_all_metrics_df,
-            FDIC_Metadata=fdic_meta_df,
+            FDIC_Metric_Descriptions=self.output_gen.fdic_desc_df,
+            FDIC_Metadata=fdic_meta_df,                     # <<— NEW SHEET
             Macro_Analysis=powerbi_macro_df,
             FDIC_Data=proc_df_with_peers,
             FRED_Data=fred_df.reset_index(),
@@ -5419,7 +5815,7 @@ def main():
         if empty_series:
             print(f"\n❌ EMPTY FDIC SERIES ({len(empty_series)} series with no data):")
             for series in empty_series:
-                description = _get_metric_short_name(series)
+                description = FDIC_FIELD_DESCRIPTIONS.get(series, {}).get("short", "Unknown")
                 print(f"  - {series}: {description}")
         else:
             print("\n✅ All FDIC series returned data.")

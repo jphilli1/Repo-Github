@@ -71,34 +71,17 @@ def find_latest_excel_file(directory: str = "output") -> Optional[str]:
 
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from environment variables with sensible defaults."""
-    # Best-effort .env loading
-    try:
-        from dotenv import load_dotenv
-        _env = Path(__file__).parent.resolve() / ".env"
-        if _env.exists():
-            load_dotenv(_env)
-    except ImportError:
-        pass
+    """
+    Simulates loading configuration. In a real implementation, this could
+    read from a config file or environment variables.
 
-    _mspbna = os.getenv("MSPBNA_CERT")
-    _msbna = os.getenv("MSBNA_CERT")
-    if not _mspbna or not _msbna:
-        raise ValueError(
-            "MSPBNA_CERT and MSBNA_CERT environment variables are required.\n"
-            "  export MSPBNA_CERT=34221\n"
-            "  export MSBNA_CERT=32992"
-        )
-    mspbna_cert = int(_mspbna)
-    ms_combined_cert = int(os.getenv("MS_COMBINED_CERT", "88888"))
-
+    Returns:
+        Dict[str, Any]: Configuration dictionary
+    """
     return {
-        'subject_bank_cert': mspbna_cert,
-        'mspbna_cert': mspbna_cert,
-        'msbna_cert': int(_msbna),
-        'ms_combined_cert': ms_combined_cert,
-        'output_dir': os.getenv("OUTPUT_DIR", "output"),
-        'report_view': os.getenv("REPORT_VIEW", "ALL_BANKS"),
+        'subject_bank_cert': 19977,
+        'peer_bank_certs': [26876, 9396, 18221, 16068, 22953, 57919, 20234, 58647, 26610, 32541, 32172, 24045],
+        'output_dir': 'output'
     }
 
 def get_diff_class(diff_str: str) -> str:
@@ -159,7 +142,7 @@ def create_credit_deterioration_chart_v3(
             99998: '#70AD47'               # Green for selective peers
         }
         entity_names = {
-            subject_bank_cert: "MSPBNA",
+            subject_bank_cert: "IDB",
             99999: "All Peers",
             99998: "Peers (Ex. F&V)"
         }
@@ -170,7 +153,7 @@ def create_credit_deterioration_chart_v3(
             99998: '#5B9BD5'               # Blue for selective peers
         }
         entity_names = {
-            subject_bank_cert: "MSPBNA",
+            subject_bank_cert: "IDB",
             99998: "Peers (Ex. F&V)"
         }
 
@@ -441,7 +424,7 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
                 font-weight: 500;
                 color: #2c3e50;
             }}
-            .mspbna-value {{
+            .idb-value {{
                 background-color: #fff3cd;
                 font-weight: 600;
                 color: #856404;
@@ -482,18 +465,18 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
         <div class="email-container">
             <div class="header">
                 <h2>Credit Risk Metrics Comparison</h2>
-                <p>MSPBNA vs Peer Groups | Report Date: {formatted_date}</p>
+                <p>IDB vs Peer Groups Analysis | Report Date: {formatted_date}</p>
             </div>
 
             <table>
                 <thead>
                     <tr>
                         <th style="width: 30%;">Credit Metric</th>
-                        <th style="width: 12%;">MSPBNA</th>
+                        <th style="width: 12%;">IDB</th>
                         <th style="width: 12%;">All Peers</th>
-                        <th style="width: 15%;">Core PB</th>
+                        <th style="width: 15%;">Selective Peers<br><small>(Ex. Flagstar & Valley)</small></th>
                         <th style="width: 15%;">Diff vs<br>All Peers</th>
-                        <th style="width: 16%;">Diff vs<br>Core PB</th>
+                        <th style="width: 16%;">Diff vs<br>Selective Peers</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -503,16 +486,16 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
     for _, row in df.iterrows():
         # Determine styling for difference columns
         diff_all_class = get_diff_class(row['Diff vs All'])
-        diff_core_class = get_diff_class(row['Diff vs Core PB'])
+        diff_selective_class = get_diff_class(row['Diff vs Selective'])
 
         html += f"""
                     <tr>
                         <td class="metric-name">{row['Metric']}</td>
-                        <td class="mspbna-value">{row['MSPBNA']}</td>
+                        <td class="idb-value">{row['IDB']}</td>
                         <td>{row['All Peers']}</td>
-                        <td>{row['Core PB']}</td>
+                        <td>{row['Selective Peers']}</td>
                         <td class="{diff_all_class}">{row['Diff vs All']}</td>
-                        <td class="{diff_core_class}">{row['Diff vs Core PB']}</td>
+                        <td class="{diff_selective_class}">{row['Diff vs Selective']}</td>
                     </tr>
         """
 
@@ -522,9 +505,9 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
 
             <div class="legend">
                 <strong>Legend:</strong><br>
-                • <span style="color: #d32f2f; font-weight: 600;">Red values</span>: MSPBNA performs worse than peer group (higher is worse for most credit metrics)<br>
-                • <span style="color: #388e3c; font-weight: 600;">Green values</span>: MSPBNA performs better than peer group (lower is better for most credit metrics)<br>
-                • <strong>Core PB</strong>: Core Private Bank peer composite<br>
+                • <span style="color: #d32f2f; font-weight: 600;">Red values</span>: IDB performs worse than peer group (higher is worse for most credit metrics)<br>
+                • <span style="color: #388e3c; font-weight: 600;">Green values</span>: IDB performs better than peer group (lower is better for most credit metrics)<br>
+                • <strong>Selective Peers</strong>: Excludes Flagstar Bank and Valley National Bank for cleaner comparison<br>
                 • All values are as of the latest available quarter
             </div>
 
@@ -541,7 +524,7 @@ def generate_html_email_table(df: pd.DataFrame, report_date: datetime) -> str:
 
 def generate_credit_metrics_email_table(
     proc_df_with_peers: pd.DataFrame,
-    subject_bank_cert: int = 34221
+    subject_bank_cert: int = 19977
 ) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
     """
     Build the email HTML table; ASSET & LNLS are shown as $ (millions), others as %.
@@ -564,52 +547,52 @@ def generate_credit_metrics_email_table(
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    subj = latest_data[latest_data["CERT"] == subject_bank_cert]
-    peers = latest_data[latest_data["CERT"] == 90003]       # All Peers composite
-    peers_ex = latest_data[latest_data["CERT"] == 90001]    # Core PB composite
+    idb = latest_data[latest_data["CERT"] == subject_bank_cert]
+    peers = latest_data[latest_data["CERT"] == 99999]
+    peers_ex = latest_data[latest_data["CERT"] == 99998]
 
-    if subj.empty or peers.empty or peers_ex.empty:
+    if idb.empty or peers.empty or peers_ex.empty:
         print("Missing data for one or more entities")
         return None, None
 
-    subj = subj.iloc[0]
+    idb = idb.iloc[0]
     peers = peers.iloc[0]
     peers_ex = peers_ex.iloc[0]
 
     rows = []
     for code, disp in important_metrics.items():
-        if code not in subj.index:
+        if code not in idb.index:
             continue
 
-        v_subj = subj.get(code, np.nan)
+        v_idb  = idb.get(code, np.nan)
         v_all  = peers.get(code, np.nan)
         v_sel  = peers_ex.get(code, np.nan)
 
         # diffs
-        d_all = (v_subj - v_all) if not pd.isna(v_all) else np.nan
-        d_sel = (v_subj - v_sel) if not pd.isna(v_sel) else np.nan
+        d_all = (v_idb - v_all) if not pd.isna(v_all) else np.nan
+        d_sel = (v_idb - v_sel) if not pd.isna(v_sel) else np.nan
 
         if code in CURRENCY_MM_CODES:
             # values are already measured in millions
-            subj_s = _fmt_money_millions(v_subj)
-            all_s  = _fmt_money_millions(v_all)
-            sel_s  = _fmt_money_millions(v_sel)
+            idb_s = _fmt_money_millions(v_idb)
+            all_s = _fmt_money_millions(v_all)
+            sel_s = _fmt_money_millions(v_sel)
             diff_all_s = _fmt_money_millions_with_sign(d_all)
             diff_sel_s = _fmt_money_millions_with_sign(d_sel)
         else:
-            subj_s = _fmt_percent_auto(v_subj)
-            all_s  = _fmt_percent_auto(v_all)
-            sel_s  = _fmt_percent_auto(v_sel)
+            idb_s = _fmt_percent_auto(v_idb)
+            all_s = _fmt_percent_auto(v_all)
+            sel_s = _fmt_percent_auto(v_sel)
             diff_all_s = _fmt_percent_auto(d_all)
             diff_sel_s = _fmt_percent_auto(d_sel)
 
         rows.append({
             "Metric": disp,
-            "MSPBNA": subj_s,
+            "IDB": idb_s,
             "All Peers": all_s,
-            "Core PB": sel_s,
+            "Selective Peers": sel_s,
             "Diff vs All": diff_all_s,
-            "Diff vs Core PB": diff_sel_s,
+            "Diff vs Selective": diff_sel_s,
         })
 
     df = pd.DataFrame(rows)
@@ -621,7 +604,7 @@ def generate_flexible_html_table(
     proc_df_with_peers: pd.DataFrame,
     metrics_to_display: Dict[str, str],
     title: str,
-    subject_bank_cert: int = 34221,
+    subject_bank_cert: int = 19977,
     col_names: Optional[Dict[str, str]] = None
 ) -> str:
     """
@@ -645,7 +628,7 @@ def generate_flexible_html_table(
     latest_data = proc_df_with_peers[proc_df_with_peers['REPDTE'] == latest_date]
 
     # Get all banks and peer groups to be included in the table
-    certs_to_include = [subject_bank_cert, 90001, 90002, 90003]
+    certs_to_include = [subject_bank_cert, 99999, 99998]
 
     # Define default column names
     if col_names is None:
@@ -686,7 +669,7 @@ def generate_flexible_html_table(
             .value-cell {{ text-align: center; }}
             tr:nth-child(even) {{ background-color: #f7fafc; }}
             tr:hover {{ background-color: #edf2f7; }}
-            .mspbna-row {{ background-color: #fff3cd; font-weight: 600; }}
+            .idb-row {{ background-color: #fff3cd; font-weight: 600; }}
         </style>
     </head>
     <body>
@@ -722,8 +705,8 @@ def generate_flexible_html_table(
         name = latest_row.get('NAME', 'N/A')
         hq = latest_row.get('HQ_STATE', 'N/A')
 
-        # Special styling for MSPBNA
-        row_class = "mspbna-row" if cert == subject_bank_cert else ""
+        # Special styling for IDB
+        row_class = "idb-row" if cert == subject_bank_cert else ""
 
         html += f"""
                     <tr class="{row_class}">
@@ -773,7 +756,7 @@ def _fmt_pct(x: float) -> str:
     return f"{x:.2%}"
 
 def _place_titles(fig: plt.Figure, title: str, subtitle: str | None, title_size: int, subtitle_size: int):
-    # Title at ~0.97, subtitle at ~0.935 of figure height; won't collide with plot area.
+    # Title at ~0.97, subtitle at ~0.935 of figure height; won’t collide with plot area.
     fig.text(0.5, 0.97, title, ha="center", va="top", fontsize=title_size, fontweight="bold", color="#2B2B2B")
     if subtitle:
         fig.text(0.5, 0.935, subtitle, ha="center", va="top", fontsize=subtitle_size, color="#6E6E6E")
@@ -871,243 +854,6 @@ def build_fred_macro_table(xlsx_path: str, short_names: list[str]) -> tuple[str,
     html += ["</tbody></table></body></html>"]
     return "\n".join(html), out
 
-# ==================================================================================
-# B4: ALIAS HELPER — inject alias rows for plot-time compatibility
-# ==================================================================================
-
-def build_plot_df_with_alias(
-    df: pd.DataFrame,
-    alias_map: Dict[int, int],
-) -> pd.DataFrame:
-    """Duplicate rows for *source_cert* and rewrite CERT to *alias_cert*.
-
-    Parameters
-    ----------
-    df : DataFrame with a ``CERT`` column.
-    alias_map : ``{alias_cert: source_cert, ...}``
-        e.g. ``{99999: 90003, 99998: 90001}``
-
-    Returns
-    -------
-    DataFrame — original data *plus* aliased rows.  No metric recomputation.
-    """
-    parts = [df]
-    for alias_cert, source_cert in alias_map.items():
-        src = df[df["CERT"] == source_cert].copy()
-        if src.empty:
-            continue
-        src["CERT"] = alias_cert
-        # Update NAME so legends are readable
-        src["NAME"] = src["NAME"].astype(str).str.replace(
-            r"^AVG:\s*", "AVG: ", regex=True
-        )
-        parts.append(src)
-    return pd.concat(parts, ignore_index=True)
-
-
-# ==================================================================================
-# B7: 3-GROUP CREDIT HTML TABLES (browser-rich CSS)
-# ==================================================================================
-
-_CREDIT_TABLE_METRICS_STANDARD = {
-    "ASSET": ("Assets", "$M"),
-    "LNLS": ("Gross Loans", "$M"),
-    "TTM_NCO_Rate": ("TTM NCO Rate", "%"),
-    "NPL_to_Gross_Loans_Rate": ("NPL to Gross Loans", "%"),
-    "Allowance_to_Gross_Loans_Rate": ("Allowance to Gross Loans", "%"),
-    "TTM_Past_Due_Rate": ("TTM Past Due Rate", "%"),
-    "Risk_Adj_Allowance_Coverage": ("Risk-Adj Allowance Coverage", "%"),
-    "Top_House_Delinquency_Rate": ("Total Delinquency Rate", "%"),
-    "Tier_1_Leverage_Ratio": ("Tier 1 Leverage Ratio", "%"),
-    "Total_Assets": ("Total Assets", "$M"),
-    "Net_Charge_Off_Rate": ("Net Charge-Off Rate", "%"),
-}
-
-_CREDIT_TABLE_METRICS_NORMALIZED = {
-    "Norm_NCO_Rate": ("Normalized NCO Rate", "%"),
-    "Norm_Nonaccrual_Rate": ("Normalized Nonaccrual Rate", "%"),
-    "Norm_Delinquency_Rate": ("Normalized Delinquency Rate", "%"),
-    "Norm_ACL_Coverage": ("Normalized ACL Coverage", "%"),
-    "Norm_Gross_Loans": ("Normalized Gross Loans", "$M"),
-    "Norm_Total_NCO": ("Normalized Total NCOs", "$M"),
-    "Norm_Total_Nonaccrual": ("Normalized Total Nonaccruals", "$M"),
-    "Norm_SBL_Composition": ("SBL % of Norm Loans", "%"),
-    "Norm_Fund_Finance_Composition": ("Fund Finance % of Norm Loans", "%"),
-    "Norm_Exclusion_Pct": ("Exclusion % of Gross Loans", "%"),
-    "Norm_Loan_Yield": ("Normalized Loan Yield", "%"),
-    "Norm_Loss_Adj_Yield": ("Normalized Loss-Adj Yield", "%"),
-}
-
-CURRENCY_LIKE = {"ASSET", "LNLS", "Norm_Gross_Loans", "Norm_Total_NCO",
-                 "Norm_Total_Nonaccrual", "Total_Assets", "Excluded_Balance"}
-
-
-def _fmt_val(val, code: str) -> str:
-    """Format a metric value for HTML display."""
-    if pd.isna(val):
-        return "N/A"
-    if code in CURRENCY_LIKE:
-        return f"${val / 1000:,.0f}M" if abs(val) >= 1 else "N/A"
-    # percentage: if value looks like fraction (< 1), display as %
-    v = float(val)
-    if abs(v) < 1:
-        return f"{v:.2%}"
-    return f"{v:.2f}%"
-
-
-def generate_3group_credit_table(
-    proc_df: pd.DataFrame,
-    subject_cert: int,
-    peer_certs: List[int],
-    peer_labels: List[str],
-    metrics: Dict[str, tuple],
-    title: str,
-    report_date,
-) -> str:
-    """Build browser-rich HTML credit table with 3 peer groupings."""
-    formatted_date = (
-        report_date.strftime("%B %d, %Y")
-        if hasattr(report_date, "strftime")
-        else str(report_date)
-    )
-
-    latest = proc_df[proc_df["REPDTE"] == proc_df["REPDTE"].max()]
-    subj = latest[latest["CERT"] == subject_cert]
-    if subj.empty:
-        return f"<p>No data for subject CERT {subject_cert}</p>"
-    subj = subj.iloc[0]
-
-    peer_rows = []
-    for pc in peer_certs:
-        pr = latest[latest["CERT"] == pc]
-        peer_rows.append(pr.iloc[0] if not pr.empty else None)
-
-    # --- Build HTML ---
-    hdr_cols = "".join(f'<th class="peer-col">{lbl}</th>' for lbl in peer_labels)
-    diff_cols_hdr = "".join(f'<th class="diff-col">vs {lbl}</th>' for lbl in peer_labels)
-
-    rows_html = ""
-    for code, (display, _unit) in metrics.items():
-        sv = subj.get(code, np.nan)
-        sv_s = _fmt_val(sv, code)
-        cells = ""
-        for pr in peer_rows:
-            pv = pr.get(code, np.nan) if pr is not None else np.nan
-            cells += f'<td class="value-cell">{_fmt_val(pv, code)}</td>'
-            # diff
-            if pd.notna(sv) and pd.notna(pv) and code not in CURRENCY_LIKE:
-                d = float(sv) - float(pv)
-                cls = "positive" if d > 0.0005 else ("negative" if d < -0.0005 else "neutral")
-                if abs(d) < 1:
-                    ds = f"{d:+.2%}"
-                else:
-                    ds = f"{d:+.2f}%"
-            else:
-                cls, ds = "neutral", "—"
-            cells += f'<td class="{cls}">{ds}</td>'
-
-        rows_html += f"""<tr>
-            <td class="metric-name">{display}</td>
-            <td class="subject-value">{sv_s}</td>
-            {cells}
-        </tr>"""
-
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 0; background: #f0f2f5; }}
-.container {{ max-width: 1100px; margin: 30px auto; background: #fff; border-radius: 12px;
-    box-shadow: 0 4px 20px rgba(0,0,0,.08); overflow: hidden; }}
-.header {{ background: linear-gradient(135deg, #1a237e 0%, #283593 100%); color: #fff;
-    padding: 24px 32px; }}
-.header h2 {{ margin: 0; font-size: 22px; }} .header p {{ margin: 6px 0 0; opacity: .8; font-size: 13px; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-th {{ background: #37474f; color: #fff; padding: 12px 10px; text-align: center; font-weight: 600; }}
-th:first-child {{ text-align: left; }}
-td {{ padding: 10px; text-align: center; border-bottom: 1px solid #e0e0e0; }}
-.metric-name {{ text-align: left; font-weight: 500; color: #263238; }}
-.subject-value {{ background: #fff8e1; font-weight: 700; color: #6d4c00; }}
-.peer-col {{ background: #455a64; }} .diff-col {{ background: #546e7a; font-size: 11px; }}
-.positive {{ color: #c62828; font-weight: 600; }}
-.negative {{ color: #2e7d32; font-weight: 600; }}
-.neutral  {{ color: #5d4037; }}
-tr:nth-child(even) {{ background: #fafafa; }}
-tr:hover {{ background: #e8eaf6; }}
-.footer {{ padding: 16px 32px; font-size: 11px; color: #78909c; border-top: 2px solid #e0e0e0; text-align: center; }}
-</style></head><body>
-<div class="container">
-<div class="header"><h2>{title}</h2><p>MSPBNA vs Peer Groups | {formatted_date}</p></div>
-<table><thead><tr>
-  <th>Credit Metric</th><th class="subject-value">MSPBNA</th>
-  {hdr_cols}{diff_cols_hdr}
-</tr></thead><tbody>
-{rows_html}
-</tbody></table>
-<div class="footer">Auto-generated from FDIC Call Report data. Contact Credit Risk for questions.</div>
-</div></body></html>"""
-
-
-# ==================================================================================
-# B9: FAIL-SAFE COMPOSITE SYNTHESIS (latest REPDTE only)
-# ==================================================================================
-
-# Peer group membership for fail-safe synthesis (mirrors upstream PEER_GROUPS)
-_FAILSAFE_GROUPS = {
-    90001: {"name": "Core Private Bank Peers", "display_order": 1},
-    90002: {"name": "MSPBNA + Wealth", "display_order": 2},
-    90003: {"name": "Full Peer Universe", "display_order": 3},
-    90004: {"name": "Core Private Bank (Normalized)", "display_order": 4},
-    90005: {"name": "MSPBNA + Wealth (Normalized)", "display_order": 5},
-    90006: {"name": "Full Peer Universe (Normalized)", "display_order": 6},
-}
-
-
-def _failsafe_composites(
-    df: pd.DataFrame,
-    required_certs: List[int],
-    cfg: Dict[str, Any],
-) -> pd.DataFrame:
-    """If any composite CERTs are missing at latest REPDTE, synthesise them."""
-    latest_date = df["REPDTE"].max()
-    latest = df[df["REPDTE"] == latest_date]
-    present = set(latest["CERT"].unique())
-    missing = [c for c in required_certs if c not in present]
-    if not missing:
-        return df
-
-    print(f"WARNING: Missing composite CERTs at {latest_date}: {missing}")
-
-    mspbna = cfg["mspbna_cert"]
-    msbna = cfg["msbna_cert"]
-    _member_map = {
-        90001: [mspbna, 33124, 57565],
-        90002: [mspbna, 33124, 57565],
-        90003: [msbna, 33124, 57565, 628, 3511, 7213, 3510],
-        90004: [mspbna, 33124, 57565],
-        90005: [mspbna, 33124, 57565],
-        90006: [msbna, 33124, 57565, 628, 3511, 7213, 3510],
-    }
-
-    numeric_cols = df.select_dtypes(include=np.number).columns.drop("CERT", errors="ignore")
-    synth = []
-    for cert in missing:
-        members = _member_map.get(cert, [])
-        subset = latest[latest["CERT"].isin(members)]
-        if subset.empty:
-            print(f"  Cannot synthesize {cert}: no member data")
-            continue
-        row = subset[numeric_cols].mean().to_frame().T
-        row["CERT"] = cert
-        row["REPDTE"] = latest_date
-        row["NAME"] = f"AVG: {_FAILSAFE_GROUPS.get(cert, {}).get('name', f'Group {cert}')}"
-        row["HQ_STATE"] = "AVG"
-        synth.append(row)
-        print(f"  Synthesized {cert} from {len(subset)} members (latest REPDTE only)")
-
-    if synth:
-        df = pd.concat([df] + synth, ignore_index=True)
-    return df
-
-
 # ---------- MAIN: drop-in replacement ----------
 def generate_reports(
     # data window & figure sizing
@@ -1126,14 +872,15 @@ def generate_reports(
     # Optional custom title/subtitle. If None, sensible defaults are used.
     credit_title: Optional[str] = None,
     credit_subtitle: Optional[str] = "F&V excluded from Peers (Ex. F&V)",
-    # Macro table: pass Short Names; we'll map to Series ID via FRED_Descriptions
+    # Macro table: pass Short Names; we’ll map to Series ID via FRED_Descriptions
     fred_short_names: Optional[List[str]] = None,
 ) -> None:
     """
     End-to-end runner:
     - finds the latest processed Excel file in output/,
-    - outputs: Peers/charts/, Peers/scatter/, Peers/tables/
-    - generates normalized credit chart, dual scatters, 3-group HTML tables
+    - writes all outputs into <that file’s folder>/Peers/,
+    - generates the email table, bar+line credit chart, two square scatters,
+      and the FRED macro table keyed by FRED_Descriptions.
     """
     if fred_short_names is None:
         fred_short_names = [
@@ -1152,8 +899,6 @@ def generate_reports(
 
     cfg = load_config()
     subject_bank_cert = cfg["subject_bank_cert"]
-    report_view = cfg.get("report_view", "ALL_BANKS")
-    ms_combined_cert = cfg.get("ms_combined_cert", 88888)
 
     # 1) Find latest processed Excel and set output roots
     excel_file = find_latest_excel_file(cfg["output_dir"])
@@ -1162,13 +907,8 @@ def generate_reports(
         return
 
     output_root = Path(excel_file).parent.resolve()
-    # B1: Output directory routing
-    peers_root = output_root / "Peers"
-    charts_dir = peers_root / "charts"
-    scatter_dir = peers_root / "scatter"
-    tables_dir = peers_root / "tables"
-    for d in (charts_dir, scatter_dir, tables_dir):
-        d.mkdir(parents=True, exist_ok=True)
+    peers_dir = output_root / "Peers"   # write all figures here
+    peers_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Found latest file: {excel_file}")
     print(f"File created: {datetime.fromtimestamp(os.path.getmtime(excel_file)).strftime('%Y-%m-%d')}")
@@ -1200,79 +940,38 @@ def generate_reports(
             print(f"Loaded {len(metric_descriptions)} metric descriptions")
         print(f"Loaded FDIC data: {len(proc_df_with_peers)} records across {proc_df_with_peers['CERT'].nunique()} banks")
 
-        # B9: Fail-safe composite synthesis
-        proc_df_with_peers = _failsafe_composites(
-            proc_df_with_peers, [90001, 90002, 90003, 90004, 90005, 90006], cfg
-        )
-
         # ------------------------------------------------------------------
-        # B7: 3-GROUP HTML TABLES (standard + normalized)
+        # EMAIL TABLE
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
-        print("GENERATING 3-GROUP CREDIT TABLES (HTML)")
+        print("GENERATING EMAIL HTML TABLE")
         print("-" * 60)
-
-        report_date = proc_df_with_peers["REPDTE"].max()
-
-        std_table_html = generate_3group_credit_table(
-            proc_df=proc_df_with_peers,
-            subject_cert=subject_bank_cert,
-            peer_certs=[90001, 90002, 90003],
-            peer_labels=["Core PB", "MSPBNA+Wealth", "All Peers"],
-            metrics=_CREDIT_TABLE_METRICS_STANDARD,
-            title="Credit Risk Metrics — Standard View",
-            report_date=report_date,
-        )
-        std_path = tables_dir / f"{base}_credit_table_standard_{stamp}.html"
-        with open(std_path, "w", encoding="utf-8") as f:
-            f.write(std_table_html)
-        print(f"✓ Standard credit table saved: {std_path}")
-
-        norm_table_html = generate_3group_credit_table(
-            proc_df=proc_df_with_peers,
-            subject_cert=subject_bank_cert,
-            peer_certs=[90004, 90005, 90006],
-            peer_labels=["Core PB Norm", "MSPBNA+Wealth Norm", "All Peers Norm"],
-            metrics=_CREDIT_TABLE_METRICS_NORMALIZED,
-            title="Credit Risk Metrics — Normalized (Ex-Commercial/Ex-Consumer)",
-            report_date=report_date,
-        )
-        norm_path = tables_dir / f"{base}_credit_table_normalized_{stamp}.html"
-        with open(norm_path, "w", encoding="utf-8") as f:
-            f.write(norm_table_html)
-        print(f"✓ Normalized credit table saved: {norm_path}")
+        html_table, table_df = generate_credit_metrics_email_table(proc_df_with_peers, subject_bank_cert)
+        if html_table:
+            email_path = peers_dir / f"{base}_email_table_{stamp}.html"
+            with open(email_path, "w", encoding="utf-8") as f:
+                f.write(html_table)
+            print(f"✓ Email table saved: {email_path}")
+            if table_df is not None:
+                print(f"✓ Table contains {len(table_df)} credit metrics")
+                print("\nSample metrics included:")
+                for i, m in enumerate(table_df["Metric"].head(5)):
+                    print(f"  {i + 1}. {m}")
 
         # ------------------------------------------------------------------
-        # B5: NORMALIZED-ONLY CREDIT CHART
+        # CREDIT DETERIORATION (bars + lines)
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
-        print("GENERATING NORMALIZED CREDIT DETERIORATION CHART")
+        print("GENERATING CREDIT DETERIORATION CHART")
         print("-" * 60)
 
-        # Determine normalized line metric
-        norm_line = None
-        for cand in ["Norm_Nonaccrual_Rate", "Norm_NPL_to_Gross_Loans_Rate"]:
-            if cand in proc_df_with_peers.columns:
-                norm_line = cand
-                break
-        if norm_line is None:
-            avail = [c for c in proc_df_with_peers.columns if c.startswith("Norm_")]
-            raise ValueError(f"No Norm_Nonaccrual_Rate found. Available Norm_* columns: {avail}")
-
-        if "Norm_NCO_Rate" not in proc_df_with_peers.columns:
-            raise ValueError("Norm_NCO_Rate column missing from FDIC_Data — cannot create normalized chart.")
-
-        # Alias: 99999 = All Peers Norm (90006), 99998 = Core PB Norm (90004)
-        norm_df_plot = build_plot_df_with_alias(
-            proc_df_with_peers, {99999: 90006, 99998: 90004}
-        )
-
+        # Create, then place a single robust title & subtitle ourselves
         fig, ax = create_credit_deterioration_chart_ppt(
-            proc_df_with_peers=norm_df_plot,
+            proc_df_with_peers=proc_df_with_peers,
             subject_bank_cert=subject_bank_cert,
             start_date=start_date,
-            bar_metric="Norm_NCO_Rate",
-            line_metric=norm_line,
+            bar_metric="TTM_NCO_Rate",
+            line_metric="NPL_to_Gross_Loans_Rate",
             bar_entities=[subject_bank_cert, 99999, 99998],
             line_entities=[subject_bank_cert, 99999, 99998],
             figsize=credit_figsize,
@@ -1282,60 +981,26 @@ def generate_reports(
             tag_size=tag_size,
             legend_fontsize=legend_fontsize,
             economist_style=True,
-            custom_title=credit_title or "Normalized NCO Rate (bars) vs Nonaccrual Rate (lines)",
-            save_path=str(charts_dir / f"{base}_credit_chart_normalized_{stamp}.png"),
+            custom_title=credit_title or "TTM NCO Rate (bars) vs NPL to Gross Loans Rate (lines)",
+            save_path=str((Path(excel_file).parent / "Peers" / f"{Path(excel_file).stem}_credit_chart_{datetime.now():%Y%m%d}.png"))
         )
-        print(f"✓ Normalized chart saved: {charts_dir / f'{base}_credit_chart_normalized_{stamp}.png'}")
+
 
         # ------------------------------------------------------------------
-        # B6: DUAL SCATTERS — standard + normalized
+        # SCATTERS (square; smart axes; outliers)
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
         print("GENERATING SCATTER PLOTS (8Q AVG)")
         print("-" * 60)
 
-        # B7: Conditionally exclude MS_COMBINED_CERT from all-bank outputs
-        if report_view == "MSPBNA_WEALTH_NORM":
-            proc_df_with_peers = proc_df_with_peers[
-                proc_df_with_peers["CERT"] != ms_combined_cert
-            ].copy()
-            rolling8q_df = rolling8q_df[
-                rolling8q_df["CERT"] != ms_combined_cert
-            ].copy()
-            print(f"REPORT_VIEW={report_view}: excluded MS_COMBINED_CERT ({ms_combined_cert}) from all-bank outputs")
-
-        # --- B6.1: Standard scatters ---
-        std_scatter_df = rolling8q_df.copy()
+        # Ensure numeric
         for c in ["NPL_to_Gross_Loans_Rate", "TTM_NCO_Rate", "TTM_Past_Due_Rate"]:
-            if c in std_scatter_df.columns:
-                std_scatter_df[c] = pd.to_numeric(std_scatter_df[c], errors="coerce")
+            if c in rolling8q_df.columns:
+                rolling8q_df[c] = pd.to_numeric(rolling8q_df[c], errors="coerce")
 
-        # Inject alias points: 99999 = All Peers (90003), 99998 = Core PB (90001)
-        has_90001 = 90001 in set(std_scatter_df["CERT"].dropna().astype(int))
-        has_90003 = 90003 in set(std_scatter_df["CERT"].dropna().astype(int))
-
-        if has_90001 or has_90003:
-            alias_map_std = {}
-            if has_90003:
-                alias_map_std[99999] = 90003
-            if has_90001:
-                alias_map_std[99998] = 90001
-            std_scatter_df = build_plot_df_with_alias(std_scatter_df, alias_map_std)
-        else:
-            # Source latest composite values from FDIC_Data
-            latest_date = proc_df_with_peers["REPDTE"].max()
-            for alias_cert, source_cert in [(99999, 90003), (99998, 90001)]:
-                src = proc_df_with_peers[
-                    (proc_df_with_peers["CERT"] == source_cert) &
-                    (proc_df_with_peers["REPDTE"] == latest_date)
-                ].copy()
-                if not src.empty:
-                    src["CERT"] = alias_cert
-                    std_scatter_df = pd.concat([std_scatter_df, src], ignore_index=True)
-
-        s1_path = scatter_dir / f"{base}_scatter_nco_vs_npl_standard_{stamp}.png"
+        s1_path = peers_dir / f"{base}_scatter_nco_vs_npl_{stamp}.png"
         plot_scatter_dynamic(
-            df=std_scatter_df,
+            df=rolling8q_df,
             x_col="NPL_to_Gross_Loans_Rate",
             y_col="TTM_NCO_Rate",
             subject_cert=subject_bank_cert,
@@ -1343,7 +1008,7 @@ def generate_reports(
             show_peers_avg_label=True,
             show_idb_label=True,
             identify_outliers=True,
-            outliers_topn=outlier_topn,
+            outliers_topn=outlier_topn,      # <-- no 'outlier_method' here
             figsize=(scatter_size, scatter_size),
             title_size=16,
             axis_label_size=12,
@@ -1352,13 +1017,13 @@ def generate_reports(
             economist_style=True,
             transparent_bg=True,
             square_axes=True,
-            save_path=str(s1_path),
+            save_path=str(s1_path)
         )
-        print(f"✓ Standard scatter saved: {s1_path}")
+        print(f"✓ Scatter saved: {s1_path}")
 
-        s2_path = scatter_dir / f"{base}_scatter_pd_vs_npl_standard_{stamp}.png"
+        s2_path = peers_dir / f"{base}_scatter_pd_vs_npl_{stamp}.png"
         plot_scatter_dynamic(
-            df=std_scatter_df,
+            df=rolling8q_df,
             x_col="NPL_to_Gross_Loans_Rate",
             y_col="TTM_Past_Due_Rate",
             subject_cert=subject_bank_cert,
@@ -1375,100 +1040,9 @@ def generate_reports(
             economist_style=True,
             transparent_bg=True,
             square_axes=True,
-            save_path=str(s2_path),
+            save_path=str(s2_path)
         )
-        print(f"✓ Standard scatter saved: {s2_path}")
-
-        # --- B6.2: Normalized scatters ---
-        norm_scatter_df = rolling8q_df.copy()
-        # Determine x column
-        norm_x = None
-        for cand in ["Norm_Nonaccrual_Rate", "Norm_NPL_to_Gross_Loans_Rate"]:
-            if cand in norm_scatter_df.columns:
-                norm_x = cand
-                break
-        if norm_x and "Norm_NCO_Rate" in norm_scatter_df.columns:
-            for c in [norm_x, "Norm_NCO_Rate"]:
-                norm_scatter_df[c] = pd.to_numeric(norm_scatter_df[c], errors="coerce")
-
-            # Inject alias: 99999 = 90006, 99998 = 90004
-            has_90004 = 90004 in set(norm_scatter_df["CERT"].dropna().astype(int))
-            has_90006 = 90006 in set(norm_scatter_df["CERT"].dropna().astype(int))
-            if has_90004 or has_90006:
-                alias_map_norm = {}
-                if has_90006:
-                    alias_map_norm[99999] = 90006
-                if has_90004:
-                    alias_map_norm[99998] = 90004
-                norm_scatter_df = build_plot_df_with_alias(norm_scatter_df, alias_map_norm)
-            else:
-                latest_date = proc_df_with_peers["REPDTE"].max()
-                for alias_cert, source_cert in [(99999, 90006), (99998, 90004)]:
-                    src = proc_df_with_peers[
-                        (proc_df_with_peers["CERT"] == source_cert) &
-                        (proc_df_with_peers["REPDTE"] == latest_date)
-                    ].copy()
-                    if not src.empty:
-                        src["CERT"] = alias_cert
-                        norm_scatter_df = pd.concat([norm_scatter_df, src], ignore_index=True)
-
-            ns1_path = scatter_dir / f"{base}_scatter_nco_vs_npl_normalized_{stamp}.png"
-            plot_scatter_dynamic(
-                df=norm_scatter_df,
-                x_col=norm_x,
-                y_col="Norm_NCO_Rate",
-                subject_cert=subject_bank_cert,
-                use_alt_peer_avg=False,
-                show_peers_avg_label=True,
-                show_idb_label=True,
-                identify_outliers=True,
-                outliers_topn=outlier_topn,
-                figsize=(scatter_size, scatter_size),
-                title_size=16,
-                axis_label_size=12,
-                tick_size=tick_size,
-                tag_size=tag_size,
-                economist_style=True,
-                transparent_bg=True,
-                square_axes=True,
-                save_path=str(ns1_path),
-            )
-            print(f"✓ Normalized scatter saved: {ns1_path}")
-
-            # Optional second normalized scatter
-            norm_y2 = None
-            for cand in ["Norm_Past_Due_Rate", "Norm_Delinquency_Rate"]:
-                if cand in norm_scatter_df.columns:
-                    norm_y2 = cand
-                    break
-            if norm_y2:
-                norm_scatter_df[norm_y2] = pd.to_numeric(norm_scatter_df[norm_y2], errors="coerce")
-                ns2_path = scatter_dir / f"{base}_scatter_pd_vs_npl_normalized_{stamp}.png"
-                plot_scatter_dynamic(
-                    df=norm_scatter_df,
-                    x_col=norm_x,
-                    y_col=norm_y2,
-                    subject_cert=subject_bank_cert,
-                    use_alt_peer_avg=False,
-                    show_peers_avg_label=True,
-                    show_idb_label=True,
-                    identify_outliers=True,
-                    outliers_topn=outlier_topn,
-                    figsize=(scatter_size, scatter_size),
-                    title_size=16,
-                    axis_label_size=12,
-                    tick_size=tick_size,
-                    tag_size=tag_size,
-                    economist_style=True,
-                    transparent_bg=True,
-                    square_axes=True,
-                    save_path=str(ns2_path),
-                )
-                print(f"✓ Normalized scatter (2nd) saved: {ns2_path}")
-            else:
-                print("WARNING: No Norm_Past_Due_Rate or Norm_Delinquency_Rate found — skipping 2nd normalized scatter")
-        else:
-            print("WARNING: Normalized scatter columns not available — skipping normalized scatters")
+        print(f"✓ Scatter saved: {s2_path}")
 
         # ------------------------------------------------------------------
         # FRED MACRO TABLE (Short Name -> Series ID via FRED_Descriptions)
@@ -1478,7 +1052,7 @@ def generate_reports(
         print("-" * 60)
         try:
             fred_html, fred_df = build_fred_macro_table(excel_file, list(fred_short_names))
-            fred_path = tables_dir / f"{base}_fred_table_{stamp}.html"
+            fred_path = peers_dir / f"{base}_fred_table_{stamp}.html"
             with open(fred_path, "w", encoding="utf-8") as f:
                 f.write(fred_html)
             print(f"✓ FRED macro table saved: {fred_path}")
@@ -1492,17 +1066,11 @@ def generate_reports(
         print("REPORT GENERATION COMPLETE")
         print("=" * 80)
         print(f"Source file: {excel_file}")
-        print(f"Output directories:")
-        print(f"  Charts:  {charts_dir}")
-        print(f"  Scatter: {scatter_dir}")
-        print(f"  Tables:  {tables_dir}")
-        print(f"Subject bank CERT: {subject_bank_cert} (MSPBNA)")
-        print(f"Report view: {report_view}")
+        print(f"Output directory: {peers_dir}")
+        print(f"Subject bank CERT: {subject_bank_cert}")
 
     except Exception as e:
-        import traceback
         print(f"ERROR: An unexpected error occurred: {e}")
-        traceback.print_exc()
     finally:
         plt.close("all")
 
@@ -1539,7 +1107,7 @@ def create_credit_deterioration_chart_ppt(
     default_entities = [subject_bank_cert, 99999, 99998]
     bar_entities  = bar_entities  or default_entities
     line_entities = line_entities or list(bar_entities)
-    names  = {subject_bank_cert:"MSPBNA", 99999:"All Peers", 99998:"Peers (Ex. F&V)"}
+    names  = {subject_bank_cert:"IDB", 99999:"All Peers", 99998:"Peers (Ex. F&V)"}
     colors = {subject_bank_cert:GOLD,   99999:BLUE,       99998:PURPLE}
 
     # ---------- filter & timeline
@@ -1739,11 +1307,11 @@ def create_credit_deterioration_chart_ppt(
             desired = (baseline + above_gap) if (j % 2 == 0) else (baseline - below_gap)
             desired = max(ylo + 0.01*yrng, min(yhi - 0.01*yrng, desired))
 
-            # Try desired spot. If it would overlap later with line labels we'll still accept
+            # Try desired spot. If it would overlap later with line labels we’ll still accept
             # because line labels will move, but if a *line point* is right on it, go to tip.
             add_fixed_bar_label(f"{v:.2%}", xpos, desired)
 
-            # If the "above" choice landed inside the bar body and could be hidden by the bar,
+            # If the “above” choice landed inside the bar body and could be hidden by the bar,
             # also try a tip placement (outside the bar) but only when label is above baseline
             if (j % 2 == 0):  # the ones that might conflict with line tags
                 if abs(v - desired) < 1e-9:  # exactly on baseline (tiny bars)
@@ -1874,7 +1442,7 @@ def plot_scatter_dynamic(
     xi = yi = None
     if not idb.empty:
         xi = float(to_decimals_series(idb[x_col]).iloc[0]); yi = float(to_decimals_series(idb[y_col]).iloc[0])
-        ax.scatter(xi, yi, s=80, color=GOLD, edgecolor="black", linewidth=0.7, label="MSPBNA")
+        ax.scatter(xi, yi, s=80, color=GOLD, edgecolor="black", linewidth=0.7, label="IDB")
 
     px = py = None
     if not peer_avg.empty:
@@ -1909,7 +1477,7 @@ def plot_scatter_dynamic(
         tag(px, py, "Peers' Average", (dx, 0), color=GUIDE, box=False)
 
     if show_idb_label and (xi is not None):
-        dx, dy = pick_offset(xi, yi); tag(xi, yi, "MSPBNA", (dx, dy), color="black", box=True)
+        dx, dy = pick_offset(xi, yi); tag(xi, yi, "IDBNY", (dx, dy), color="black", box=True)
 
     if identify_outliers and outliers_topn > 0:
         X_all = to_decimals_series(df[x_col]); Y_all = to_decimals_series(df[y_col])
@@ -1920,8 +1488,8 @@ def plot_scatter_dynamic(
         mask_excl = df["CERT"].isin([peer_avg_cert_primary, peer_avg_cert_alt])
         cand = d[~mask_excl].sort_values(ascending=False)
 
-        # keep N outliers; if MSPBNA in top set, ensure we add only one other
-        top_idx = list(cand.index[:outliers_topn+1])  # +1 to allow for MSPBNA
+        # keep N outliers; if IDB in top set, ensure we add only one other
+        top_idx = list(cand.index[:outliers_topn+1])  # +1 to allow for IDB
         if not idb.empty and int(idb.index[0]) in top_idx:
             top_idx = [i for i in top_idx if i != int(idb.index[0])][:1]  # only one other
         else:
