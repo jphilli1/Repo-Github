@@ -5,8 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="fc07040d-b53d-4656-b9cc-4f59b5bee67a" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MSPBNA_CR_Normalized.py" beforeDir="false" afterPath="$PROJECT_DIR$/MSPBNA_CR_Normalized.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -129,7 +128,6 @@
         <item itemvalue="Python.report_generator (1)" />
         <item itemvalue="Python.report_generator" />
         <item itemvalue="Python.master_data_dictionary" />
-        <item itemvalue="Python.MSPBNA_CR_Normalized" />
       </list>
     </recent_temporary>
   </component>
