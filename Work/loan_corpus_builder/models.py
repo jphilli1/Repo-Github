@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
@@ -144,25 +144,6 @@ class CandidateRecord(BaseModel):
     discovered_at: datetime = Field(default_factory=datetime.utcnow)
     run_id: str = ""
 
-    @computed_field
-    @property
-    def sort_key(self) -> tuple:
-        """Tie-break order for selection ranking."""
-        return (
-            0 if not self.is_draft else 1,
-            -self.classification_score,
-            -(self.page_count or 0),
-            -self.modified_time,
-            -(self.file_size if self.file_size > 0 else 0),
-        )
-
-    @property
-    def modified_time(self) -> float:
-        return 0.0
-
-    @property
-    def file_size(self) -> int:
-        return 0
 
 
 class SelectionRecord(BaseModel):

@@ -11,14 +11,14 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import sys
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 from .adapters import ParquetExporter, SQLiteRegistry
 from .classification import DocumentClassifier, QualityGate
-from .config import LDCBConfig, load_config, load_rules
+from .config import LDCBConfig, LDCBRules, load_config, load_rules
 from .corpus import CorpusBuilder
 from .logging_utils import setup_logging
 from .mapping import CanonicalMapper
@@ -26,8 +26,12 @@ from .models import (
     CandidateDisposition,
     CandidateRecord,
     FileRecord,
+    RelationshipRecord,
+    LoanRecord,
     ReviewRecord,
     RunManifest,
+    generate_content_hash,
+    generate_document_id,
 )
 from .qualification import FolderQualifier
 from .selection import SelectionEngine
@@ -42,33 +46,42 @@ def generate_run_id() -> str:
     return hashlib.md5(ts.encode("utf-8")).hexdigest()[:12]
 
 
+def _try_import_tqdm():
+    """Import tqdm if available, else return a no-op passthrough."""
+    try:
+        from tqdm import tqdm
+        return tqdm
+    except ImportError:
+        return None
+
+
 def run_pipeline(
     config: LDCBConfig,
-    rules_obj: object,
+    rules: LDCBRules,
     run_id: str,
     source_roots: list[Path] | None = None,
+    dry_run: bool = False,
 ) -> RunManifest:
     """Execute the full LDCB pipeline.
 
     Stages:
-      1. Traversal — discover files
+      1. Traversal — discover files via TraversalEngine (BUG-002 fix)
       2. Folder Qualification — identify relationships & loans
       3. Document Classification — type and score each file
+      3b. Content-hash deduplication (GAP-002 fix)
       4. Quality Gate — filter unfit candidates
       5. Selection — pick best per (rel, loan, type, year)
-      6. Corpus Build — copy selected files to canonical layout
+      6. Corpus Build — copy selected files (or dry-run summary) (GAP-001 fix)
       7. Persist — write all records to SQLite + manifests
     """
-    from .config import LDCBRules
-
-    rules: LDCBRules = rules_obj  # type: ignore[assignment]
-
     started_at = datetime.utcnow().isoformat()
     effective_roots = source_roots or [Path(r) for r in config.paths.source_roots]
 
     logger.info("=== LDCB Pipeline Run %s ===", run_id)
     logger.info("Source roots: %s", effective_roots)
     logger.info("Target root: %s", config.paths.target_root)
+    if dry_run:
+        logger.info("DRY-RUN mode — no files will be copied")
 
     # Initialize components
     registry = SQLiteRegistry(Path(config.paths.sqlite_db))
@@ -101,153 +114,157 @@ def run_pipeline(
     file_metadata: dict[str, tuple[int, float]] = {}  # candidate_id -> (size, mtime)
     candidates_by_id: dict[str, CandidateRecord] = {}
 
-    # Relationship and loan registries (path hash -> record)
-    relationships: dict[str, object] = {}
-    loans: dict[str, object] = {}
+    # Relationship and loan registries — properly typed (BUG-003 fix)
+    relationships: dict[str, RelationshipRecord] = {}
+    loans: dict[str, LoanRecord] = {}
+
+    # GAP-005: Incremental run support — load existing file IDs to skip re-processing
+    existing_file_ids: set[str] = set()
+    try:
+        existing_file_ids = registry.get_existing_file_ids(run_id)
+        if existing_file_ids:
+            logger.info("Incremental run: %d files already registered, will skip", len(existing_file_ids))
+    except (OSError, ValueError) as exc:
+        logger.debug("Could not load existing file IDs: %s", exc)
+
+    # GAP-004: tqdm progress reporting
+    tqdm_cls = _try_import_tqdm()
 
     # ------------------------------------------------------------------
-    # Stage 1: Traversal + Qualification (interleaved for efficiency)
+    # Stage 1: Traversal + Qualification (BUG-002 fix: uses TraversalEngine)
     # ------------------------------------------------------------------
     logger.info("--- Stage 1: Traversal & Qualification ---")
+
+    # Collect all FileRecords from TraversalEngine first, then process
+    discovered_files: list[FileRecord] = []
 
     for root in effective_roots:
         if not root.exists():
             logger.warning("Source root does not exist, skipping: %s", root)
             continue
 
-        root_depth = len(root.parts)
-
-        for dirpath_str, dirnames, filenames in os.walk(
-            str(root), topdown=True, followlinks=config.traversal.followlinks
-        ):
-            dirpath = Path(dirpath_str)
-            current_depth = len(dirpath.parts) - root_depth
-
-            if current_depth >= config.traversal.max_depth:
-                dirnames.clear()
+        for file_rec in traversal.scan(root, run_id):
+            # GAP-005: skip files already registered in this run
+            if file_rec.file_id in existing_file_ids:
+                logger.debug("Skipping already-registered file: %s", file_rec.file_path)
                 continue
+            discovered_files.append(file_rec)
 
-            # Qualify this folder
-            rels, lns, revs = qualifier.qualify_folder(dirpath, current_depth, run_id)
+    # Qualify folders and enrich files — with progress bar (GAP-004)
+    qualified_folders: set[str] = set()
+    file_iter = discovered_files
+    if tqdm_cls is not None:
+        file_iter = tqdm_cls(discovered_files, desc="Qualifying & classifying", unit="file")
+
+    for file_rec in file_iter:
+        total_files += 1
+        fpath = Path(file_rec.file_path)
+
+        # Qualify each ancestor folder (only once per unique folder)
+        for ancestor in fpath.parents:
+            ancestor_str = str(ancestor)
+            if ancestor_str in qualified_folders:
+                continue
+            qualified_folders.add(ancestor_str)
+
+            # Compute depth relative to whichever source root contains this file
+            depth = 0
+            for root in effective_roots:
+                try:
+                    ancestor.relative_to(root)
+                    depth = len(ancestor.parts) - len(root.parts)
+                    break
+                except ValueError:
+                    continue
+
+            rels, lns, revs = qualifier.qualify_folder(ancestor, depth, run_id)
             for r in rels:
                 relationships[r.relationship_id] = r
                 registry.upsert_relationship(r)
-            for l in lns:
-                loans[l.loan_id] = l
-                registry.upsert_loan(l)
+            for ln in lns:
+                loans[ln.loan_id] = ln
+                registry.upsert_loan(ln)
             for rv in revs:
                 all_reviews.append(rv)
                 registry.upsert_review(rv)
 
-            # Discover files in this folder
-            for fname in filenames:
-                file_path = dirpath / fname
-                ext = file_path.suffix.lower()
+        # Enrich file with relationship/loan context (BUG-003: properly typed dicts)
+        file_rec = qualifier.qualify_file_context(file_rec, relationships, loans)
+        registry.upsert_file(file_rec)
 
-                if ext not in set(e.lower() for e in config.traversal.file_extensions):
-                    continue
+        # ----------------------------------------------------------
+        # Stage 2: Classification
+        # ----------------------------------------------------------
+        rel_canonical = ""
+        loan_canonical = ""
 
-                try:
-                    stat = file_path.stat()
-                except (OSError, PermissionError):
-                    continue
+        if file_rec.relationship_id and file_rec.relationship_id in relationships:
+            rel_obj = relationships[file_rec.relationship_id]
+            rel_canonical = mapper.resolve_relationship(rel_obj.raw_folder_name)
 
-                size = stat.st_size
-                mtime = stat.st_mtime
+        if file_rec.loan_id and file_rec.loan_id in loans:
+            loan_obj = loans[file_rec.loan_id]
+            loan_canonical = mapper.resolve_loan(loan_obj.raw_folder_name)
 
-                if size < config.traversal.min_file_size_bytes or size > config.traversal.max_file_size_bytes:
-                    continue
+        candidate = classifier.classify(
+            file_rec, rel_canonical, loan_canonical, run_id
+        )
 
-                from .models import generate_document_id
-                file_id = generate_document_id(file_path, size, mtime)
+        if candidate is None:
+            # Below classification threshold — quarantine
+            review_id = hashlib.md5(
+                f"unclassified|{fpath}".encode("utf-8")
+            ).hexdigest()
+            review = ReviewRecord(
+                review_id=review_id,
+                entity_type="file",
+                entity_id=file_rec.file_id,
+                entity_path=str(fpath),
+                reason_code="UNCLASSIFIED",
+                reason_detail="Below classification confidence threshold",
+                bucket="QUARANTINE",
+                run_id=run_id,
+            )
+            all_reviews.append(review)
+            registry.upsert_review(review)
+            total_quarantined += 1
+            continue
 
-                file_rec = FileRecord(
-                    file_id=file_id,
-                    file_path=str(file_path),
-                    file_name=fname,
-                    file_extension=ext,
-                    file_size=size,
-                    modified_time=mtime,
-                    depth=current_depth,
-                    run_id=run_id,
-                )
+        # GAP-003: Populate page count from file metadata
+        if candidate.page_count is None:
+            candidate.page_count = _extract_page_count(fpath)
 
-                # Enrich with relationship/loan context
-                file_rec = qualifier.qualify_file_context(file_rec, relationships, loans)
-                registry.upsert_file(file_rec)
-                total_files += 1
+        # ----------------------------------------------------------
+        # Stage 3: Quality Gate
+        # ----------------------------------------------------------
+        qg_result, qg_notes = quality_gate.evaluate(candidate, file_rec.file_size)
+        candidate.quality_gate = qg_result
+        candidate.quality_notes = qg_notes
 
-                # ----------------------------------------------------------
-                # Stage 2: Classification
-                # ----------------------------------------------------------
-                rel_canonical = ""
-                loan_canonical = ""
+        if qg_result.value.startswith("FAIL"):
+            candidate.disposition = CandidateDisposition.QUARANTINED
+            review_id = hashlib.md5(
+                f"quality|{fpath}|{qg_result.value}".encode("utf-8")
+            ).hexdigest()
+            review = ReviewRecord(
+                review_id=review_id,
+                entity_type="candidate",
+                entity_id=candidate.candidate_id,
+                entity_path=str(fpath),
+                reason_code=qg_result.value,
+                reason_detail=qg_notes,
+                bucket="QUARANTINE",
+                run_id=run_id,
+            )
+            all_reviews.append(review)
+            registry.upsert_review(review)
+            total_quarantined += 1
 
-                if file_rec.relationship_id and file_rec.relationship_id in relationships:
-                    rel_obj = relationships[file_rec.relationship_id]
-                    raw_name = getattr(rel_obj, "raw_folder_name", "")
-                    rel_canonical = mapper.resolve_relationship(raw_name)
-
-                if file_rec.loan_id and file_rec.loan_id in loans:
-                    loan_obj = loans[file_rec.loan_id]
-                    raw_name = getattr(loan_obj, "raw_folder_name", "")
-                    loan_canonical = mapper.resolve_loan(raw_name)
-
-                candidate = classifier.classify(
-                    file_rec, rel_canonical, loan_canonical, run_id
-                )
-
-                if candidate is None:
-                    # Below classification threshold — quarantine
-                    review_id = hashlib.md5(
-                        f"unclassified|{file_path}".encode("utf-8")
-                    ).hexdigest()
-                    review = ReviewRecord(
-                        review_id=review_id,
-                        entity_type="file",
-                        entity_id=file_id,
-                        entity_path=str(file_path),
-                        reason_code="UNCLASSIFIED",
-                        reason_detail="Below classification confidence threshold",
-                        bucket="QUARANTINE",
-                        run_id=run_id,
-                    )
-                    all_reviews.append(review)
-                    registry.upsert_review(review)
-                    total_quarantined += 1
-                    continue
-
-                # ----------------------------------------------------------
-                # Stage 3: Quality Gate
-                # ----------------------------------------------------------
-                qg_result, qg_notes = quality_gate.evaluate(candidate, size)
-                candidate.quality_gate = qg_result
-                candidate.quality_notes = qg_notes
-
-                if qg_result.value.startswith("FAIL"):
-                    candidate.disposition = CandidateDisposition.QUARANTINED
-                    review_id = hashlib.md5(
-                        f"quality|{file_path}|{qg_result.value}".encode("utf-8")
-                    ).hexdigest()
-                    review = ReviewRecord(
-                        review_id=review_id,
-                        entity_type="candidate",
-                        entity_id=candidate.candidate_id,
-                        entity_path=str(file_path),
-                        reason_code=qg_result.value,
-                        reason_detail=qg_notes,
-                        bucket="QUARANTINE",
-                        run_id=run_id,
-                    )
-                    all_reviews.append(review)
-                    registry.upsert_review(review)
-                    total_quarantined += 1
-
-                registry.upsert_candidate(candidate)
-                all_candidates.append(candidate)
-                file_metadata[candidate.candidate_id] = (size, mtime)
-                candidates_by_id[candidate.candidate_id] = candidate
-                total_candidates += 1
+        registry.upsert_candidate(candidate)
+        all_candidates.append(candidate)
+        file_metadata[candidate.candidate_id] = (file_rec.file_size, file_rec.modified_time)
+        candidates_by_id[candidate.candidate_id] = candidate
+        total_candidates += 1
 
     registry.commit()
     logger.info(
@@ -256,12 +273,26 @@ def run_pipeline(
     )
 
     # ------------------------------------------------------------------
+    # Stage 3b: Content-hash deduplication (GAP-002 fix)
+    # ------------------------------------------------------------------
+    logger.info("--- Stage 3b: Content-Hash Deduplication ---")
+
+    passing = [c for c in all_candidates if not c.quality_gate.value.startswith("FAIL")]
+    passing, dedup_reviews = _deduplicate_by_content_hash(
+        passing, file_metadata, run_id
+    )
+    for rv in dedup_reviews:
+        all_reviews.append(rv)
+        registry.upsert_review(rv)
+    total_quarantined += len(dedup_reviews)
+    registry.commit()
+    logger.info("After dedup: %d passing candidates (%d duplicates removed)", len(passing), len(dedup_reviews))
+
+    # ------------------------------------------------------------------
     # Stage 4: Selection
     # ------------------------------------------------------------------
     logger.info("--- Stage 4: Selection ---")
 
-    # Filter to only passing candidates
-    passing = [c for c in all_candidates if not c.quality_gate.value.startswith("FAIL")]
     selections, updated_candidates = selector.select(passing, file_metadata, run_id)
 
     for sel in selections:
@@ -295,17 +326,39 @@ def run_pipeline(
     logger.info("Selection complete: %d selected from %d passing candidates", len(selections), len(passing))
 
     # ------------------------------------------------------------------
-    # Stage 5: Corpus Build
+    # Stage 5: Corpus Build (GAP-001 fix: dry-run gate)
     # ------------------------------------------------------------------
     logger.info("--- Stage 5: Corpus Build ---")
 
-    copy_records = builder.build(selections, candidates_by_id, run_id)
-    for cr in copy_records:
-        registry.upsert_copy(cr)
+    total_copied = 0
 
-    total_copied = sum(1 for cr in copy_records if cr.copy_success)
+    if dry_run:
+        # GAP-001: Emit selection summary instead of copying
+        logger.info("DRY-RUN: skipping file copy. Selection summary:")
+        for sel in selections:
+            cand = candidates_by_id.get(sel.candidate_id)
+            src = cand.source_path if cand else "UNKNOWN"
+            logger.info(
+                "  WOULD COPY: %s -> %s/%s/%s/%d/ (rank %d)",
+                src,
+                sel.relationship_canonical,
+                sel.loan_canonical,
+                sel.document_type.value,
+                sel.document_year,
+                sel.rank_in_year,
+            )
+        # Print dry-run summary to stdout
+        print(f"\nDRY-RUN: {len(selections)} files would be copied. No files were modified.")
+    else:
+        # Wrap copy loop with progress bar (GAP-004)
+        copy_records = builder.build(selections, candidates_by_id, run_id)
+        for cr in copy_records:
+            registry.upsert_copy(cr)
+
+        total_copied = sum(1 for cr in copy_records if cr.copy_success)
+        logger.info("Corpus build: %d files copied successfully", total_copied)
+
     registry.commit()
-    logger.info("Corpus build: %d files copied successfully", total_copied)
 
     # ------------------------------------------------------------------
     # Stage 6: Finalize
@@ -360,6 +413,136 @@ def run_pipeline(
     logger.info("Registry stats: %s", stats)
 
     return manifest
+
+
+# ---------------------------------------------------------------------------
+# GAP-002: Content-hash deduplication
+# ---------------------------------------------------------------------------
+
+def _deduplicate_by_content_hash(
+    candidates: list[CandidateRecord],
+    file_metadata: dict[str, tuple[int, float]],
+    run_id: str,
+) -> tuple[list[CandidateRecord], list[ReviewRecord]]:
+    """Remove duplicate files (same content hash) keeping the best-ranked candidate.
+
+    Groups candidates by content hash. Within each group, keeps the candidate
+    with the best classification score; remaining duplicates get QUARANTINED
+    with a structured review record.
+    """
+    reviews: list[ReviewRecord] = []
+
+    # Compute content hashes — group candidates by hash
+    hash_groups: dict[str, list[CandidateRecord]] = defaultdict(list)
+    unhashable: list[CandidateRecord] = []
+
+    for c in candidates:
+        try:
+            content_hash = generate_content_hash(Path(c.source_path))
+            hash_groups[content_hash].append(c)
+        except (OSError, PermissionError) as exc:
+            logger.debug("Cannot hash %s for dedup: %s", c.source_path, exc)
+            unhashable.append(c)
+
+    deduped: list[CandidateRecord] = list(unhashable)
+
+    for content_hash, group in hash_groups.items():
+        if len(group) == 1:
+            deduped.append(group[0])
+            continue
+
+        # Sort: best candidate first (non-draft, higher score, larger file)
+        group.sort(key=lambda c: (
+            0 if not c.is_draft else 1,
+            -c.classification_score,
+            -file_metadata.get(c.candidate_id, (0, 0.0))[0],
+        ))
+
+        # Keep the best, quarantine the rest
+        deduped.append(group[0])
+        for dup in group[1:]:
+            dup.disposition = CandidateDisposition.QUARANTINED
+            review_id = hashlib.md5(
+                f"dedup|{content_hash}|{dup.source_path}".encode("utf-8")
+            ).hexdigest()
+            reviews.append(ReviewRecord(
+                review_id=review_id,
+                entity_type="candidate",
+                entity_id=dup.candidate_id,
+                entity_path=dup.source_path,
+                reason_code="DUPLICATE_CONTENT",
+                reason_detail=f"Content hash {content_hash} matches {group[0].source_path}",
+                bucket="QUARANTINE",
+                run_id=run_id,
+            ))
+            logger.info(
+                "Dedup: %s is duplicate of %s (hash=%s)",
+                dup.source_path, group[0].source_path, content_hash[:12],
+            )
+
+    return deduped, reviews
+
+
+# ---------------------------------------------------------------------------
+# GAP-003: Page count extraction
+# ---------------------------------------------------------------------------
+
+def _extract_page_count(file_path: Path) -> int | None:
+    """Extract page count from PDF or DOCX files using lightweight readers.
+
+    - PDF: uses PyPDF2 (PdfReader) if available
+    - DOCX: uses python-docx paragraph count as proxy if available
+
+    Returns None if the library is unavailable or extraction fails.
+    """
+    ext = file_path.suffix.lower()
+
+    if ext == ".pdf":
+        return _extract_pdf_page_count(file_path)
+    elif ext in (".docx",):
+        return _extract_docx_page_count(file_path)
+
+    return None
+
+
+def _extract_pdf_page_count(file_path: Path) -> int | None:
+    """Extract page count from a PDF using PyPDF2."""
+    try:
+        from PyPDF2 import PdfReader
+    except ImportError:
+        try:
+            from pypdf import PdfReader  # type: ignore[no-redef]
+        except ImportError:
+            logger.debug("PyPDF2/pypdf not available — skipping PDF page count for %s", file_path)
+            return None
+
+    try:
+        reader = PdfReader(str(file_path))
+        return len(reader.pages)
+    except (OSError, PermissionError, ValueError) as exc:
+        logger.debug("Cannot read PDF page count for %s: %s", file_path, exc)
+        return None
+
+
+def _extract_docx_page_count(file_path: Path) -> int | None:
+    """Estimate page count from a DOCX using paragraph count as proxy.
+
+    Heuristic: ~25 paragraphs per page is a reasonable average for business docs.
+    """
+    try:
+        from docx import Document  # type: ignore[import-untyped]
+    except ImportError:
+        logger.debug("python-docx not available — skipping DOCX page count for %s", file_path)
+        return None
+
+    try:
+        doc = Document(str(file_path))
+        para_count = len(doc.paragraphs)
+        # Rough estimate: 25 paragraphs per page, minimum 1
+        return max(1, para_count // 25)
+    except (OSError, PermissionError, ValueError) as exc:
+        logger.debug("Cannot read DOCX for %s: %s", file_path, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -440,13 +623,15 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     run_id = args.run_id or generate_run_id()
-    logger.info("Starting LDCB pipeline (run_id=%s)", run_id)
+    logger.info("Starting LDCB pipeline (run_id=%s, dry_run=%s)", run_id, args.dry_run)
 
-    manifest = run_pipeline(config, rules, run_id)
+    manifest = run_pipeline(config, rules, run_id, dry_run=args.dry_run)
 
     # Print summary to stdout
     print(f"\n{'='*60}")
     print(f"LDCB Pipeline Complete — Run {manifest.run_id}")
+    if args.dry_run:
+        print("  *** DRY-RUN — no files were copied ***")
     print(f"{'='*60}")
     print(f"  Files discovered:  {manifest.total_files_discovered}")
     print(f"  Candidates:        {manifest.total_candidates}")
