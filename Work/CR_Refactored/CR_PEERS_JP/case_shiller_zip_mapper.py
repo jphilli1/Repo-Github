@@ -1,5 +1,4 @@
 """
-<<<<<<< HEAD
 Case-Shiller ZIP Code Mapper — HUD USPS Crosswalk Enrichment
 ==============================================================
 

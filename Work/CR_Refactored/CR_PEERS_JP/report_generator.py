@@ -202,22 +202,6 @@ def validate_output_inputs(
 
 
 # ==================================================================================
-# ALIAS HELPER (B3)
-# ==================================================================================
-
-def build_plot_df_with_alias(df, alias_map):
-    frames = []
-    for alias_cert, source_cert in alias_map.items():
-        subset = df[df['CERT'] == source_cert].copy()
-        if not subset.empty:
-            subset['CERT'] = alias_cert
-            frames.append(subset)
-    if frames:
-        return pd.concat([df] + frames, ignore_index=True)
-    return df
-
-
-# ==================================================================================
 # CHART GENERATION FUNCTIONS
 # ==================================================================================
 

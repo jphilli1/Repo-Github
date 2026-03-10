@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 #!/usr/bin/env python3
 """
 Regression Tests for CR_PEERS_JP
@@ -10,22 +9,10 @@ Executable assertions for:
   3. Over-exclusion detection — diagnostics-first normalization
   4. Workbook sanity — required sheets and columns present
   5. Consumer trace — every high-severity metric has declared consumers
-=======
-"""
-Regression tests for MSPBNA Credit Risk Dashboard pipeline.
-
-Validates:
-- Normalization logic (no silent .clip, over-exclusion -> NaN/0)
-- Peer group uniqueness
-- Metric naming conventions
-- Ratio component correctness
-- Case-Shiller ZIP integration
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 """
 
 import os
 import sys
-<<<<<<< HEAD
 import numpy as np
 import pandas as pd
 
@@ -419,7 +406,12 @@ def run_all_tests():
 if __name__ == "__main__":
     success = run_all_tests()
     sys.exit(0 if success else 1)
-=======
+
+
+# ===========================================================================
+# UNITTEST-BASED REGRESSION CLASSES (supplemental)
+# ===========================================================================
+
 import unittest
 
 import numpy as np
@@ -669,4 +661,3 @@ class TestCaseShillerZIP(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
