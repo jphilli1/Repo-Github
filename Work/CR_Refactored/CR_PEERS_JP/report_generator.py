@@ -26,7 +26,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from matplotlib.gridspec import GridSpec
-
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).parent.resolve() / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path)
+except ImportError:
+    pass
 # Set style for better-looking charts
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_palette("husl")

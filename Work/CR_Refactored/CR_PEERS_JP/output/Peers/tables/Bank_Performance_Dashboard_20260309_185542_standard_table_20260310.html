@@ -1,0 +1,200 @@
+
+    <html>
+    <head>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 20px;
+                background-color: #f5f5f5;
+            }
+            .email-container {
+                background-color: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                max-width: 1100px;
+                margin: 0 auto;
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+                color: #2c3e50;
+            }
+            .header h2 {
+                margin: 0;
+                font-size: 24px;
+                font-weight: 600;
+            }
+            .header p {
+                margin: 5px 0 0 0;
+                color: #7f8c8d;
+                font-size: 14px;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 20px 0;
+                font-size: 12px;
+            }
+            th {
+                background-color: #34495e;
+                color: white;
+                padding: 12px 8px;
+                text-align: center;
+                font-weight: 600;
+                border: 1px solid #2c3e50;
+            }
+            td {
+                padding: 10px 8px;
+                text-align: center;
+                border: 1px solid #bdc3c7;
+            }
+            tr:nth-child(even) {
+                background-color: #f8f9fa;
+            }
+            tr:hover {
+                background-color: #e3f2fd;
+            }
+            .metric-name {
+                text-align: left !important;
+                font-weight: 500;
+                color: #2c3e50;
+            }
+            .mspbna-value {
+                background-color: #fff3cd;
+                font-weight: 600;
+                color: #856404;
+            }
+            .positive {
+                color: #d32f2f;
+                font-weight: 600;
+            }
+            .negative {
+                color: #388e3c;
+                font-weight: 600;
+            }
+            .neutral {
+                color: #5d4037;
+            }
+            .footer {
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 2px solid #ecf0f1;
+                font-size: 12px;
+                color: #7f8c8d;
+                text-align: center;
+            }
+            .legend {
+                margin: 20px 0;
+                padding: 15px;
+                background-color: #f8f9fa;
+                border-radius: 5px;
+                font-size: 11px;
+                color: #495057;
+            }
+            .legend strong {
+                color: #2c3e50;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <div class="header">
+                <h2>Credit Risk Metrics Comparison</h2>
+                <p>MSPBNA vs Peer Groups Analysis | Report Date: December 31, 2025</p>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 25%;">Credit Metric</th>
+                        <th style="width: 10%;">MSPBNA</th>
+    <th style="width: 12%;">Core PB</th>
+<th style="width: 12%;">MSPBNA+Wealth</th>
+<th style="width: 12%;">All Peers</th>
+<th style="width: 12%;">Diff vs Core PB</th>
+<th style="width: 12%;">Diff vs MSPBNA+Wealth</th>
+<th style="width: 12%;">Diff vs All Peers</th>
+
+                    </tr>
+                </thead>
+                <tbody>
+    
+                    <tr>
+                        <td class="metric-name">Assets</td>
+                        <td class="mspbna-value">$254,706,000M</td>
+        <td>$339,673,640M</td>
+<td>$339,673,640M</td>
+<td>$1,580,896,703M</td>
+<td class="neutral">-$84,967,640M</td>
+<td class="neutral">-$84,967,640M</td>
+<td class="neutral">-$1,326,190,703M</td>
+</tr>
+                    <tr>
+                        <td class="metric-name">Gross Loans</td>
+                        <td class="mspbna-value">$174,390,000M</td>
+        <td>$163,706,334M</td>
+<td>$163,706,334M</td>
+<td>$680,971,429M</td>
+<td class="neutral">+$10,683,666M</td>
+<td class="neutral">+$10,683,666M</td>
+<td class="neutral">-$506,581,429M</td>
+</tr>
+                    <tr>
+                        <td class="metric-name">TTM NCO Rate (%)</td>
+                        <td class="mspbna-value">0.01%</td>
+        <td>0.24%</td>
+<td>0.24%</td>
+<td>0.52%</td>
+<td class="negative">-0.23%</td>
+<td class="negative">-0.23%</td>
+<td class="negative">-0.51%</td>
+</tr>
+                    <tr>
+                        <td class="metric-name">NPL to Gross Loans (%)</td>
+                        <td class="mspbna-value">0.25%</td>
+        <td>0.43%</td>
+<td>0.43%</td>
+<td>0.61%</td>
+<td class="negative">-0.19%</td>
+<td class="negative">-0.19%</td>
+<td class="negative">-0.36%</td>
+</tr>
+                    <tr>
+                        <td class="metric-name">Allowance to Gross Loans (%)</td>
+                        <td class="mspbna-value">0.20%</td>
+        <td>0.32%</td>
+<td>0.32%</td>
+<td>1.14%</td>
+<td class="negative">-0.12%</td>
+<td class="negative">-0.12%</td>
+<td class="negative">-0.93%</td>
+</tr>
+                    <tr>
+                        <td class="metric-name">TTM Past Due Rate (%)</td>
+                        <td class="mspbna-value">0.08%</td>
+        <td>0.23%</td>
+<td>0.23%</td>
+<td>0.53%</td>
+<td class="negative">-0.15%</td>
+<td class="negative">-0.15%</td>
+<td class="negative">-0.45%</td>
+</tr>
+                </tbody>
+            </table>
+
+            <div class="legend">
+                <strong>Legend:</strong><br>
+                &bull; <span style="color: #d32f2f; font-weight: 600;">Red values</span>: MSPBNA performs worse than peer group (higher is worse for most credit metrics)<br>
+                &bull; <span style="color: #388e3c; font-weight: 600;">Green values</span>: MSPBNA performs better than peer group (lower is better for most credit metrics)<br>
+                &bull; All values are as of the latest available quarter
+            </div>
+
+            <div class="footer">
+                <p>This report is generated automatically from FDIC call report data.<br>
+                For questions or additional analysis, please contact the Credit Risk team.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    
