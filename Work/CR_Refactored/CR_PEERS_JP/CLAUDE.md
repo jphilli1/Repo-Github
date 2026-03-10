@@ -119,6 +119,10 @@ All output files include the source Excel stem and a datestamp:
 
 These are **non-negotiable** for any agent editing this codebase:
 
+### ALWAYS UPDATE CLAUDE.md
+
+- Whenever you make architectural changes, add new charts, or change data pipelines, you **must** update this `CLAUDE.md` file to review restrictions, track to-do items, identify potential gaps, and inform future coding agents.
+
 ### NO HARDCODING
 
 - Subject bank CERTs **must** be loaded dynamically via `int(os.getenv("MSPBNA_CERT", "19977"))`.
@@ -252,3 +256,41 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 | `Norm_Loss_Adj_Yield` | Flatlines at 0.00% | Derived as `Norm_Loan_Yield - Norm_NCO_Rate`. Flatlines because `Norm_Loan_Yield` is zero. Will auto-resolve when `Norm_Loan_Yield` is fixed. |
 
 **Action for future agents**: Search `MSPBNA_CR_Normalized.py` for the FDIC field list (around line 120-230) and confirm `ILNLS` and `ELNATR` are included. Then trace the TTM computation path to ensure `Int_Inc_Loans_TTM` and `Provision_Exp_TTM` are populated before the normalization step uses them.
+
+---
+
+## 8. Metric Registry & Validation Architecture
+
+### Overview
+
+Derived metrics are now formally registered in `metric_registry.py` using a `MetricSpec` dataclass. Each spec declares:
+
+| Field | Purpose |
+|---|---|
+| `code` | Column name in the DataFrame (e.g., `Risk_Adj_Allowance_Coverage`) |
+| `dependencies` | List of upstream columns required to compute this metric |
+| `compute` | A lambda that recomputes the metric from raw columns (used for validation) |
+| `unit` | Semantic type: `fraction`, `dollars`, `count`, `multiple`, `years` |
+| `min_value` / `max_value` | Optional sanity bounds |
+| `allow_negative` | Whether negative values are valid (e.g., NCO rates can go negative) |
+| `consumers` | List of downstream report artifacts (charts/tables) that depend on this metric |
+| `severity` | `high`, `medium`, or `low` — controls alerting priority |
+
+### Report Consumer Map
+
+The `REPORT_CONSUMER_MAP` dict (auto-built from specs) maps each metric code to its downstream consumers. This lets `report_generator.py` know which charts/tables are affected when a metric fails validation.
+
+### Validation Engine
+
+`run_upstream_validation_suite(df)` is called during `MSPBNA_CR_Normalized.py` right before writing the Excel output. For each registered metric, it:
+
+1. **Recomputes** the metric from its declared formula (`spec.compute(df)`)
+2. **Compares** the recomputed value against the stored column value
+3. **Checks bounds** (min/max) and sign constraints
+4. **Tags** each row with `CERT` and `REPDTE` for row-level tracing
+
+Results are exported to the `Metric_Validation_Audit` sheet in the Excel dashboard.
+
+### Dependency Graph
+
+`build_reverse_dependency_map()` returns `{upstream_col: [derived_metrics]}`, enabling impact analysis: if an upstream column (e.g., `Gross_Loans`) is missing or corrupt, the graph shows exactly which derived metrics and downstream reports are affected.

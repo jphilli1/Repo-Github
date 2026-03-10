@@ -1,0 +1,51 @@
+
+    <html><head><style>
+        body { font-family: Arial, sans-serif; background-color: transparent; }
+        .email-container { background-color: transparent; padding: 20px; max-width: 1400px; margin: 0 auto; text-align: center; }
+        h3 { color: #002F6C; margin-bottom: 5px; text-align: center; }
+        p.date-header { margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; background-color: transparent; }
+        th { background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }
+        td { padding: 6px; text-align: center; border: 1px solid #e0e0e0; background-color: transparent; }
+        .metric-name { text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 180px; background-color: transparent; }
+        .msbna-value { background-color: rgba(76, 120, 168, 0.08) !important; font-weight: 600; color: #444; }
+        .mspbna-good { background-color: #E8F5E9 !important; font-weight: bold; color: #2E7D32; border-left: 2px solid #2E7D32; }
+        .mspbna-bad { background-color: #FFEBEE !important; font-weight: bold; color: #C62828; border-left: 2px solid #C62828; }
+        .mspbna-neutral { background-color: #FFF8E1 !important; font-weight: bold; color: #F57F17; border-left: 2px solid #F57F17; }
+        .good-trend { color: #388e3c; font-weight: bold; }
+        .bad-trend { color: #d32f2f; font-weight: bold; }
+        .neutral-trend { color: #757575; font-weight: bold; }
+        .footnote { font-size: 10px; color: #666; margin-top: 20px; border-top: 1px solid #ccc; padding-top: 10px; text-align: left; }
+    </style></head><body>
+    <div class="email-container">
+        <h3>Resi Portfolio Credit Profile</h3>
+        <p class="date-header">December 31, 2025</p>
+        <table><thead><tr>
+            <th>Metric</th><th>MSPBNA</th><th>MSBNA</th><th>Core PB</th><th>MS+Wealth</th><th>All Peers</th><th>Diff vs Core</th>
+        </tr></thead><tbody>
+    <tr>
+            <td class="metric-name"><b>% of Resi in Nonaccrual*</b></td>
+            <td class="mspbna-bad">0.29%</td>
+            <td class="msbna-value">1.82%</td>
+            <td >0.27%</td><td >0.27%</td><td >1.00%</td>
+            <td class="bad-trend">+0.02%</td>
+        </tr><tr>
+            <td class="metric-name"><b>Resi NCO Rate (TTM)*</b></td>
+            <td class="mspbna-neutral">0.00%</td>
+            <td class="msbna-value">0.00%</td>
+            <td >0.00%</td><td >0.00%</td><td >-0.01%</td>
+            <td class="neutral-trend">+0.00%</td>
+        </tr><tr>
+            <td class="metric-name"><b>Resi Delinquency Rate (%)*</b></td>
+            <td class="mspbna-good">0.18%</td>
+            <td class="msbna-value">5.34%</td>
+            <td >0.63%</td><td >0.63%</td><td >1.43%</td>
+            <td class="good-trend">-0.46%</td>
+        </tr></tbody></table>
+    <div class="footnote">
+        <p><b>Peer Definitions:</b></p>
+        <p><b>1. Core PB:</b> Goldman Sachs Bank USA, UBS Bank USA.</p>
+        <p><b>2. All Peers:</b> US G-SIB Credit Intermediaries + UBS.</p>
+        <br>
+        <p><b>Color Coding:</b> Subject bank cells highlighted green if performing better than Core PB Avg, red if worse, yellow if neutral.</p>
+    </div></div></body></html>

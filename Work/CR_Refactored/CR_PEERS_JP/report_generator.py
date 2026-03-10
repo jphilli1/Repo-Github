@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from matplotlib.gridspec import GridSpec
+<<<<<<< HEAD
 try:
     from dotenv import load_dotenv
     _env_path = Path(__file__).parent.resolve() / ".env"
@@ -33,6 +34,18 @@ try:
         load_dotenv(_env_path)
 except ImportError:
     pass
+=======
+
+# Metric dependency and consumer mapping is centrally managed by metric_registry.py.
+# The REPORT_CONSUMER_MAP dict maps each metric code to the list of downstream
+# charts/tables that consume it.  This enables impact analysis when a metric
+# fails upstream validation.
+try:
+    from metric_registry import REPORT_CONSUMER_MAP
+except ImportError:
+    REPORT_CONSUMER_MAP = {}
+
+>>>>>>> origin/claude/refactor-report-generator-WO7fg
 # Set style for better-looking charts
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_palette("husl")
