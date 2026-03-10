@@ -71,7 +71,9 @@ output/Bank_Performance_Dashboard_YYYYMMDD_HHMMSS.xlsx
         ▼
 report_generator.py
         │
-        ├──► output/Peers/charts/   (Normalized credit deterioration chart PNGs)
+        ├──► output/Peers/charts/   (Standard + Normalized deterioration charts,
+        │                           Portfolio Mix, Segment Attribution,
+        │                           Reserve Allocation, Migration Ladder PNGs)
         ├──► output/Peers/scatter/  (Standard + Normalized scatter plot PNGs)
         └──► output/Peers/tables/   (Standard + Normalized HTML tables, FRED macro table)
 ```
@@ -89,10 +91,18 @@ report_generator.py
 ### Output File Naming
 
 All output files include the source Excel stem and a datestamp:
+- `{stem}_standard_credit_chart_YYYYMMDD.png`
 - `{stem}_normalized_credit_chart_YYYYMMDD.png`
+- `{stem}_portfolio_mix_YYYYMMDD.png`
+- `{stem}_problem_asset_attribution_YYYYMMDD.png`
+- `{stem}_reserve_risk_allocation_YYYYMMDD.png`
+- `{stem}_migration_ladder_YYYYMMDD.png`
 - `{stem}_scatter_nco_vs_npl_YYYYMMDD.png`
+- `{stem}_scatter_pd_vs_npl_YYYYMMDD.png`
+- `{stem}_scatter_norm_nco_vs_nonaccrual_YYYYMMDD.png`
 - `{stem}_standard_table_YYYYMMDD.html`
 - `{stem}_normalized_table_YYYYMMDD.html`
+- `{stem}_fred_table_YYYYMMDD.html`
 
 ---
 
@@ -142,11 +152,12 @@ All charts must use this color palette consistently:
 - Use `mspbna-row` and `mspbna-value` (not `idb-row` / `idb-value`).
 - All user-facing labels, HTML headers, and filenames must reference **MSPBNA**, never **IDB**.
 
-### NORMALIZED CHART METRICS
+### CHART METRICS
 
-- Bar metric: `Norm_NCO_Rate`
-- Line metric: `Norm_Nonaccrual_Rate` (fallback: `Norm_NPL_to_Gross_Loans_Rate`)
-- Standard charts are **not generated** — only normalized charts are produced.
+**Standard chart:** Bar = `TTM_NCO_Rate`, Line = `NPL_to_Gross_Loans_Rate`
+**Normalized chart:** Bar = `Norm_NCO_Rate`, Line = `Norm_Nonaccrual_Rate` (fallback: `Norm_NPL_to_Gross_Loans_Rate`)
+
+Both standard and normalized credit-deterioration charts are generated.
 
 ---
 
@@ -195,3 +206,21 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 **Symptom:** `FileNotFoundError: 8Q average sheet not found`
 
 **Fix:** Ensure `MSPBNA_CR_Normalized.py` completed successfully and the output Excel contains the `Averages_8Q*` sheet. Re-run Step 1 if needed.
+
+---
+
+## 6. Future Roadmap / Unfinished Charts
+
+The following visuals are prioritized for future development. When implementing, add the plotting logic to `report_generator.py` and route output to `output/Peers/charts/`.
+
+- **Years-of-reserves by segment:** (Line/Lollipop) Series: `RIC_*_Years_of_Reserves`. Intuitive framing for senior management — "coverage in years" lands better than raw reserve ratios.
+
+- **Growth vs deterioration quadrant:** (Peer Scatter) Series: `*_Growth_TTM` vs `TTM_NCO_Rate` / `NPL_to_Gross_Loans_Rate`. Answers whether portfolio growth is being bought at the cost of future credit losses.
+
+- **Risk-adjusted return frontier:** (Bubble Scatter) Series: `Norm_Risk_Adj_Return`, `Norm_Loss_Adj_Yield`, `Norm_NCO_Rate`. Makes the business-unit tradeoff visible.
+
+- **Concentration vs capital sensitivity:** (Quadrant) Series: `CRE_Concentration_Capital_Risk`, `CI_to_Capital_Risk`. Frames loan risk in capital language for escalation.
+
+- **Liquidity / draw-risk overlay:** (Combo Chart) Series: `Loans_to_Deposits`, `Liquidity_Ratio`, `HQLA_Ratio`. Stress often arrives through utilization and liquidity pressure before credit losses show up.
+
+- **Macro overlay on credit trend:** (Dual-axis/Small multiples) Series: FRED macro data vs `Norm_NCO_Rate`. Useful for explaining whether current deterioration is idiosyncratic or macro-linked.

@@ -944,7 +944,25 @@ def generate_reports(
                 print(f"  Table contains {len(norm_df)} credit metrics")
 
         # ------------------------------------------------------------------
-        # B4: NORMALIZED-ONLY CREDIT DETERIORATION CHART -> charts_dir
+        # STANDARD CREDIT DETERIORATION CHART -> charts_dir
+        # ------------------------------------------------------------------
+        print("\n" + "-" * 60)
+        print("GENERATING STANDARD CREDIT DETERIORATION CHART")
+        print("-" * 60)
+        std_chart_path = str(charts_dir / f"{base}_standard_credit_chart_{stamp}.png")
+        create_credit_deterioration_chart_ppt(
+            proc_df_with_peers=proc_df_with_peers,
+            subject_bank_cert=subject_bank_cert,
+            start_date=start_date,
+            bar_metric="TTM_NCO_Rate",
+            line_metric="NPL_to_Gross_Loans_Rate",
+            custom_title="TTM NCO Rate (bars) vs NPL to Gross Loans Rate (lines)",
+            save_path=std_chart_path,
+        )
+        print(f"  Standard chart saved: {std_chart_path}")
+
+        # ------------------------------------------------------------------
+        # NORMALIZED CREDIT DETERIORATION CHART -> charts_dir
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
         print("GENERATING NORMALIZED CREDIT DETERIORATION CHART")
@@ -1081,6 +1099,37 @@ def generate_reports(
             print(f"  FRED macro table saved: {fred_path}")
         except Exception as e:
             print(f"  Skipped FRED table: {e}")
+
+        # ------------------------------------------------------------------
+        # SEGMENT-LEVEL CHARTS -> charts_dir
+        # ------------------------------------------------------------------
+        print("\n" + "-" * 60)
+        print("GENERATING SEGMENT-LEVEL CHARTS")
+        print("-" * 60)
+
+        # 1. Portfolio Mix
+        mix_path = str(charts_dir / f"{base}_portfolio_mix_{stamp}.png")
+        fig = plot_portfolio_mix(proc_df_with_peers, subject_bank_cert, save_path=mix_path)
+        if fig:
+            print(f"  Portfolio mix chart saved: {mix_path}")
+
+        # 2. Problem-Asset Attribution
+        attr_path = str(charts_dir / f"{base}_problem_asset_attribution_{stamp}.png")
+        fig = plot_problem_asset_attribution(proc_df_with_peers, subject_bank_cert, save_path=attr_path)
+        if fig:
+            print(f"  Problem-asset attribution chart saved: {attr_path}")
+
+        # 3. Reserve Allocation vs Risk
+        reserve_path = str(charts_dir / f"{base}_reserve_risk_allocation_{stamp}.png")
+        fig = plot_reserve_risk_allocation(proc_df_with_peers, subject_bank_cert, save_path=reserve_path)
+        if fig:
+            print(f"  Reserve-risk allocation chart saved: {reserve_path}")
+
+        # 4. Migration Ladder
+        ladder_path = str(charts_dir / f"{base}_migration_ladder_{stamp}.png")
+        fig = plot_migration_ladder(proc_df_with_peers, subject_bank_cert, save_path=ladder_path)
+        if fig:
+            print(f"  Migration ladder chart saved: {ladder_path}")
 
         # ------------------------------------------------------------------
         # SUMMARY
@@ -1509,6 +1558,235 @@ def plot_scatter_dynamic(
         Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
     return fig, ax
+
+
+# ==================================================================================
+# SEGMENT-LEVEL CHART FUNCTIONS
+# ==================================================================================
+
+def plot_portfolio_mix(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Stacked area chart showing portfolio composition over time for the subject bank."""
+    series_cols = ["SBL_Composition", "Wealth_Resi_Composition",
+                   "CRE_Investment_Composition", "CRE_OO_Composition"]
+    available = [c for c in series_cols if c in df.columns]
+    if not available:
+        print("  Skipped portfolio mix: no composition columns found")
+        return None
+
+    subj = df[df["CERT"] == subject_bank_cert].copy()
+    if subj.empty:
+        print("  Skipped portfolio mix: no subject bank data")
+        return None
+
+    subj = subj.sort_values("REPDTE")
+    for c in available:
+        subj[c] = pd.to_numeric(subj[c], errors="coerce").fillna(0)
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+
+    colors = ["#F7A81B", "#4C78A8", "#70AD47", "#9C6FB6"]
+    labels = [c.replace("_Composition", "").replace("_", " ") for c in available]
+
+    ax.stackplot(
+        subj["REPDTE"],
+        *[subj[c] for c in available],
+        labels=labels,
+        colors=colors[:len(available)],
+        alpha=0.85,
+    )
+
+    ax.set_title("Portfolio Mix Shift Over Time", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.set_xlabel("Reporting Period", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Share (%)", fontsize=13, fontweight="bold")
+    ax.legend(loc="upper left", frameon=True, fontsize=11)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_problem_asset_attribution(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Stacked bar chart showing nonaccrual rate attribution by segment over time."""
+    series_cols = ["RIC_CRE_Nonaccrual_Rate", "RIC_Resi_Nonaccrual_Rate",
+                   "RIC_Comm_Nonaccrual_Rate", "RIC_Constr_Nonaccrual_Rate"]
+    available = [c for c in series_cols if c in df.columns]
+    if not available:
+        print("  Skipped problem-asset attribution: no RIC nonaccrual columns found")
+        return None
+
+    subj = df[df["CERT"] == subject_bank_cert].copy()
+    if subj.empty:
+        print("  Skipped problem-asset attribution: no subject bank data")
+        return None
+
+    subj = subj.sort_values("REPDTE")
+    for c in available:
+        subj[c] = pd.to_numeric(subj[c], errors="coerce").fillna(0)
+
+    subj["Period_Label"] = "Q" + subj["REPDTE"].dt.quarter.astype(str) + "-" + \
+                           (subj["REPDTE"].dt.year % 100).astype(str).str.zfill(2)
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+
+    colors = ["#E74C3C", "#3498DB", "#F39C12", "#9B59B6"]
+    x = np.arange(len(subj))
+    bottom = np.zeros(len(subj))
+
+    for i, col in enumerate(available):
+        label = col.replace("RIC_", "").replace("_Nonaccrual_Rate", "").replace("_", " ")
+        vals = subj[col].values
+        ax.bar(x, vals, bottom=bottom, label=label, color=colors[i % len(colors)], alpha=0.85, width=0.7)
+        bottom += vals
+
+    # Show every 4th label
+    tick_labels = ["" if i % 4 != 0 else lbl for i, lbl in enumerate(subj["Period_Label"])]
+    ax.set_xticks(x)
+    ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=10)
+
+    ax.set_title("Problem Asset Attribution by Segment", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.set_xlabel("Reporting Period", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Nonaccrual Rate", fontsize=13, fontweight="bold")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2%}"))
+    ax.legend(loc="upper left", frameon=True, fontsize=11)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_reserve_risk_allocation(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Grouped bar chart comparing ACL share vs Loan share for the latest quarter."""
+    # Discover available segment pairs (RIC_*_ACL_Share vs RIC_*_Loan_Share)
+    acl_cols = [c for c in df.columns if c.startswith("RIC_") and c.endswith("_ACL_Share")]
+    segments = []
+    for acl_col in acl_cols:
+        seg = acl_col.replace("RIC_", "").replace("_ACL_Share", "")
+        loan_col = f"RIC_{seg}_Loan_Share"
+        if loan_col in df.columns:
+            segments.append((seg, acl_col, loan_col))
+
+    if not segments:
+        print("  Skipped reserve-risk allocation: no matching ACL/Loan share pairs found")
+        return None
+
+    latest_date = df["REPDTE"].max()
+    subj = df[(df["CERT"] == subject_bank_cert) & (df["REPDTE"] == latest_date)]
+    if subj.empty:
+        print("  Skipped reserve-risk allocation: no subject bank data for latest quarter")
+        return None
+    subj = subj.iloc[0]
+
+    seg_labels, acl_vals, loan_vals = [], [], []
+    for seg, acl_col, loan_col in segments:
+        a = pd.to_numeric(subj.get(acl_col, np.nan), errors="coerce")
+        l = pd.to_numeric(subj.get(loan_col, np.nan), errors="coerce")
+        if pd.notna(a) and pd.notna(l):
+            seg_labels.append(seg.replace("_", " "))
+            acl_vals.append(float(a))
+            loan_vals.append(float(l))
+
+    if not seg_labels:
+        print("  Skipped reserve-risk allocation: all values are N/A")
+        return None
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+
+    x = np.arange(len(seg_labels))
+    width = 0.35
+    ax.bar(x - width / 2, acl_vals, width, label="Share of ACL", color="#E74C3C", alpha=0.85)
+    ax.bar(x + width / 2, loan_vals, width, label="Share of Loans", color="#4C78A8", alpha=0.85)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(seg_labels, rotation=30, ha="right", fontsize=11)
+    ax.set_title("Reserve Allocation vs Risk Exposure", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.set_ylabel("Share (%)", fontsize=13, fontweight="bold")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    ax.legend(loc="upper right", frameon=True, fontsize=12)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_migration_ladder(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Line chart showing the early-warning pipeline progression over time."""
+    series_map = {
+        "TTM_PD30_Rate": ("Past Due 30-90d", "#3498DB"),
+        "TTM_PD90_Rate": ("Past Due 90d+", "#F39C12"),
+        "Norm_Nonaccrual_Rate": ("Nonaccrual", "#E74C3C"),
+        "TTM_NCO_Rate": ("NCO", "#2C3E50"),
+    }
+    available = {k: v for k, v in series_map.items() if k in df.columns}
+    if not available:
+        print("  Skipped migration ladder: no pipeline columns found")
+        return None
+
+    subj = df[df["CERT"] == subject_bank_cert].copy()
+    if subj.empty:
+        print("  Skipped migration ladder: no subject bank data")
+        return None
+
+    subj = subj.sort_values("REPDTE")
+    for c in available:
+        subj[c] = pd.to_numeric(subj[c], errors="coerce")
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+
+    for col, (label, color) in available.items():
+        ax.plot(subj["REPDTE"], subj[col], label=label, color=color,
+                linewidth=2.2, marker="o", markersize=4)
+
+    ax.set_title("Early-Warning Migration Ladder", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.set_xlabel("Reporting Period", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Rate", fontsize=13, fontweight="bold")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2%}"))
+    ax.legend(loc="upper left", frameon=True, fontsize=11)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
 
 
 # ==================================================================================
