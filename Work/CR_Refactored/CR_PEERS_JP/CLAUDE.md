@@ -433,6 +433,27 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 
 5. **Verified clean**: `IDB_` prefix fully absent from `master_data_dictionary.py` (0 grep matches). `FDIC_Metric_Descriptions` used consistently across all files (no `FDIC_Metadata` references remain).
 
+### 2026-03-10 — Preflight Hardening, Peer-Average Blocking, Test Expansion
+
+1. **report_generator.py — preflight now blocks on plotted peer-average failures**: `validate_output_inputs()` now checks material normalization severity (`material_nan`) on plotted peer-average composites (90004, 90006) in addition to the subject bank. Any material failure on these CERTs is a blocking error that suppresses normalized charts/scatter.
+
+2. **report_generator.py — composite existence validation**: Preflight now validates that all required composite CERTs exist in data before plotting. Standard flow requires 90003 + 90001; normalized flow requires 90006 + 90004. Missing composites produce blocking errors.
+
+3. **report_generator.py — readable artifact names**: `suppressed_charts` now uses human-readable names (`normalized_credit_chart`, `normalized_scatter_nco_vs_nonaccrual`, `standard_scatter_nco_vs_npl`, `standard_scatter_pd_vs_npl`) instead of severity-column-derived names.
+
+4. **test_regression.py — 7 new tests added**:
+   - `test_no_idb_keys_in_data_dictionary` — asserts `LOCAL_DERIVED_METRICS` has no `IDB_` keys
+   - `test_preflight_blocks_peer_avg_material_nan` — 90006 with `material_nan` blocks
+   - `test_preflight_blocks_missing_normalized_composite` — missing 90004/90006 blocks
+   - `test_claude_md_no_conflict_markers` — no `<<<<<<<`/`=======`/`>>>>>>>` in CLAUDE.md
+   - `TestIDBCleanup.test_no_idb_keys_in_local_derived_metrics` (unittest)
+   - `TestPreflightValidation` class (3 tests: peer-avg blocking, missing composite, healthy pass)
+   - `TestClaudeMDIntegrity.test_no_merge_conflict_markers` (unittest)
+
+5. **CLAUDE.md — preflight docs updated**: Section 9 (Preflight Validation) now accurately documents peer-average blocking, composite existence checks, and readable artifact names.
+
+6. **Verified**: No merge conflict markers in CLAUDE.md. No `IDB_` keys in `master_data_dictionary.py`. `FDIC_Metric_Descriptions` used consistently.
+
 ---
 
 ## 8. To-Do / Known Issues
@@ -515,9 +536,14 @@ The normalization pipeline no longer uses silent `.clip(lower=0)`. Instead:
 `validate_output_inputs()` in `report_generator.py` runs before any chart/table generation:
 1. Checks subject bank CERT exists in data
 2. Flags all-NaN or all-zero normalized metrics
-3. Checks for material over-exclusion severity
-4. Validates real peers exist for scatter plots
-5. Runs semantic validation if metric_registry is available
+3. **Blocks** on material over-exclusion severity for subject bank AND plotted peer-average composites (90004, 90006)
+4. **Blocks** if required composite CERTs are missing from data:
+   - Standard: 90003 (All Peers), 90001 (Core PB)
+   - Normalized: 90006 (All Peers Norm), 90004 (Core PB Norm)
+5. Validates real peers exist for scatter plots
+6. Runs semantic validation if metric_registry is available
+
+Suppressed charts use readable artifact names: `normalized_credit_chart`, `normalized_scatter_nco_vs_nonaccrual`, `standard_scatter_nco_vs_npl`, `standard_scatter_pd_vs_npl`.
 
 ---
 

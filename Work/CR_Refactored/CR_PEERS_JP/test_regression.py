@@ -345,6 +345,81 @@ def test_report_generator_uses_canonical_resi_names():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 7. IDB LABEL CLEANUP
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_no_idb_keys_in_data_dictionary():
+    """LOCAL_DERIVED_METRICS must not contain any key starting with IDB_."""
+    from master_data_dictionary import LOCAL_DERIVED_METRICS
+    idb_keys = [k for k in LOCAL_DERIVED_METRICS if k.startswith("IDB_")]
+    assert len(idb_keys) == 0, (
+        f"LOCAL_DERIVED_METRICS contains IDB_ keys: {idb_keys}"
+    )
+    print("  [PASS] test_no_idb_keys_in_data_dictionary")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. PREFLIGHT VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_preflight_blocks_peer_avg_material_nan():
+    """validate_output_inputs must block when normalized peer-average composite
+    CERT 90006 has material_nan severity."""
+    from report_generator import validate_output_inputs
+    proc_df = pd.DataFrame({
+        "CERT": [19977, 90006, 90004, 33124],
+        "REPDTE": pd.Timestamp("2025-03-31"),
+        "Norm_NCO_Rate": [0.01, 0.02, 0.015, 0.01],
+        "_Norm_NCO_Severity": ["ok", "material_nan", "ok", "ok"],
+        "_Norm_NA_Severity": ["ok", "ok", "ok", "ok"],
+        "_Norm_Loans_Severity": ["ok", "ok", "ok", "ok"],
+    })
+    rolling_df = pd.DataFrame({
+        "CERT": [19977, 90006, 90004, 90003, 90001, 33124],
+    })
+    result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+    assert not result["valid"], "Preflight should block when 90006 has material_nan"
+    assert any("90006" in e for e in result["errors"]), (
+        f"Errors should mention CERT 90006: {result['errors']}"
+    )
+    assert "normalized_credit_chart" in result["suppressed_charts"], (
+        f"Suppressed should include normalized_credit_chart: {result['suppressed_charts']}"
+    )
+    print("  [PASS] test_preflight_blocks_peer_avg_material_nan")
+
+
+def test_preflight_blocks_missing_normalized_composite():
+    """validate_output_inputs must block when required normalized composite
+    CERTs 90006 or 90004 are missing from data."""
+    from report_generator import validate_output_inputs
+    proc_df = pd.DataFrame({
+        "CERT": [19977, 33124],  # No 90004 or 90006
+        "REPDTE": pd.Timestamp("2025-03-31"),
+    })
+    rolling_df = pd.DataFrame({
+        "CERT": [19977, 90003, 90001, 33124],  # Standard composites present, normalized missing
+    })
+    result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+    assert not result["valid"], "Preflight should block when normalized composites missing"
+    assert any("90006" in e or "90004" in e for e in result["errors"]), (
+        f"Errors should mention missing 90006/90004: {result['errors']}"
+    )
+    print("  [PASS] test_preflight_blocks_missing_normalized_composite")
+
+
+def test_claude_md_no_conflict_markers():
+    """CLAUDE.md must not contain merge conflict markers."""
+    claude_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CLAUDE.md")
+    with open(claude_path, "r") as f:
+        content = f.read()
+    for marker in ["<<<<<<<", "=======", ">>>>>>>"]:
+        assert marker not in content, (
+            f"CLAUDE.md contains merge conflict marker: {marker}"
+        )
+    print("  [PASS] test_claude_md_no_conflict_markers")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -376,6 +451,12 @@ def run_all_tests():
         test_resi_acl_coverage_vs_share,
         test_resi_composition_numerator_denominator,
         test_report_generator_uses_canonical_resi_names,
+        # 7. IDB label cleanup
+        test_no_idb_keys_in_data_dictionary,
+        # 8. Preflight validation
+        test_preflight_blocks_peer_avg_material_nan,
+        test_preflight_blocks_missing_normalized_composite,
+        test_claude_md_no_conflict_markers,
     ]
 
     passed = 0
@@ -660,6 +741,89 @@ class TestCaseShillerZIP(unittest.TestCase):
         from fred_case_shiller_discovery import METRO_MAP
         self.assertEqual(METRO_MAP.get("WD"), "Washington",
             f"WD maps to '{METRO_MAP.get('WD')}', expected 'Washington'")
+
+
+class TestIDBCleanup(unittest.TestCase):
+    """Tests for IDB_ label removal."""
+
+    def test_no_idb_keys_in_local_derived_metrics(self):
+        """LOCAL_DERIVED_METRICS must not contain any key starting with IDB_."""
+        from master_data_dictionary import LOCAL_DERIVED_METRICS
+        idb_keys = [k for k in LOCAL_DERIVED_METRICS if k.startswith("IDB_")]
+        self.assertEqual(len(idb_keys), 0, f"IDB_ keys found: {idb_keys}")
+
+
+class TestPreflightValidation(unittest.TestCase):
+    """Tests for validate_output_inputs() in report_generator.py."""
+
+    def test_blocks_on_peer_avg_material_nan(self):
+        """Preflight must block when normalized peer-average composite 90006
+        has material_nan severity."""
+        from report_generator import validate_output_inputs
+        proc_df = pd.DataFrame({
+            "CERT": [19977, 90006, 90004, 33124],
+            "REPDTE": pd.Timestamp("2025-03-31"),
+            "Norm_NCO_Rate": [0.01, 0.02, 0.015, 0.01],
+            "_Norm_NCO_Severity": ["ok", "material_nan", "ok", "ok"],
+            "_Norm_NA_Severity": ["ok", "ok", "ok", "ok"],
+            "_Norm_Loans_Severity": ["ok", "ok", "ok", "ok"],
+        })
+        rolling_df = pd.DataFrame({
+            "CERT": [19977, 90006, 90004, 90003, 90001, 33124],
+        })
+        result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("90006" in e for e in result["errors"]))
+        self.assertIn("normalized_credit_chart", result["suppressed_charts"])
+
+    def test_blocks_on_missing_normalized_composite(self):
+        """Preflight must block when normalized composites 90004/90006 are missing."""
+        from report_generator import validate_output_inputs
+        proc_df = pd.DataFrame({
+            "CERT": [19977, 33124],
+            "REPDTE": pd.Timestamp("2025-03-31"),
+        })
+        rolling_df = pd.DataFrame({
+            "CERT": [19977, 90003, 90001, 33124],
+        })
+        result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+        self.assertFalse(result["valid"])
+        self.assertTrue(
+            any("90006" in e or "90004" in e for e in result["errors"]),
+            f"Errors should reference missing composites: {result['errors']}"
+        )
+
+    def test_passes_when_all_composites_present_and_ok(self):
+        """Preflight should pass when all composites are present and healthy."""
+        from report_generator import validate_output_inputs
+        proc_df = pd.DataFrame({
+            "CERT": [19977, 90001, 90003, 90004, 90006, 33124],
+            "REPDTE": pd.Timestamp("2025-03-31"),
+            "_Norm_NCO_Severity": ["ok"] * 6,
+            "_Norm_NA_Severity": ["ok"] * 6,
+            "_Norm_Loans_Severity": ["ok"] * 6,
+            "Norm_NCO_Rate": [0.01] * 6,
+            "Norm_Nonaccrual_Rate": [0.005] * 6,
+            "Norm_Gross_Loans": [10000.0] * 6,
+        })
+        rolling_df = pd.DataFrame({
+            "CERT": [19977, 90001, 90003, 90004, 90006, 33124],
+        })
+        result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+        self.assertTrue(result["valid"], f"Should pass but got errors: {result['errors']}")
+
+
+class TestClaudeMDIntegrity(unittest.TestCase):
+    """Tests for CLAUDE.md document integrity."""
+
+    def test_no_merge_conflict_markers(self):
+        """CLAUDE.md must not contain merge conflict markers."""
+        claude_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CLAUDE.md")
+        with open(claude_path, "r") as f:
+            content = f.read()
+        for marker in ["<<<<<<<", "=======", ">>>>>>>"]:
+            self.assertNotIn(marker, content,
+                f"CLAUDE.md contains merge conflict marker: {marker}")
 
 
 if __name__ == '__main__':
