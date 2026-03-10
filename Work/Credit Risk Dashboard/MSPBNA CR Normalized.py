@@ -2815,12 +2815,11 @@ class BankMetricsProcessor:
         df_processed['RIC_CRE_PD90']       = resolve_cre_metric(df_processed, 'P9')
 
         # C. Residential (Standard View Balance = Wealth Resi Definition)
-        # Fix: do NOT rely on JJ-series here (can be missing/0 for some banks like MSBNA).
-        # Use the same numerator logic as the normalized wealth resi balance:
-        # First Liens (1797) + Jr Liens (5367) + HELOC (1799)
-        resi_first = best_of(df_processed, ['RCON1797', 'RCFD1797']).fillna(0)
-        resi_jr    = best_of(df_processed, ['RCON5367', 'RCFD5367']).fillna(0)
-        heloc      = best_of(df_processed, ['RCON1799', 'RCFD1799']).fillna(0)
+        # Capture ALL residential segments: First Liens + Junior Liens + HELOC/Open-End
+        resi_first = best_of(df_processed, ['RCFD1797', 'RCON1797']).fillna(0)
+        resi_jr    = best_of(df_processed, ['RCFD5367', 'RCON5367']).fillna(0)
+        # Open-end: try RC-C (5368) first, then alternative schedule (1799)
+        heloc      = best_of(df_processed, ['RCFD5368', 'RCON5368', 'RCFD1799', 'RCON1799']).fillna(0)
 
         # Calculate strict sum (Granular)
         resi_sum = resi_first + resi_jr + heloc
@@ -3199,6 +3198,10 @@ class BankMetricsProcessor:
                          norm_cols['Excl_Auto_P9'] + norm_cols['Excl_Ag_P9'] +
                          norm_cols['Excl_OO_CRE_P9'])
 
+        # Persist excluded PD totals for top-down Norm_PD30/PD90 calculation
+        norm_cols['Excluded_PD30'] = excluded_pd30
+        norm_cols['Excluded_PD90'] = excluded_pd90
+
         # --- [CRITICAL STEP] MERGE BATCH 1 ---
         df_norm_batch = pd.DataFrame(norm_cols, index=df_processed.index)
         df_processed = pd.concat([df_processed, df_norm_batch], axis=1)
@@ -3295,7 +3298,8 @@ class BankMetricsProcessor:
             np.where(df_processed['Norm_Total_Nonaccrual'].notna(), 'minor_clip', 'material_nan')
         )
         # =========================================================
-        # OVERRIDE: Normalized Performance (Wealth Segments Only)
+        # WEALTH RESI SEGMENT METRICS (for HTML tables, NOT for
+        # normalized totals — normalized totals are TOP-DOWN only)
         # =========================================================
 
         # 1. Define Wealth Resi Balance
@@ -3306,32 +3310,27 @@ class BankMetricsProcessor:
             )
         wealth_resi_bal = df_processed['Wealth_Resi_Balance']
 
-        # 2. Calculate PURE Wealth Resi Numerators (Excluding CRE)
+        # 2. Calculate PURE Wealth Resi Numerators (for segment-level rates)
         wealth_resi_nco_pure = sum_cols(df_processed, ['NTRERES', 'NTRELOC']).clip(lower=0)
         wealth_resi_na_pure  = sum_cols(df_processed, ['NARERES', 'NARELOC']).clip(lower=0)
         wealth_resi_pd30_pure = sum_cols(df_processed, ['P3RERES', 'P3RELOC']).clip(lower=0)
         wealth_resi_pd90_pure = sum_cols(df_processed, ['P9RERES', 'P9RELOC']).clip(lower=0)
 
-        # 3. Calculate Rates for HTML Report
+        # 3. Calculate Segment Rates for HTML Report
         df_processed['Wealth_Resi_TTM_NCO_Rate'] = safe_div(wealth_resi_nco_pure, wealth_resi_bal)
         df_processed['Wealth_Resi_NA_Rate'] = safe_div(wealth_resi_na_pure, wealth_resi_bal)
-
-        # Total Delinquency (30-89 + 90+)
         df_processed['Wealth_Resi_Delinquency_Rate'] = safe_div(
             wealth_resi_pd30_pure + wealth_resi_pd90_pure,
             wealth_resi_bal
         )
 
-        # 4. Normalized Master Metrics (Resi Pure + Inv CRE)
-        # Reconstruct total normalized metrics by adding Investment CRE back in
-        df_processed['Norm_Total_NCO'] = wealth_resi_nco_pure + sum_cols(df_processed, ['NTREMULT', 'NTRENROT'])
-
-        # Define total_na immediately before using it
-        total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
-
-        df_processed['Norm_Total_Nonaccrual'] = wealth_resi_na_pure + sum_cols(df_processed, ['NAREMULT', 'NARENROT'])
-        df_processed['Norm_PD30'] = wealth_resi_pd30_pure + sum_cols(df_processed, ['P3REMULT', 'P3RENROT'])
-        df_processed['Norm_PD90'] = wealth_resi_pd90_pure + sum_cols(df_processed, ['P9REMULT', 'P9RENROT'])
+        # 4. TOP-DOWN Norm_PD30 / Norm_PD90 (Total - Excluded)
+        # Norm_Total_NCO and Norm_Total_Nonaccrual are already set top-down above.
+        # Norm_PD30 and Norm_PD90 need the same top-down approach.
+        _excl_pd30 = df_processed.get('Excluded_PD30', 0.0)
+        _excl_pd90 = df_processed.get('Excluded_PD90', 0.0)
+        df_processed['Norm_PD30'] = (df_processed['TopHouse_PD30'] - _excl_pd30).clip(lower=0)
+        df_processed['Norm_PD90'] = (df_processed['TopHouse_PD90'] - _excl_pd90).clip(lower=0)
 
         #(D) Wealth-only denominator ---
         # --- G. Calculate Normalized Master Metrics (COMPONENTS ONLY) ---
@@ -3551,14 +3550,15 @@ class BankMetricsProcessor:
         use_components = resi_components.ne(0)
         def compute_wealth_resi_bal(df):
             # Try RC-C components first (if present and non-trivial)
-            rcc_cols = ['RCFD1797','RCON1797','RCFD5367','RCON5367','RCFD5368','RCON5368']
-            have_any = any(c in df.columns for c in rcc_cols)
+            # First Liens (1797) + Junior Liens (5367) + HELOC/Open-End (5368, 1799)
+            rcc_first = best_of(df, ['RCFD1797', 'RCON1797']).fillna(0)
+            rcc_jr    = best_of(df, ['RCFD5367', 'RCON5367']).fillna(0)
+            rcc_heloc = best_of(df, ['RCFD5368', 'RCON5368', 'RCFD1799', 'RCON1799']).fillna(0)
+            rcc = rcc_first + rcc_jr + rcc_heloc
 
-            if have_any:
-                rcc = df.reindex(columns=rcc_cols, fill_value=0).fillna(0).sum(axis=1)
-                # If RC-C is effectively all zeros, fallback
-                if (rcc.abs().sum() > 0):
-                    return rcc.clip(lower=0)
+            # If RC-C is effectively all zeros, fallback
+            if (rcc.abs().sum() > 0):
+                return rcc.clip(lower=0)
 
             # Fallback: FDIC balance proxies (your “known good” definition)
             return (
