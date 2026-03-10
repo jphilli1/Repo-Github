@@ -15,6 +15,11 @@ The two core scripts are:
 |---|---|
 | `MSPBNA_CR_Normalized.py` | Data fetch, processing, normalization, and Excel dashboard creation |
 | `report_generator.py` | Reads the dashboard Excel and produces charts, scatters, and HTML tables |
+| `metric_registry.py` | Derived metric specs, validation engine, dependency graph |
+| `fred_series_registry.py` | Central FRED series registry (SBL, Resi, CRE, Case-Shiller) |
+| `fred_case_shiller_discovery.py` | Async Case-Shiller release-table discovery |
+| `fred_transforms.py` | Transforms, spreads, z-scores, regime flags |
+| `fred_ingestion_engine.py` | Async FRED fetcher, validation, sheet routing, Excel output |
 
 ---
 
@@ -90,6 +95,12 @@ report_generator.py
 | `FRED_Data` | Macroeconomic time-series (Fed Funds, VIX, Unemployment, etc.) |
 | `FRED_Descriptions` | Series ID ↔ Short Name mapping for FRED data |
 | `FDIC_Metric_Descriptions` | Human-readable descriptions of FDIC metrics |
+| `FRED_SBL_Backdrop` | SBL proxy series + spreads / regime flags |
+| `FRED_Residential_Jumbo` | Jumbo rates, SLOOS, resi balances, delinquency, charge-offs |
+| `FRED_CRE` | CRE balances, CLD, SLOOS, delinquency, charge-offs, prices |
+| `FRED_CaseShiller_Master` | Full Case-Shiller registry (all discovered series) |
+| `FRED_CaseShiller_Selected` | Curated Case-Shiller subset for dashboard |
+| `FRED_Expansion_Registry` | Full metadata registry audit sheet |
 
 ### Output File Naming
 
@@ -255,6 +266,20 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 
 5. **Dead Metric Suppression (report_generator.py)**: Added filtering in all 4 HTML table generators (`generate_credit_metrics_email_table`, `generate_ratio_components_table`, `generate_segment_focus_table`, `generate_detailed_peer_table`) to skip metric rows where all displayed entity values are 0 or NaN. Prevents misleading `0.00%` rows for metrics like `Norm_Loan_Yield` and `Norm_Provision_Rate`.
 
+### 2026-03-10 — FRED Expansion Layer (Registry-Driven Macro/Market Context)
+
+1. **New module `fred_series_registry.py`**: Registry-driven design with `FREDSeriesSpec` dataclass. 80+ series across 4 modules: SBL proxy (14), Residential/Jumbo (19), CRE (23), Case-Shiller seed (24+). Each spec carries category, priority, transforms, chart routing, and sheet assignment.
+
+2. **New module `fred_case_shiller_discovery.py`**: Async release-table discovery for standard HPI (release 199159), tiered HPI (release 345173), and sales-pair counts. Classifies each discovered series by tier, metro, SA/NSA. Merges with static seed, deduplicating by series_id.
+
+3. **New module `fred_transforms.py`**: Full transformation pipeline: pct_chg (MoM/QoQ/YoY), z-scores (5Y/10Y), rolling averages (3M/12M), 4 named spreads (jumbo-conforming, CRE demand-standards, resi growth-delinquency, high-tier vs national HPI), and 4 regime flags.
+
+4. **New module `fred_ingestion_engine.py`**: Async fetcher (`FREDExpansionFetcher`) compatible with upstream pattern, validation engine (duplicates, discontinued, stale, missing metadata), sheet-level output routing, and Excel writer.
+
+5. **First-wave charts in `report_generator.py`**: 5 new chart functions: `plot_sbl_backdrop`, `plot_jumbo_conditions`, `plot_resi_credit_cycle`, `plot_cre_cycle`, `plot_cs_collateral_panel`. Integrated into `generate_reports()` with graceful fallback when expansion sheets are absent.
+
+6. **CLAUDE.md Section 9**: Full documentation of FRED expansion architecture, registry design, transforms, spreads, regime flags, output sheets, and validation checks.
+
 ### 2026-03-10 — HTML Table Overhaul (Standard + Normalized Split)
 
 1. **Detailed Peer Table refactored**: `generate_detailed_peer_table` now accepts `is_normalized` parameter. Standard version uses headline metrics (TTM_NCO_Rate, etc.); Normalized version uses Norm_ metrics. Column ordering changed: MSPBNA and MSBNA placed on the extreme left.
@@ -320,3 +345,110 @@ Results are exported to the `Metric_Validation_Audit` sheet in the Excel dashboa
 ### Dependency Graph
 
 `build_reverse_dependency_map()` returns `{upstream_col: [derived_metrics]}`, enabling impact analysis: if an upstream column (e.g., `Gross_Loans`) is missing or corrupt, the graph shows exactly which derived metrics and downstream reports are affected.
+
+---
+
+## 9. FRED Expansion Layer — Registry-Driven Macro / Market Context
+
+### Architecture
+
+The FRED expansion is implemented as four new modules:
+
+| Module | Purpose |
+|---|---|
+| `fred_series_registry.py` | Central registry of all expanded FRED series (`FREDSeriesSpec` dataclass) |
+| `fred_case_shiller_discovery.py` | Async release-table discovery for all Case-Shiller series |
+| `fred_transforms.py` | Transforms (pct_chg, z-scores, rolling avgs), named spreads, regime flags |
+| `fred_ingestion_engine.py` | Async fetcher, validation, sheet routing, Excel output |
+
+### Registry Design
+
+Each series is registered as a `FREDSeriesSpec` with fields: `category`, `subcategory`, `series_id`, `display_name`, `freq`, `units`, `seasonal_adjustment`, `priority`, `use_case`, `chart_group`, `transformations`, `is_active`, `notes`, `sheet`, `discovery_source`.
+
+**Priority levels:**
+- **P1** — Series directly used in dashboard charts
+- **P2** — Series used for overlays / regimes / alerts
+- **P3** — Full discovered registry (stored but not shown by default)
+
+### Modules
+
+**Module A — SBL / Market-Collateral Proxy** (14 series, `FRED_SBL_Backdrop` sheet):
+- Bank-system securities inventory (INVEST, SBCLCBM027SBOG family)
+- Broker-dealer leverage / margin proxies (BOGZ1 family)
+- Label as "market proxy" or "system-level SBL backdrop" — NOT as MSPBNA SBL comps
+
+**Module B — Residential / Jumbo Mortgage** (19 series, `FRED_Residential_Jumbo` sheet):
+- Jumbo rate (OBMMIJUMBO30YF), jumbo SLOOS demand/standards
+- Large-bank residential balances (RRELCBM, H8B1221, CRLLCB, RHELCB families)
+- Top-100-bank delinquency / charge-off (DRSFRMT100, CORSFRMT100)
+
+**Module C — CRE Lending / Underwriting / Credit** (23 series, `FRED_CRE` sheet):
+- CRE balance / growth (CREACB, CRELCB, H8B3219, CLDLCB families)
+- CRE SLOOS standards/demand (9 series covering nonfarm, multifamily, C&LD)
+- CRE credit quality (DRCRELEXF, CORCREXF, COMREPUSQ)
+
+**Module D — Case-Shiller Collateral** (seed: 24 series, discovered: ~140+):
+- Standard HPI: national, composites, key metros (SA + NSA)
+- Tiered HPI: high/middle/low tiers for 16 markets (discovery via release API)
+- Sales-pair counts: market liquidity context
+- Discovery uses `release_id=199159` (standard) and `release_id=345173` (tiered)
+
+### Transforms
+
+| Transform | Description |
+|---|---|
+| `pct_chg_mom` | Month-over-month percent change |
+| `pct_chg_qoq_annualized` | QoQ change, annualized |
+| `pct_chg_yoy` | Year-over-year percent change |
+| `z_score_5y` / `z_score_10y` | Rolling z-score over trailing window |
+| `rolling_3m_avg` / `rolling_12m_avg` | Rolling mean |
+| `spread_vs_*` | Spread against a reference series |
+
+### Named Spreads
+
+| Spread | Components |
+|---|---|
+| Jumbo vs Conforming | `OBMMIJUMBO30YF - MORTGAGE30US` |
+| CRE Demand vs Standards | `SUBLPDRCDNLGNQ - SUBLPDRCSNLGNQ` |
+| Resi Growth vs Delinquency | `H8B1221NLGCQG - DRSFRMT100S` |
+| High-Tier vs National HPI | YoY growth differential |
+
+### Regime Flags
+
+| Flag | Trigger |
+|---|---|
+| `REGIME__CRE_Tightening` | CRE standards > 0 AND demand < 0 |
+| `REGIME__Jumbo_Tightening` | Jumbo standards > 0 AND demand < 0 |
+| `REGIME__Resi_Stress` | Resi delinquency rising AND high-tier HPI decelerating |
+| `REGIME__SBL_Deleveraging` | Securities-in-bank-credit falling AND broker-dealer margin weakening |
+
+### Excel Output Sheets
+
+| Sheet | Contents |
+|---|---|
+| `FRED_SBL_Backdrop` | SBL proxy series + derived spreads / regime flags |
+| `FRED_Residential_Jumbo` | Jumbo rates, SLOOS, residential balances, delinquency, charge-offs |
+| `FRED_CRE` | CRE balances, CLD, SLOOS, delinquency, charge-offs, prices |
+| `FRED_CaseShiller_Master` | Full discovered Case-Shiller registry |
+| `FRED_CaseShiller_Selected` | Curated subset for dashboard visuals |
+| `FRED_Expansion_Registry` | Full metadata registry (audit sheet) |
+| `FRED_Expansion_Validation` | Validation results |
+
+### First-Wave Charts (report_generator.py)
+
+| Chart | Function | Key Series |
+|---|---|---|
+| SBL Backdrop | `plot_sbl_backdrop()` | SBCLCBM027SBOG + BOGZ1FU663067005A |
+| Jumbo Conditions | `plot_jumbo_conditions()` | OBMMIJUMBO30YF + SUBLPDHMDJLGNQ + SUBLPDHMSKLGNQ |
+| Resi Credit Cycle | `plot_resi_credit_cycle()` | DRSFRMT100S + CORSFRMT100S + H8B1221NLGCQG |
+| CRE Cycle | `plot_cre_cycle()` | H8B3219NLGCMG + SUBLPDRCSNLGNQ + DRCRELEXFT100S |
+| CS Collateral Panel | `plot_cs_collateral_panel()` | High-tier metros + national + sales-pair counts |
+
+### Validation Checks
+
+The ingestion engine validates:
+- **Duplicates**: No series_id appears more than once in the registry
+- **Discontinued**: Excludes series with observation_end before 2024
+- **Missing metadata**: Flags specs missing display_name, freq, units, or use_case
+- **Stale releases**: Warns if last valid observation is > 6 months old
+- **Orphan columns**: Data columns not present in registry
