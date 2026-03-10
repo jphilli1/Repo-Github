@@ -696,14 +696,121 @@ def _trend_class(diff_val) -> str:
 def generate_detailed_peer_table(
     proc_df_with_peers: pd.DataFrame,
     subject_bank_cert: int = 34221
-) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
+) -> Optional[str]:
+    latest_date = proc_df_with_peers["REPDTE"].max()
+    latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date].copy()
 
-    # Use exact same metric map to keep it synchronized
-    html, df = generate_credit_metrics_email_table(proc_df_with_peers, subject_bank_cert)
-    # Just route to the dynamic HTML generator with "detailed" type so it renders wider
-    if df is not None:
-        html = generate_html_email_table_dynamic(df, proc_df_with_peers["REPDTE"].max(), table_type="detailed")
-    return html, df
+    # Identify Composite Certs to separate them from real peers
+    composite_certs = [90001, 90002, 90003, 99998, 99999, 88888]
+    msbna_cert = 32992
+
+    # 1. Get real, individual peers (excluding Subject, MSBNA, and Composites)
+    individual_peer_certs = [c for c in latest_data["CERT"].unique() if c not in composite_certs + [subject_bank_cert, msbna_cert]]
+
+    # Build dictionary of all columns in the exact requested order
+    col_mapping = {}
+    for c in individual_peer_certs:
+        name = latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]
+        name = name.title().replace(" National Association", "").replace(" N.A.", "").strip()
+        col_mapping[c] = name
+
+    # Force MSPBNA, MSBNA on the right, followed by Peer Avg and Diff
+    col_mapping[subject_bank_cert] = "MSPBNA"
+    col_mapping[msbna_cert] = "MSBNA"
+
+    peer_avg_cert = 99999 if 99999 in latest_data["CERT"].values else 90003
+    col_mapping[peer_avg_cert] = "All Peers"
+
+    ordered_certs = individual_peer_certs + [subject_bank_cert, msbna_cert, peer_avg_cert]
+
+    metrics = [
+        ("Total Assets ($B)", "ASSET", "B"),
+        ("Total Loans ($B)", "LNLS", "B"),
+        ("Risk-Adj ACL Ratio (%)", "Risk_Adj_Allowance_Coverage", "%"),
+        ("Headline ACL Ratio (%)", "Allowance_to_Gross_Loans_Rate", "%"),
+        ("Nonaccrual Rate (%)", "Nonaccrual_to_Gross_Loans_Rate", "%"),
+        ("NCO Rate (TTM) (%)", "TTM_NCO_Rate", "%"),
+        ("SBL % of Loans", "SBL_Composition", "%"),
+        ("Resi % of Loans", "RIC_Resi_Loan_Share", "%"),
+        ("CRE % of Loans", "RIC_CRE_Loan_Share", "%"),
+        ("CRE % of ACL", "RIC_CRE_ACL_Share", "%"),
+        ("CRE ACL Ratio (%)", "RIC_CRE_ACL_Coverage", "%"),
+        ("CRE NPL Coverage (x)", "RIC_CRE_Risk_Adj_Coverage", "x"),
+        ("% of CRE in Nonaccrual", "RIC_CRE_Nonaccrual_Rate", "%"),
+        ("CRE NCO Rate (TTM)", "RIC_CRE_NCO_Rate", "%")
+    ]
+
+    html = f"""
+    <html><head><style>
+        body {{ font-family: Arial, sans-serif; background-color: transparent; }}
+        .email-container {{ background-color: transparent; padding: 20px; max-width: 1600px; margin: 0 auto; text-align: center; }}
+        h3 {{ color: #002F6C; margin-bottom: 5px; text-align: center; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; background-color: transparent; }}
+        th {{ background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }}
+        td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; background-color: transparent; }}
+        .metric-name {{ text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 180px; background-color: transparent; }}
+        .subject-value {{ background-color: #E6F3FF !important; font-weight: bold; color: #002F6C; border-left: 2px solid #002F6C; border-right: 2px solid #002F6C; }}
+        .msbna-value {{ background-color: #F4F7F9 !important; font-weight: 600; color: #444; }}
+        .bad-trend {{ color: #d32f2f; font-weight: bold; }}
+        .good-trend {{ color: #388e3c; font-weight: bold; }}
+        .neutral-trend {{ color: #757575; font-weight: bold; }}
+    </style></head><body>
+    <div class="email-container">
+        <h3>Detailed Peer Analysis</h3>
+        <table><thead><tr>
+            <th>Metric</th>
+    """
+
+    for c in ordered_certs: html += f"<th>{col_mapping[c]}</th>"
+    html += "<th>Diff Vs All Peers</th></tr></thead><tbody>"
+
+    for disp, code, fmt in metrics:
+        html += f'<tr><td class="metric-name"><b>{disp}</b></td>'
+
+        subj_val = np.nan
+        avg_val = np.nan
+
+        for c in ordered_certs:
+            row_slice = latest_data[latest_data["CERT"] == c]
+            val = row_slice.iloc[0].get(code, np.nan) if not row_slice.empty else np.nan
+
+            if c == subject_bank_cert: subj_val = val
+            if c == peer_avg_cert: avg_val = val
+
+            def fmt_val(v, fmt_type):
+                if pd.isna(v): return "N/A"
+                if fmt_type == "x": return f"{v:.2f}x"
+                if fmt_type == "B": return f"${v/1e9:.1f}B"
+                return f"{v*100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
+
+            cls = ""
+            if c == subject_bank_cert: cls = 'class="subject-value"'
+            elif c == msbna_cert: cls = 'class="msbna-value"'
+
+            html += f"<td {cls}>{fmt_val(val, fmt)}</td>"
+
+        # Diff vs All Peers Logic
+        diff = subj_val - avg_val if pd.notna(subj_val) and pd.notna(avg_val) else np.nan
+        if pd.isna(diff):
+            f_diff = "N/A"
+            diff_cls = "neutral-trend"
+        else:
+            if fmt == "%": f_diff = f"{diff*100:+.2f}%" if abs(diff) < 1.0 else f"{diff:+.2f}%"
+            elif fmt == "x": f_diff = f"{diff:+.2f}x"
+            else: f_diff = f"{diff/1e9:+.1f}B"
+
+            is_risk = any(k in disp for k in ['Nonaccrual', 'NCO', 'Delinq', 'Risk'])
+            is_safe = any(k in disp for k in ['Coverage', 'Ratio', 'Equity', 'ROA', 'ROE', 'Yield', 'Margin'])
+
+            if abs(diff) < 0.001: diff_cls = "neutral-trend"
+            elif is_risk: diff_cls = "bad-trend" if diff > 0 else "good-trend"
+            elif is_safe: diff_cls = "good-trend" if diff > 0 else "bad-trend"
+            else: diff_cls = "neutral-trend"
+
+        html += f'<td class="{diff_cls}">{f_diff}</td></tr>'
+
+    html += "</tbody></table></div></body></html>"
+    return html
 
 
 def generate_normalized_comparison_table(
@@ -775,26 +882,51 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
 
     try:
         subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
-        # Fallback to 90001 (Core PB) or 99999 depending on availability
-        peer_cert = 90001 if 90001 in latest_data["CERT"].values else 99999
+        peer_cert = 99999 if 99999 in latest_data["CERT"].values else (90003 if 90003 in latest_data["CERT"].values else 90001)
         peer = latest_data[latest_data["CERT"] == peer_cert].iloc[0]
     except IndexError:
         return None
 
-    # Exact metrics mapping from original user files
     if is_normalized:
-        title = "Normalized Ratio Components"
+        title = "Ratio Components Analysis (Normalized)"
         metrics = [
-            ("Norm Resi ACL Coverage", "RIC_Resi_ACL", "Resi ACL", "Total_ACL", "ACL Balance", "Norm_Resi_ACL_Coverage"),
-            ("Excluded % of Total", "Excluded_Balance", "Excluded Balance", "LNLS", "Gross Loans", "Norm_Exclusion_Pct")
+            ("Norm NCO Rate", "Total NCO", "Total_NCO", "Gross Loans", "Norm_Gross_Loans", "Norm_NCO_Rate"),
+            ("Norm Nonaccrual Rate", "Total Nonaccrual", "Nonaccrual_Total", "Gross Loans", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
+            ("Norm ACL Ratio", "ACL Balance", "Norm_ACL_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_ACL_Coverage"),
+            ("Norm Risk-Adj ACL", "ACL Balance", "Norm_ACL_Balance", "Gross Loans - SBL Balance", "Norm_Risk_Adj_Gross_Loans", "Norm_Risk_Adj_Allowance_Coverage"),
+            ("Norm Delinquency Rate", "PD30 + PD90", "Total_Past_Due", "Gross Loans", "Norm_Gross_Loans", "Norm_Delinquency_Rate"),
+            ("Norm SBL %", "SBL Balance", "SBL_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_SBL_Composition"),
+            ("Norm Resi %", "Resi Bal.", "RIC_Resi_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_Resi_Composition"),
+            ("Norm CRE % (Ex-ADC)", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
+            ("Norm CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
+            ("Norm Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "ACL Balance", "Norm_ACL_Balance", "Norm_Resi_ACL_Share"),
+            ("Excluded % of Total", "Excluded Balance", "Excluded_Balance", "Gross Loans", "LNLS", "Norm_Exclusion_Pct")
         ]
-        footnote = "<p><b>Normalized Metrics:</b> Exclude C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag loans.</p><p><b>Norm_Gross_Loans:</b> Gross Loans minus Excluded Balance.</p><p><b>Norm_ACL_Balance:</b> Total ACL minus reserves for ADC...</p>"
+        footnote = "<p><b>Normalized Metrics:</b> Exclude C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag loans.</p>"
     else:
-        title = "Standard Ratio Components"
+        title = "Ratio Components Analysis (Standard)"
         metrics = [
-            ("Resi ACL Coverage", "RIC_Resi_ACL", "Resi ACL", "RIC_Resi_Balance", "Resi Bal.", "RIC_Resi_ACL_Coverage"),
-            ("Resi NCO Rate", "RIC_Resi_NCO", "Resi NCO TTM", "RIC_Resi_Balance", "Resi Bal.", "RIC_Resi_NCO_Rate"),
-            ("Resi Delinquency Rate", "RIC_Resi_Delinq", "Resi PD30 + Resi PD90", "RIC_Resi_Balance", "Resi Bal.", "RIC_Resi_Delinquency_Rate")
+            ("NCO Rate (TTM)", "Total NCO TTM", "Total_NCO_TTM", "Gross Loans", "LNLS", "TTM_NCO_Rate"),
+            ("Nonaccrual Rate", "Total Nonaccrual", "Nonaccrual_Total", "Gross Loans", "LNLS", "Nonaccrual_to_Gross_Loans_Rate"),
+            ("Headline ACL Ratio", "Total ACL", "Total_ACL", "Gross Loans", "LNLS", "Allowance_to_Gross_Loans_Rate"),
+            ("Risk-Adj ACL Ratio", "Total ACL", "Total_ACL", "Gross Loans - SBL Balance", "Risk_Adj_Gross_Loans", "Risk_Adj_Allowance_Coverage"),
+            ("Delinquency Rate (30+)", "TopHouse PD30 + TopHouse PD90", "Total_Past_Due", "Gross Loans", "LNLS", "TTM_Past_Due_Rate"),
+            ("SBL % of Loans", "SBL Balance", "SBL_Balance", "Gross Loans", "LNLS", "SBL_Composition"),
+            ("Resi % of Loans", "Resi Bal.", "RIC_Resi_Balance", "Gross Loans", "LNLS", "RIC_Resi_Loan_Share"),
+            ("CRE % of Loans", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Gross Loans", "LNLS", "RIC_CRE_Loan_Share"),
+            ("Fund Finance %", "Fund Finance Balance", "Fund_Finance_Balance", "Gross Loans", "LNLS", "RIC_Fund_Finance_Loan_Share"),
+            ("CRE % of ACL", "CRE ACL", "RIC_CRE_ACL", "Total ACL", "Total_ACL", "RIC_CRE_ACL_Share"),
+            ("CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_ACL_Coverage"),
+            ("CRE NPL Coverage", "CRE ACL", "RIC_CRE_ACL", "CRE Nonaccrual", "RIC_CRE_Nonaccrual", "RIC_CRE_Risk_Adj_Coverage"),
+            ("CRE Nonaccrual Rate", "CRE Nonaccrual", "RIC_CRE_Nonaccrual", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_Nonaccrual_Rate"),
+            ("CRE NCO Rate", "CRE NCO TTM", "RIC_CRE_NCO", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_NCO_Rate"),
+            ("CRE Delinquency Rate", "CRE PD30 + CRE PD90", "RIC_CRE_Delinq", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_Delinquency_Rate"),
+            ("Resi % of ACL", "Resi ACL", "RIC_Resi_ACL", "Total ACL", "Total_ACL", "RIC_Resi_ACL_Share"),
+            ("Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_ACL_Coverage"),
+            ("Resi NPL Coverage", "Resi ACL", "RIC_Resi_ACL", "Resi Nonaccrual", "RIC_Resi_Nonaccrual", "RIC_Resi_Risk_Adj_Coverage"),
+            ("Resi Nonaccrual Rate", "Resi Nonaccrual", "RIC_Resi_Nonaccrual", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_Nonaccrual_Rate"),
+            ("Resi NCO Rate", "Resi NCO TTM", "RIC_Resi_NCO", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_NCO_Rate"),
+            ("Resi Delinquency Rate", "Resi PD30 + Resi PD90", "RIC_Resi_Delinq", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_Delinquency_Rate")
         ]
         footnote = "<p>Standard metrics based on Call Report totals.</p>"
 
@@ -809,54 +941,40 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
         td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; }}
         .ratio-name {{ text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 150px; background-color: #f8f9fa; }}
         .formula-col {{ text-align: left !important; font-size: 9px; color: #666; font-style: italic; }}
-        .value-col {{ background-color: rgba(0, 47, 108, 0.04); font-family: monospace; font-size: 11px; }}
-        .ratio-col {{ font-weight: bold; color: #002F6C; background-color: #E6F3FF; font-size: 11px; }}
-        .peer-col {{ font-size: 11px; color: #444; }}
+        .value-col {{ background-color: rgba(0, 47, 108, 0.05); font-weight: 600; }}
+        .ratio-col {{ background-color: rgba(0, 47, 108, 0.12); font-weight: bold; color: #002F6C; }}
+        .peer-col {{ background-color: #FFF9E6; }}
     </style></head><body>
     <div class="email-container">
         <h3>{title}</h3>
         <p class="date-header">{latest_date.strftime('%B %d, %Y')}</p>
         <table><thead><tr>
-            <th>Ratio Name</th><th>Formula (Num)</th><th>Value (Num)</th><th>Formula (Denom)</th><th>Value (Denom)</th><th>Subject Ratio</th><th>Peer Ratio</th>
+            <th>Ratio Name</th><th>Numerator</th><th>MSPBNA Num ($)</th><th>Denominator</th><th>MSPBNA Denom ($)</th><th>MSPBNA Ratio</th><th>Peer Avg Ratio</th>
         </tr></thead><tbody>
     """
 
-    for disp, num_col, num_lbl, den_col, den_lbl, rat_col in metrics:
+    for disp, num_lbl, num_col, den_lbl, den_col, rat_col in metrics:
         v_num = subj.get(num_col, np.nan)
         v_den = subj.get(den_col, np.nan)
         v_rat = subj.get(rat_col, np.nan)
         p_rat = peer.get(rat_col, np.nan)
 
-        # Format millions properly, or $0K if close to zero
-        if pd.isna(v_num): f_num = "N/A"
-        elif abs(v_num) < 1000: f_num = "$0K"
-        else: f_num = f"${abs(v_num)/1e6:,.1f}M"
-
-        if pd.isna(v_den): f_den = "N/A"
-        elif abs(v_den) < 1000: f_den = "$0K"
-        else: f_den = f"${abs(v_den)/1e6:,.1f}M"
-
+        f_num = "N/A" if pd.isna(v_num) else (f"${abs(v_num)/1e6:,.1f}M" if abs(v_num) >= 1000 else "$0K")
+        f_den = "N/A" if pd.isna(v_den) else (f"${abs(v_den)/1e6:,.1f}M" if abs(v_den) >= 1000 else "$0K")
         f_rat = f"{v_rat*100:.2f}%" if pd.notna(v_rat) and abs(v_rat) < 1.0 else (f"{v_rat:.2f}%" if pd.notna(v_rat) else "N/A")
         f_prat = f"{p_rat*100:.2f}%" if pd.notna(p_rat) and abs(p_rat) < 1.0 else (f"{p_rat:.2f}%" if pd.notna(p_rat) else "N/A")
 
-        html += f"""
-            <tr>
-                <td class="ratio-name">{disp}</td>
-                <td class="formula-col">{num_lbl}</td>
-                <td class="value-col">{f_num}</td>
-                <td class="formula-col">{den_lbl}</td>
-                <td class="value-col">{f_den}</td>
-                <td class="ratio-col">{f_rat}</td>
-                <td class="peer-col">{f_prat}</td>
-            </tr>"""
+        html += f"""<tr>
+            <td class="ratio-name">{disp}</td>
+            <td class="formula-col">{num_lbl}</td>
+            <td class="value-col">{f_num}</td>
+            <td class="formula-col">{den_lbl}</td>
+            <td class="value-col">{f_den}</td>
+            <td class="ratio-col">{f_rat}</td>
+            <td class="peer-col">{f_prat}</td>
+        </tr>"""
 
-    html += f"""
-        </tbody></table>
-        <div class="footnote">
-            <p><b>Calculation Methodology:</b></p>
-            {footnote}
-        </div>
-    </div></body></html>"""
+    html += f"</tbody></table><div class=\"footnote\">{footnote}</div></div></body></html>"
     return html
 
 
@@ -866,25 +984,38 @@ def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    # Map exact peer groups from original files
-    certs = {
-        "MSPBNA": subject_bank_cert,
-        "MSBNA": 32992,
-        "Core PB": 90001,
-        "MS+Wealth": 90002,
-        "All Peers": 90003
-    }
+    # 99999 is All Peers avg
+    peer_avg_cert = 99999 if 99999 in latest_data["CERT"].values else 90003
+    certs = { "MSPBNA": subject_bank_cert, "MSBNA": 32992, "All Peers": peer_avg_cert }
     row_data = {k: latest_data[latest_data["CERT"] == v].iloc[0] if v in latest_data["CERT"].values else pd.Series() for k, v in certs.items()}
 
+    common_metrics = [
+        ("LNLS", "Total Loans ($B)*", "B", False),
+        ("SBL_Composition", "SBL % of Loans*", "%", False),
+        ("RIC_Resi_Loan_Share", "Resi % of Loans*", "%", False),
+        ("RIC_CRE_Loan_Share", "CRE % of Loans*", "%", False),
+        ("Risk_Adj_Allowance_Coverage", "Risk-Adj ACL Ratio (%)*", "%", True),
+        ("Nonaccrual_to_Gross_Loans_Rate", "Nonaccrual Rate (%)*", "%", False),
+        ("TTM_NCO_Rate", "NCO Rate (TTM) (%)*", "%", False),
+        ("TTM_Past_Due_Rate", "Delinquency Rate (%)*", "%", False)
+    ]
+
     if segment_name == "CRE":
-        metrics = [
-            ("RIC_CRE_ACL_Coverage", "CRE ACL Coverage (x)", "x", True),
+        metrics = common_metrics + [
+            ("RIC_CRE_Balance", "CRE Balance ($B)", "B", False),
+            ("RIC_CRE_ACL_Share", "CRE % of ACL*", "%", False),
+            ("RIC_CRE_ACL_Coverage", "CRE ACL Ratio (%)*", "%", True),
+            ("RIC_CRE_Risk_Adj_Coverage", "CRE NPL Coverage (x)", "x", True),
             ("RIC_CRE_Nonaccrual_Rate", "% of CRE in Nonaccrual", "%", False),
             ("RIC_CRE_NCO_Rate", "CRE NCO Rate (TTM)", "%", False),
             ("RIC_CRE_Delinquency_Rate", "CRE Delinquency Rate (%)", "%", False)
         ]
     else:  # Resi
-        metrics = [
+        metrics = common_metrics + [
+            ("RIC_Resi_Balance", "Resi Balance ($B)*", "B", False),
+            ("RIC_Resi_ACL_Share", "Resi % of ACL*", "%", False),
+            ("RIC_Resi_ACL_Coverage", "Resi ACL Ratio (%)*", "%", True),
+            ("RIC_Resi_Risk_Adj_Coverage", "Resi NPL Coverage (x)", "x", True),
             ("RIC_Resi_Nonaccrual_Rate", "% of Resi in Nonaccrual*", "%", False),
             ("RIC_Resi_NCO_Rate", "Resi NCO Rate (TTM)*", "%", False),
             ("RIC_Resi_Delinquency_Rate", "Resi Delinquency Rate (%)*", "%", False)
@@ -895,42 +1026,44 @@ def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
         body {{ font-family: Arial, sans-serif; background-color: transparent; }}
         .email-container {{ background-color: transparent; padding: 20px; max-width: 1400px; margin: 0 auto; text-align: center; }}
         h3 {{ color: #002F6C; margin-bottom: 5px; text-align: center; }}
-        p.date-header {{ margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }}
         table {{ width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; background-color: transparent; }}
         th {{ background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }}
         td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; background-color: transparent; }}
         .metric-name {{ text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 180px; background-color: transparent; }}
         .msbna-value {{ background-color: rgba(76, 120, 168, 0.08) !important; font-weight: 600; color: #444; }}
-        .mspbna-good {{ background-color: #E8F5E9 !important; font-weight: bold; color: #2E7D32; border-left: 2px solid #2E7D32; }}
-        .mspbna-bad {{ background-color: #FFEBEE !important; font-weight: bold; color: #C62828; border-left: 2px solid #C62828; }}
-        .mspbna-neutral {{ background-color: #FFF8E1 !important; font-weight: bold; color: #F57F17; border-left: 2px solid #F57F17; }}
+        .mspbna-good {{ background-color: rgba(56, 142, 60, 0.15) !important; color: #2E7D32; font-weight: bold; border-left: 2px solid #002F6C; border-right: 2px solid #002F6C; }}
+        .mspbna-bad {{ background-color: rgba(211, 47, 47, 0.15) !important; color: #C62828; font-weight: bold; border-left: 2px solid #002F6C; border-right: 2px solid #002F6C; }}
+        .mspbna-neutral {{ background-color: rgba(0, 47, 108, 0.08) !important; font-weight: bold; color: #002F6C; border-left: 2px solid #002F6C; border-right: 2px solid #002F6C; }}
         .good-trend {{ color: #388e3c; font-weight: bold; }}
         .bad-trend {{ color: #d32f2f; font-weight: bold; }}
-        .neutral-trend {{ color: #757575; font-weight: bold; }}
-        .footnote {{ font-size: 10px; color: #666; margin-top: 20px; border-top: 1px solid #ccc; padding-top: 10px; text-align: left; }}
+        .neutral-trend {{ color: #795548; font-weight: normal; }}
     </style></head><body>
     <div class="email-container">
-        <h3>{segment_name} Portfolio Credit Profile</h3>
-        <p class="date-header">{latest_date.strftime('%B %d, %Y')}</p>
+        <h3>{segment_name} Segment Analysis</h3>
         <table><thead><tr>
-            <th>Metric</th><th>MSPBNA</th><th>MSBNA</th><th>Core PB</th><th>MS+Wealth</th><th>All Peers</th><th>Diff vs Core</th>
+            <th>Metric</th><th>MSPBNA</th><th>MSBNA</th><th>All Peers</th><th>Diff vs All Peers</th>
         </tr></thead><tbody>
     """
 
     for code, disp, fmt, higher_is_better in metrics:
         vals = {k: row_data[k].get(code, np.nan) for k in certs}
-        diff = vals["MSPBNA"] - vals["Core PB"] if pd.notna(vals["MSPBNA"]) and pd.notna(vals["Core PB"]) else np.nan
+        diff = vals["MSPBNA"] - vals["All Peers"] if pd.notna(vals["MSPBNA"]) and pd.notna(vals["All Peers"]) else np.nan
 
-        # Formatting matching exact files
-        def fmt_val(v):
+        def fmt_val(v, fmt_type):
             if pd.isna(v): return "N/A"
-            if fmt == "x": return f"{v:.2f}x"
+            if fmt_type == "x": return f"{v:.2f}x"
+            if fmt_type == "B": return f"${v/1e9:.1f}B"
             return f"{v*100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
 
-        f_vals = {k: fmt_val(v) for k, v in vals.items()}
-        f_diff = f"{diff*100:+.2f}%" if pd.notna(diff) and fmt == "%" else (f"{diff:+.2f}x" if pd.notna(diff) else "N/A")
+        f_vals = {k: fmt_val(v, fmt) for k, v in vals.items()}
 
-        # Exact Trend styling logic
+        if pd.isna(diff):
+            f_diff = "N/A"
+        else:
+            if fmt == "%": f_diff = f"{diff*100:+.2f}%" if abs(diff) < 1.0 else f"{diff:+.2f}%"
+            elif fmt == "x": f_diff = f"{diff:+.2f}x"
+            else: f_diff = f"{diff/1e9:+.1f}B"
+
         if pd.isna(diff) or abs(diff) < 0.0001:
             subj_cls, diff_cls = "mspbna-neutral", "neutral-trend"
         else:
@@ -942,18 +1075,11 @@ def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
             <td class="metric-name"><b>{disp}</b></td>
             <td class="{subj_cls}">{f_vals["MSPBNA"]}</td>
             <td class="msbna-value">{f_vals["MSBNA"]}</td>
-            <td >{f_vals["Core PB"]}</td><td >{f_vals["MS+Wealth"]}</td><td >{f_vals["All Peers"]}</td>
+            <td>{f_vals["All Peers"]}</td>
             <td class="{diff_cls}">{f_diff}</td>
         </tr>"""
 
-    html += """</tbody></table>
-    <div class="footnote">
-        <p><b>Peer Definitions:</b></p>
-        <p><b>1. Core PB:</b> Goldman Sachs Bank USA, UBS Bank USA.</p>
-        <p><b>2. All Peers:</b> US G-SIB Credit Intermediaries + UBS.</p>
-        <br>
-        <p><b>Color Coding:</b> Subject bank cells highlighted green if performing better than Core PB Avg, red if worse, yellow if neutral.</p>
-    </div></div></body></html>"""
+    html += "</tbody></table></div></body></html>"
     return html
 
 
@@ -1177,8 +1303,8 @@ def generate_reports(
             if std_df is not None:
                 print(f"  Table contains {len(std_df)} credit metrics")
 
-        # Detailed Peer Analysis (same 31-metric map, wider layout)
-        detail_html, detail_df = generate_detailed_peer_table(
+        # Detailed Peer Analysis (dynamic columns with all individual peers)
+        detail_html = generate_detailed_peer_table(
             proc_df_with_peers, subject_bank_cert
         )
         if detail_html:
