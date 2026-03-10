@@ -296,7 +296,7 @@ def validate_output_inputs(
 
 def create_credit_deterioration_chart_v3(
     proc_df_with_peers: pd.DataFrame,
-    subject_bank_cert: int = 19977,
+    subject_bank_cert: int = 34221,
     show_both_peer_groups: bool = True
 ) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
     """
@@ -2394,7 +2394,7 @@ def generate_reports(
 
 def create_credit_deterioration_chart_ppt(
     proc_df_with_peers: pd.DataFrame,
-    subject_bank_cert: int = 19977,
+    subject_bank_cert: int = 34221,
     start_date: str = "2023-01-01",
     bar_metric: str = "TTM_NCO_Rate",
     line_metric: str = "NPL_to_Gross_Loans_Rate",
@@ -2669,7 +2669,7 @@ def plot_scatter_dynamic(
     df: pd.DataFrame,
     x_col: str,
     y_col: str,
-    subject_cert: int = 19977,
+    subject_cert: int = 34221,
     peer_avg_cert_primary: int = 99999,
     peer_avg_cert_alt: int = 99998,
     use_alt_peer_avg: bool = False,

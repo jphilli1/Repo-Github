@@ -570,6 +570,70 @@ def test_case_shiller_zip_sheets_resilient():
     print("  [PASS] test_case_shiller_zip_sheets_resilient")
 
 
+def test_ttm_map_keys_match_quarterly_column_names():
+    """TTM map keys for income columns must match col.replace('_YTD', '_Q') convention."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    # The TTM map must use the correct quarterly column names
+    assert "'Int_Inc_Loans_Q'" in source, (
+        "TTM map should use 'Int_Inc_Loans_Q' (not 'Int_Inc_Loans_YTD_Q')"
+    )
+    assert "'Provision_Exp_Q'" in source, (
+        "TTM map should use 'Provision_Exp_Q' (not 'Provision_Exp_YTD_Q')"
+    )
+    assert "'Total_Int_Exp_Q'" in source, (
+        "TTM map should use 'Total_Int_Exp_Q' (not 'Total_Int_Exp_YTD_Q')"
+    )
+    # The old wrong keys must NOT be present as TTM map keys (colon after quote = dict key)
+    assert "'Int_Inc_Loans_YTD_Q':" not in source, (
+        "Stale TTM map key 'Int_Inc_Loans_YTD_Q' still present"
+    )
+    assert "'Provision_Exp_YTD_Q':" not in source, (
+        "Stale TTM map key 'Provision_Exp_YTD_Q' still present"
+    )
+    print("  [PASS] test_ttm_map_keys_match_quarterly_column_names")
+
+
+def test_validation_suite_wired_in_pipeline():
+    """run_upstream_validation_suite must be called in MSPBNA_CR_Normalized.py."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "run_upstream_validation_suite(proc_df_with_peers)" in source, (
+        "run_upstream_validation_suite not wired into pipeline"
+    )
+    assert "Metric_Validation_Audit=metric_validation_df" in source, (
+        "Metric_Validation_Audit sheet not in write_excel_output call"
+    )
+    print("  [PASS] test_validation_suite_wired_in_pipeline")
+
+
+def test_no_stale_19977_in_report_generator():
+    """report_generator.py must not have stale 19977 defaults in function signatures."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_generator.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "19977" not in source, (
+        "Stale 19977 default still present in report_generator.py"
+    )
+    print("  [PASS] test_no_stale_19977_in_report_generator")
+
+
+def test_claude_md_no_stale_19977_defaults():
+    """CLAUDE.md env var table must not show 19977 as default for MSPBNA_CERT or MSBNA_CERT."""
+    md_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CLAUDE.md")
+    with open(md_path, "r") as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines, 1):
+        # Check env var table rows (contain | MSPBNA_CERT or | MSBNA_CERT)
+        if "| `MSPBNA_CERT`" in line or "| `MSBNA_CERT`" in line:
+            assert "19977" not in line, (
+                f"CLAUDE.md line {i} still shows 19977 as default: {line.strip()}"
+            )
+    print("  [PASS] test_claude_md_no_stale_19977_defaults")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
@@ -617,6 +681,11 @@ def run_all_tests():
         test_load_config_defaults,
         test_workbook_includes_audit_sheets,
         test_case_shiller_zip_sheets_resilient,
+        # 10. Consistency pass: TTM, validation wiring, defaults
+        test_ttm_map_keys_match_quarterly_column_names,
+        test_validation_suite_wired_in_pipeline,
+        test_no_stale_19977_in_report_generator,
+        test_claude_md_no_stale_19977_defaults,
     ]
 
     passed = 0
@@ -1173,6 +1242,73 @@ class TestCaseShillerZIPPersistence(unittest.TestCase):
             self.assertFalse(audit.empty, "Audit sheet should not be empty even when disabled")
         finally:
             os.environ.pop('ENABLE_CASE_SHILLER_ZIP_ENRICHMENT', None)
+
+
+class TestTTMMapConsistency(unittest.TestCase):
+    """Tests that TTM map keys match the quarterly column naming convention."""
+
+    def test_income_ttm_keys_use_correct_names(self):
+        """TTM map must use col.replace('_YTD','_Q') convention for income columns."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("'Int_Inc_Loans_Q'", source)
+        self.assertIn("'Provision_Exp_Q'", source)
+        self.assertIn("'Total_Int_Exp_Q'", source)
+
+    def test_no_stale_ytd_q_keys(self):
+        """Old *_YTD_Q TTM map keys (dict keys with colon) must not be present."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertNotIn("'Int_Inc_Loans_YTD_Q':", source)
+        self.assertNotIn("'Provision_Exp_YTD_Q':", source)
+
+
+class TestValidationWiring(unittest.TestCase):
+    """Tests that metric validation suite is wired into the pipeline."""
+
+    def test_validation_suite_called(self):
+        """run_upstream_validation_suite must be called with proc_df_with_peers."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("run_upstream_validation_suite(proc_df_with_peers)", source)
+
+    def test_metric_validation_audit_sheet(self):
+        """Metric_Validation_Audit must be in write_excel_output call."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("Metric_Validation_Audit=metric_validation_df", source)
+
+    def test_validation_import(self):
+        """run_upstream_validation_suite must be imported."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("from metric_registry import run_upstream_validation_suite", source)
+
+
+class TestNoStaleDefaults(unittest.TestCase):
+    """Tests that 19977 defaults are purged from production code."""
+
+    def test_report_generator_no_19977(self):
+        """report_generator.py must not contain 19977 as a default."""
+        src_path = os.path.join(os.path.dirname(__file__), "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertNotIn("19977", source)
+
+    def test_claude_md_env_table_no_19977(self):
+        """CLAUDE.md env var table must use 34221/32992 defaults."""
+        md_path = os.path.join(os.path.dirname(__file__), "CLAUDE.md")
+        with open(md_path, "r") as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines, 1):
+            if "| `MSPBNA_CERT`" in line or "| `MSBNA_CERT`" in line:
+                self.assertNotIn("19977", line,
+                    f"Line {i} still shows 19977: {line.strip()}")
 
 
 if __name__ == '__main__':

@@ -6,7 +6,7 @@ This repository is an **automated Credit Risk Performance reporting engine** for
 
 1. **Fetches** raw call-report data from the FDIC API and macroeconomic time-series from the FRED API.
 2. **Processes** the data into standard and normalized credit-quality metrics, computes peer-group composites, and builds rolling 8-quarter averages.
-3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (FDIC_Data, Averages_8Q, FRED_Data, FRED_Descriptions, FDIC_Metric_Descriptions, Normalization_Diagnostics, Peer_Group_Definitions, Exclusion_Component_Audit, Composite_Coverage_Audit, and optional Case-Shiller ZIP sheets).
+3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (Summary_Dashboard, Normalized_Comparison, Latest_Peer_Snapshot, Averages_8Q_All_Metrics, FDIC_Metric_Descriptions, Macro_Analysis, FDIC_Data, FRED_Data, FRED_Metadata, FRED_Descriptions, Data_Validation_Report, Normalization_Diagnostics, Peer_Group_Definitions, Exclusion_Component_Audit, Composite_Coverage_Audit, Metric_Validation_Audit, and optional Case-Shiller ZIP sheets).
 4. **Generates reports**: PNG credit-deterioration charts, PNG scatter plots, and HTML comparison tables — all routed to structured subdirectories under `output/Peers/`.
 
 The two core scripts are:
@@ -48,8 +48,8 @@ python report_generator.py
 | Variable | Purpose | Example |
 |---|---|---|
 | `FRED_API_KEY` | FRED API authentication (required by Step 1) | `export FRED_API_KEY='abc123'` |
-| `MSPBNA_CERT` | Subject bank CERT number (dynamic, no hardcoding) | `19977` |
-| `MSBNA_CERT` | Secondary bank CERT number | `19977` |
+| `MSPBNA_CERT` | Subject bank CERT number (dynamic, no hardcoding) | `34221` |
+| `MSBNA_CERT` | Secondary bank CERT number | `32992` |
 | `SUBJECT_BANK_CERT` | Used by `MSPBNA_CR_Normalized.py` | `34221` |
 | `MS_COMBINED_CERT` | MS Combined Entity CERT (default `88888`) | `88888` |
 | `REPORT_VIEW` | Controls table filtering logic | `ALL_BANKS` or `MSPBNA_WEALTH_NORM` |
@@ -154,8 +154,8 @@ These are **non-negotiable** for any agent editing this codebase:
 
 ### NO HARDCODING
 
-- Subject bank CERTs **must** be loaded dynamically via `int(os.getenv("MSPBNA_CERT", "19977"))`.
-- Never hardcode `19977` or any CERT number directly. Always use the config/env pattern.
+- Subject bank CERTs **must** be loaded dynamically via `int(os.getenv("MSPBNA_CERT", "34221"))`.
+- Never hardcode CERT numbers directly. Always use the config/env pattern. Production defaults: `MSPBNA_CERT=34221`, `MSBNA_CERT=32992`.
 - The FRED API key must come from `os.getenv('FRED_API_KEY')` or `.env`.
 
 ### SCATTER & CHART COMPOSITE HANDLING
@@ -326,7 +326,7 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 - Excluded NCO over-exclusion: MSPBNA 2024-12-31 showed Total_NCO_TTM=27K but Excluded_NCO_TTM=54K. Root cause: Auto/Ag NCO MDRM fields (RIADK205/K206, RIAD4635/4645) were nonzero despite zero excluded balances for those categories.
 - Normalized composites misleading: Only 2 of 8 banks had non-NaN normalized NCO, yet composites showed usable averages.
 - Preflight over-blocking: Historical material_nan rows caused blocking even when the latest plotted period was clean.
-- Stale load_config defaults: 19977 instead of production CERTs 34221/32992.
+- Stale load_config defaults were 19977; corrected to production CERTs 34221/32992.
 
 **Fixes applied:**
 1. **Balance-gating for excluded NCO (MSPBNA_CR_Normalized.py)**: Added balance-gating for 4 excluded NCO categories (Auto, Ag, ADC, OO CRE). If excluded balance is zero, force excluded NCO to zero and set `_*_NCO_Gated` flag. Added `Exclusion_Component_Audit` sheet with per-bank/quarter gating decisions, dominant exclusion categories, and zero-balance/nonzero-NCO flags.
@@ -341,7 +341,19 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 
 6. **Case-Shiller ZIP sheet persistence (MSPBNA_CR_Normalized.py)**: Wrapped `build_case_shiller_zip_sheets()` call in try/except so HUD API failures do not crash the pipeline. Added logging for which ZIP sheets are written. The `**cs_kwargs` unpack in `write_excel_output()` persists non-empty sheets (CaseShiller_Zip_Coverage, CaseShiller_Zip_Summary, CaseShiller_Metro_Map_Audit). When enrichment is disabled or HUD token is missing, only the audit sheet (always non-empty) is written. Added regression tests for resilience and audit sheet presence.
 
-**New Excel sheets:** `Exclusion_Component_Audit`, `Composite_Coverage_Audit`
+**New Excel sheets:** `Exclusion_Component_Audit`, `Composite_Coverage_Audit`, `Metric_Validation_Audit`
+
+### 2026-03-10 — Consistency Pass: TTM Fix, Validation Wiring, Doc Cleanup
+
+1. **Norm_Loan_Yield / Norm_Loss_Adj_Yield TTM fix (MSPBNA_CR_Normalized.py)**: Root cause was a column-name mismatch in the TTM rolling map. `col.replace('_YTD', '_Q')` produces `Int_Inc_Loans_Q` but the TTM map key was `Int_Inc_Loans_YTD_Q`. Same bug for `Provision_Exp_Q` and `Total_Int_Exp_Q`. Corrected all three TTM map keys. Also fixed `prov_q` reference and changed fallback from 0 to NaN so missing TTM columns produce NaN instead of silent zeros.
+
+2. **Norm_Provision_Rate intentionally NaN**: Confirmed by-design — provision expense is not segment-specific in call reports. Documented in Section 8.
+
+3. **Validation wiring (MSPBNA_CR_Normalized.py)**: Wired `run_upstream_validation_suite(proc_df_with_peers)` from `metric_registry.py` into Step 1, just before Excel output. Results go to `Metric_Validation_Audit` sheet. Wrapped in try/except for resilience.
+
+4. **CLAUDE.md cleanup**: Removed stale `19977` default examples (replaced with `34221`/`32992`). Removed false claim that validation suite was already wired. Updated Section 8 (known issues) to reflect actual metric status. Updated Section 9 (validation engine) to accurately describe wiring.
+
+5. **Regression tests**: Added TTM column name tests, validation wiring source check, no-stale-19977-defaults test.
 
 ### 2026-03-10 — Data Mapping, Math, and Formatting Bug Fixes
 
@@ -463,8 +475,8 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 5. **CLAUDE.md**: Added FRED Series Validation convention, updated scatter handling docs, documented all changes.
 
 **Remaining risks:**
-- `Norm_Loan_Yield`, `Norm_Provision_Rate`, `Norm_Loss_Adj_Yield` still flatline at 0% (upstream data gap — see Section 8).
-- `run_upstream_validation_suite()` from metric_registry.py is not yet called in MSPBNA_CR_Normalized.py's main pipeline. It is only invoked via `validate_output_inputs()` in report_generator.py.
+- `Norm_Provision_Rate` is intentionally NaN — provision expense is not segment-specific in call reports, so a normalized rate would be semantically misleading.
+- `run_upstream_validation_suite()` is now wired into MSPBNA_CR_Normalized.py (Step 1) and writes `Metric_Validation_Audit` sheet.
 
 ### 2026-03-10 — Targeted Cleanup Pass (ZIP Toggle, Metro Map, Tests, Preflight)
 
@@ -476,7 +488,7 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 
 4. **report_generator.py — preflight blocks on material normalization**: Updated `validate_output_inputs()` so material normalization severity (`material_nan`) on the **subject bank** is now a **blocking error** (added to `errors` list, suppresses affected normalized charts). Peer-only material failures remain warnings.
 
-5. **Verified clean**: `IDB_` prefix fully absent from `master_data_dictionary.py` (0 grep matches). `FDIC_Metric_Descriptions` used consistently across all files (no `FDIC_Metadata` references remain).
+5. **Verified**: `IDB_` prefix absent from `master_data_dictionary.py`. `FDIC_Metric_Descriptions` used consistently across all files.
 
 ### 2026-03-10 — Preflight Hardening, Peer-Average Blocking, Test Expansion
 
@@ -490,28 +502,28 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
    - `test_no_idb_keys_in_data_dictionary` — asserts `LOCAL_DERIVED_METRICS` has no `IDB_` keys
    - `test_preflight_blocks_peer_avg_material_nan` — 90006 with `material_nan` blocks
    - `test_preflight_blocks_missing_normalized_composite` — missing 90004/90006 blocks
-   - `test_claude_md_no_conflict_markers` — no `<<<<<<<`/`=======`/`>>>>>>>` in CLAUDE.md
+   - `test_claude_md_no_conflict_markers` — no git merge conflict markers in CLAUDE.md
    - `TestIDBCleanup.test_no_idb_keys_in_local_derived_metrics` (unittest)
    - `TestPreflightValidation` class (3 tests: peer-avg blocking, missing composite, healthy pass)
    - `TestClaudeMDIntegrity.test_no_merge_conflict_markers` (unittest)
 
 5. **CLAUDE.md — preflight docs updated**: Section 9 (Preflight Validation) now accurately documents peer-average blocking, composite existence checks, and readable artifact names.
 
-6. **Verified**: No merge conflict markers in CLAUDE.md. No `IDB_` keys in `master_data_dictionary.py`. `FDIC_Metric_Descriptions` used consistently.
+6. **Verified**: No merge conflict markers in CLAUDE.md. No `IDB_` keys in `master_data_dictionary.py`.
 
 ---
 
 ## 8. To-Do / Known Issues
 
-### Upstream Data Gaps (MSPBNA_CR_Normalized.py)
+### Normalized Profitability Metrics (MSPBNA_CR_Normalized.py)
 
-| Metric | Status | Root Cause |
+| Metric | Status | Notes |
 |---|---|---|
-| `Norm_Loan_Yield` | Flatlines at 0.00% | Computed as `Int_Inc_Loans_TTM / Norm_Gross_Loans`. The upstream `Int_Inc_Loans_TTM` column is likely not being populated because the FDIC API series for interest income on loans (`ILNLS`) may not be fetched, or the TTM rolling sum is failing silently. Check that `ILNLS` (or `Int_Inc_Loans_Raw`) is in the fetch list and that the TTM computation in `_calculate_ttm_metrics()` handles it. |
-| `Norm_Provision_Rate` | Flatlines at 0.00% | Computed as `Provision_Exp_TTM / Norm_Gross_Loans`. Same pattern — `Provision_Exp_TTM` is derived from `ELNATR` (Provision for Loan Losses). Verify that `ELNATR` is fetched and that the TTM rolling sum is correctly computed. |
-| `Norm_Loss_Adj_Yield` | Flatlines at 0.00% | Derived as `Norm_Loan_Yield - Norm_NCO_Rate`. Flatlines because `Norm_Loan_Yield` is zero. Will auto-resolve when `Norm_Loan_Yield` is fixed. |
+| `Norm_Loan_Yield` | **Fixed** | `Int_Inc_Loans_TTM / Norm_Gross_Loans`. Root cause was a column-name mismatch in the TTM map: `col.replace('_YTD', '_Q')` produces `Int_Inc_Loans_Q` but the TTM map key was `Int_Inc_Loans_YTD_Q`. Corrected. Source: `ILNDOM + ILNFOR` (both fetched). |
+| `Norm_Provision_Rate` | **Intentionally NaN** | Provision expense (`ELNATR`) is not segment-specific in call reports. A normalized rate denominated by `Norm_Gross_Loans` would be semantically misleading since provision flow includes C&I/Consumer. Set to NaN by design. |
+| `Norm_Loss_Adj_Yield` | **Fixed** (cascading) | `Norm_Loan_Yield - Norm_NCO_Rate`. Auto-resolves now that `Norm_Loan_Yield` is populated. |
 
-**Action for future agents**: Search `MSPBNA_CR_Normalized.py` for the FDIC field list (around line 120-230) and confirm `ILNLS` and `ELNATR` are included. Then trace the TTM computation path to ensure `Int_Inc_Loans_TTM` and `Provision_Exp_TTM` are populated before the normalization step uses them.
+**TTM pipeline for income metrics**: `ILNDOM + ILNFOR → Int_Inc_Loans_YTD → replace('_YTD','_Q') → Int_Inc_Loans_Q → rolling(4).sum() → Int_Inc_Loans_TTM`. Same pattern for `Provision_Exp_YTD → Provision_Exp_Q → Provision_Exp_TTM`.
 
 ---
 
@@ -538,14 +550,14 @@ The `REPORT_CONSUMER_MAP` dict (auto-built from specs) maps each metric code to 
 
 ### Validation Engine
 
-`run_upstream_validation_suite(df)` is called during `MSPBNA_CR_Normalized.py` right before writing the Excel output. For each registered metric, it:
+`run_upstream_validation_suite(df)` is called in `MSPBNA_CR_Normalized.py` just before the Excel write (after normalization diagnostics and composite coverage audit). For each registered metric, it:
 
 1. **Recomputes** the metric from its declared formula (`spec.compute(df)`)
 2. **Compares** the recomputed value against the stored column value
 3. **Checks bounds** (min/max) and sign constraints
 4. **Tags** each row with `CERT` and `REPDTE` for row-level tracing
 
-Results are exported to the `Metric_Validation_Audit` sheet in the Excel dashboard.
+Results are exported to the `Metric_Validation_Audit` sheet in the Excel dashboard. The call is wrapped in try/except — if the suite fails, the pipeline continues with an empty audit sheet.
 
 ### Dependency Graph
 
