@@ -142,15 +142,9 @@ All output files include the source Excel stem and a datestamp:
 
 These are **non-negotiable** for any agent editing this codebase:
 
-<<<<<<< HEAD
 ### ALWAYS UPDATE CLAUDE.md
 
 - Whenever you make architectural changes, add new charts, or change data pipelines, you **must** update this `CLAUDE.md` file to review restrictions, track to-do items, identify potential gaps, and inform future coding agents.
-=======
-### FDIC API Variables & FFIEC Waterfall
-
-- Always prefer FDIC top-level text aliases (e.g., `ASSET`, `NTCI`) over raw MDRM codes (`RCFD...`, `RIAD...`). When raw codes are necessary, you **MUST** fetch both the `RCFD` (Consolidated) and `RCON` (Domestic) codes. You must then coalesce them (`RCFD.fillna(RCON)`) to ensure apples-to-apples comparisons between international G-SIBs (FFIEC 031) and domestic-only banks (FFIEC 041/051). Never force internationally active banks to strictly use `RCON`, as this strips out their foreign office balances. Synthetic local variables must never be included in the raw API fetch request.
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 
 ### NO HARDCODING
 
@@ -207,6 +201,7 @@ All charts must use this color palette consistently:
 
 Both standard and normalized credit-deterioration charts are generated.
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 ### TABLE COLUMN ORDERING
 
@@ -266,6 +261,8 @@ Norm_PD90              = TopHouse_PD90     - Excluded_PD90
 - **Multiplier metrics**: Metrics labeled `(x)` (e.g., CRE NPL Coverage) must format as `X.XXx`, not as `%`.
 - **Dead metric suppression**: If a metric is entirely 0/NaN across all displayed entities for the latest quarter, the row is automatically suppressed from HTML tables.
 =======
+=======
+>>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 ### FRED Deduplication
 
 - `series_ids` must always be deduplicated before async fetching to prevent `ValueError: cannot reindex on an axis with duplicate labels`.
@@ -276,6 +273,9 @@ Norm_PD90              = TopHouse_PD90     - Excluded_PD90
 
 - Architecture changes, new conventions, and non-trivial pipeline modifications **must** be documented in this file.
 - If you add a new coding convention, env variable, output sheet, or data-flow step, update the relevant section of `CLAUDE.md` before considering the task complete.
+<<<<<<< HEAD
+>>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
+=======
 >>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 
 ---
