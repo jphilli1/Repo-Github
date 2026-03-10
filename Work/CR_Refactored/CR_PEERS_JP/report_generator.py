@@ -165,12 +165,26 @@ def validate_output_inputs(
                 warnings.append(f"{metric} is entirely zero — normalized charts may be misleading")
 
     # 3. Check severity columns for material failures
+    #    Material normalization failures BLOCK normalized chart generation.
+    material_failure_count = 0
     for sev_col in ["_Norm_NCO_Severity", "_Norm_NA_Severity", "_Norm_Loans_Severity"]:
         if sev_col in proc_df.columns:
             material = (proc_df[sev_col] == "material_nan")
             if material.any():
                 n = material.sum()
-                warnings.append(f"{sev_col}: {n} rows have material over-exclusion (NaN)")
+                material_failure_count += n
+                # Check if subject bank has material failures (blocking)
+                subject_material = proc_df.loc[
+                    (proc_df["CERT"] == subject_cert) & material
+                ]
+                if not subject_material.empty:
+                    errors.append(
+                        f"BLOCKING: {sev_col} — subject bank (CERT {subject_cert}) has "
+                        f"{len(subject_material)} material over-exclusion rows"
+                    )
+                    suppressed.append(f"normalized_chart_{sev_col}")
+                else:
+                    warnings.append(f"{sev_col}: {n} peer rows have material over-exclusion (NaN)")
 
     # 4. Check composites don't contaminate peer scatter
     if "CERT" in rolling_df.columns:
