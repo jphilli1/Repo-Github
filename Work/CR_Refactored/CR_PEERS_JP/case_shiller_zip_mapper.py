@@ -764,14 +764,6 @@ if __name__ == "__main__":
             if not df.empty:
                 df.to_excel(writer, sheet_name=name[:31], index=False)
     print(f"\nWritten to: {out_path}")
-=======
-Case-Shiller ZIP Code Enrichment Module.
-
-Maps ZIP codes to Case-Shiller regional metro areas and builds
-coverage/summary sheets for the Excel dashboard.
-
-Controlled by ENABLE_CASE_SHILLER_ZIP_ENRICHMENT env variable.
-"""
 
 import os
 import logging
@@ -902,4 +894,4 @@ def build_case_shiller_zip_sheets(
         len(mapped), len(zip_df), mapped['CS_Metro'].nunique()
     )
     return result
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
+
