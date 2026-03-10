@@ -154,10 +154,9 @@ These are **non-negotiable** for any agent editing this codebase:
 
 ### SCATTER & CHART COMPOSITE HANDLING
 
-- **Do NOT use `build_plot_df_with_alias()` for normalized scatter or chart paths.** The function appends duplicate rows that contaminate peer scatter dots.
 - Pass true composite CERTs directly: `peer_avg_cert_primary=90006, peer_avg_cert_alt=90004` for normalized, `peer_avg_cert_primary=90003, peer_avg_cert_alt=90001` for standard.
 - `plot_scatter_dynamic()` has a `composite_certs` parameter (default: `{90001..90006, 99998, 99999, 88888}`) that excludes ALL composites from appearing as blue peer dots.
-- The `build_plot_df_with_alias()` function is retained but unused — it exists only for backward compatibility.
+- The former `build_plot_df_with_alias()` function has been removed — it appended duplicate rows that contaminated scatter plots. Do not re-introduce it.
 
 ### PEER GROUPINGS
 
@@ -208,6 +207,13 @@ Both standard and normalized credit-deterioration charts are generated.
 - `series_ids` must always be deduplicated before async fetching to prevent `ValueError: cannot reindex on an axis with duplicate labels`.
 - Use `list(dict.fromkeys(series_ids))` to preserve order while removing duplicates.
 - The guard must exist both at construction time (when building `series_ids_to_fetch`) and at the entry point of `fetch_all_series_async()`.
+
+### FRED Series Validation
+
+- The FRED API returns HTTP 400 Bad Request for discontinued or mistyped series IDs. Always verify IDs against the FRED website before adding them to `FRED_SERIES_TO_FETCH`.
+- Known corrections: `CORCCACBS` (not `CORCCLACBS`), `RHVRUSQ156N` (not `RCVRUSQ156N`).
+- Discontinued series must be removed, not left in the fetch list (e.g., `GOLDAMGBD228NLBM` was discontinued by FRED).
+- Redundant series should be removed if covered by another ID (e.g., `DEPALL` removed in favor of `DPSACBW027SBOG`).
 
 ---
 
@@ -336,7 +342,7 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 - Duplicate peer groups: 90001/90004, 90002/90005, 90003/90006 share identical cert lists — distinction is only `use_normalized` flag.
 
 **Fixes applied:**
-1. **Scatter integrity (report_generator.py)**: Removed all `build_plot_df_with_alias` calls. `plot_scatter_dynamic()` now has `composite_certs` parameter (default: all 9 synthetic CERTs) that excludes composites from peer dots. Standard/normalized scatters pass true composite CERTs (`90003`/`90006`) directly via `peer_avg_cert_primary`.
+1. **Scatter integrity (report_generator.py)**: Removed all `build_plot_df_with_alias` calls and later deleted the function definition entirely. `plot_scatter_dynamic()` now has `composite_certs` parameter (default: all 9 synthetic CERTs) that excludes composites from peer dots. Standard/normalized scatters pass true composite CERTs (`90003`/`90006`) directly via `peer_avg_cert_primary`.
 
 2. **Diagnostics-first normalization (MSPBNA_CR_Normalized.py)**: Replaced `.clip(lower=0)` with tolerance-aware logic: minor negatives (<5% of total) clip to 0, material negatives become NaN. Added diagnostic columns: `_Norm_NCO_Residual`, `_Norm_NA_Residual`, `_Norm_Loans_Residual`, `_Flag_*_OverExclusion`, `_*_OverExclusion_Pct`, `_Norm_*_Severity` (ok/minor_clip/material_nan).
 
@@ -398,6 +404,18 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 2. **IDB label cleanup**: Removed `IDB_` prefix from all 17 keys in `master_data_dictionary.py` (`LOCAL_DERIVED_METRICS`) and updated 2 references in `MSPBNA_CR_Normalized.py`.
 3. **Peer group docs**: Updated CLAUDE.md to reflect 4 groups (not 6); documented removal of MSPBNA+Wealth duplicates.
 4. **Normalization conventions**: Added Section 6 documenting `_Norm_Total_Past_Due`, `Norm_ACL_Balance`, `Norm_Risk_Adj_Gross_Loans`, IDB label ban, and Case-Shiller toggle.
+
+### 2026-03-10 — FRED Series Fix + metric_registry + Dead Code Cleanup
+
+1. **FRED series typos fixed (MSPBNA_CR_Normalized.py)**: `CORCCLACBS` → `CORCCACBS`, `RCVRUSQ156N` → `RHVRUSQ156N`.
+2. **Discontinued FRED series removed**: `GOLDAMGBD228NLBM` (discontinued), `DEPALL` (redundant with `DPSACBW027SBOG`).
+3. **metric_registry.py — Norm_ACL_Coverage fix**: Changed dependencies from `Total_ACL` to `Norm_ACL_Balance`. Added `Norm_Risk_Adj_Allowance_Coverage` spec (`Norm_ACL_Balance / (Norm_Gross_Loans - SBL_Balance)`).
+4. **Removed `build_plot_df_with_alias()` (report_generator.py)**: Function was dead code — defined but never called. Removed to eliminate confusion with SCATTER & CHART COMPOSITE HANDLING convention.
+5. **CLAUDE.md**: Added FRED Series Validation convention, updated scatter handling docs, documented all changes.
+
+**Remaining risks:**
+- `Norm_Loan_Yield`, `Norm_Provision_Rate`, `Norm_Loss_Adj_Yield` still flatline at 0% (upstream data gap — see Section 8).
+- `run_upstream_validation_suite()` from metric_registry.py is not yet called in MSPBNA_CR_Normalized.py's main pipeline. It is only invoked via `validate_output_inputs()` in report_generator.py.
 
 ---
 

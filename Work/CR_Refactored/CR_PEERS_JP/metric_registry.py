@@ -133,15 +133,27 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
     ),
     "Norm_ACL_Coverage": MetricSpec(
         code="Norm_ACL_Coverage",
-        dependencies=["Total_ACL", "Norm_Gross_Loans"],
+        dependencies=["Norm_ACL_Balance", "Norm_Gross_Loans"],
         compute=lambda df: pd.Series(
-            _safe_div(df["Total_ACL"], df["Norm_Gross_Loans"]),
+            _safe_div(df["Norm_ACL_Balance"], df["Norm_Gross_Loans"]),
             index=df.index
         ),
         unit="fraction",
         min_value=0.0,
         max_value=1.0,
         consumers=["normalized_table", "ratio_components_normalized"],
+    ),
+
+    "Norm_Risk_Adj_Allowance_Coverage": MetricSpec(
+        code="Norm_Risk_Adj_Allowance_Coverage",
+        dependencies=["Norm_ACL_Balance", "Norm_Gross_Loans", "SBL_Balance"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["Norm_ACL_Balance"], df["Norm_Gross_Loans"] - df["SBL_Balance"].fillna(0)),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        consumers=["normalized_table", "ratio_components_normalized", "detailed_peer_table"],
     ),
 
     # ── Segment: CRE ────────────────────────────────────────────────────

@@ -533,7 +533,6 @@ FRED_SERIES_TO_FETCH = {
         'DEXJPUS': {'short': 'JPY/USD', 'long': 'Japanese Yen to U.S. Dollar Spot Exchange Rate'},
         'DEXUSUK': {'short': 'USD/GBP', 'long': 'U.S. Dollars to British Pound Sterling Spot Exchange Rate'},
         'DCOILWTICO': {'short': 'WTI Oil', 'long': 'Crude Oil Prices: West Texas Intermediate (WTI) - Cushing, Oklahoma'},
-        'GOLDAMGBD228NLBM': {'short': 'Gold', 'long': 'Gold Fixing Price 10:30 A.M. (London time) in London Bullion Market, based in U.S. Dollars'},
         'VIXCLS': {'short': 'VIX', 'long': 'CBOE Volatility Index: VIX'}
     },
     'Real Estate & Housing': {
@@ -542,7 +541,7 @@ FRED_SERIES_TO_FETCH = {
         'PERMIT': {'short': 'Building Permits', 'long': 'New Private Housing Units Authorized by Building Permits'},
         'MSPUS': {'short': 'Median Sales Price', 'long': 'Median Sales Price of Houses Sold for the United States'},
         'RRVRUSQ156N': {'short': 'Vacancy Rate (Rental)', 'long': 'Rental Vacancy Rate for the United States'},
-        'RCVRUSQ156N': {'short': 'Vacancy Rate (Homeowner)', 'long': 'Homeowner Vacancy Rate for the United States'}
+        'RHVRUSQ156N': {'short': 'Vacancy Rate (Homeowner)', 'long': 'Homeowner Vacancy Rate for the United States'}
     },
     'Banking Sector Aggregates': {
         'TOTLL': {'short': 'Total Loans & Leases', 'long': 'Total Loans and Leases, All Commercial Banks'},
@@ -550,12 +549,11 @@ FRED_SERIES_TO_FETCH = {
         'REALLN': {'short': 'Real Estate Loans', 'long': 'Real Estate Loans, All Commercial Banks'},
         'CCLACBW027SBOG': {'short': 'Credit Card Loans', 'long': 'Consumer Loans: Credit Cards and Other Revolving Plans, All Commercial Banks'},
         'CONSUMER': {'short': 'Consumer Loans', 'long': 'Consumer Loans, All Commercial Banks'},
-        'DEPALL': {'short': 'Total Deposits', 'long': 'Total Deposits, All Commercial Banks'},
         'DPSACBW027SBOG': {'short': 'Savings Deposits', 'long': 'Deposits, Savings Accounts, All Commercial Banks'},
         'DODFFSWCMI': {'short': 'Deposits: Other', 'long': 'Other Deposits, All Commercial Banks'},
         'CORBLACBS': {'short': 'Bus Loan CO Rate', 'long': 'Charge-off Rate on Business Loans, Annualized, All Commercial Banks'},
         'CORALACBS': {'short': 'All Loans CO Rate', 'long': 'Charge-off Rate on All Loans, Annualized, All Commercial Banks'},
-        'CORCCLACBS': {'short': 'CC CO Rate', 'long': 'Charge-off Rate on Credit Card Loans, Annualized, All Commercial Banks'},
+        'CORCCACBS': {'short': 'CC CO Rate', 'long': 'Charge-off Rate on Credit Card Loans, Annualized, All Commercial Banks'},
         'DRALACBS': {'short': 'All Loans Delinq', 'long': 'Delinquency Rate on All Loans, All Commercial Banks'},
         'DRCCLACBS': {'short': 'CC Delinq Rate', 'long': 'Delinquency Rate on Credit Card Loans, All Commercial Banks'},
         'DRCRELEXFACBS': {'short': 'CRE Delinq (ex-farm)', 'long': 'Delinquency Rate on Commercial Real Estate Loans (Excluding Farmland), All Commercial Banks'},
