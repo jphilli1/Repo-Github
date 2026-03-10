@@ -3593,7 +3593,7 @@ class BankMetricsProcessor:
         new_cols['Norm_CRE_ACL_Share'] = safe_div(df_processed['RIC_CRE_ACL'], norm_acl_balance)
         new_cols['Norm_Resi_ACL_Share'] = safe_div(df_processed['RIC_Resi_ACL'], norm_acl_balance)
 
-        new_cols['Norm_RESI_ACL_Coverage'] = safe_div(df_processed['RIC_Resi_ACL'], wealth_resi_bal)
+        new_cols['Norm_Resi_ACL_Coverage'] = safe_div(df_processed['RIC_Resi_ACL'], wealth_resi_bal)
         new_cols['Norm_CRE_ACL_Coverage']  = safe_div(df_processed['RIC_CRE_ACL'], df_processed['CRE_Investment_Pure_Balance'])
         new_cols['Norm_Comm_ACL_Coverage'] = safe_div(df_processed['RIC_Comm_ACL'], df_processed['SBL_Balance'])
 
@@ -5658,9 +5658,9 @@ class BankPerformanceDashboard:
             # --- Normalized ACL Metrics ---
             {"MetricCode":"Norm_ACL_Balance",                 "Display":"Normalized ACL Balance",       "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":2, "Basis":"level"},
             {"MetricCode":"Norm_Risk_Adj_Allowance_Coverage", "Display":"Norm: Risk-Adj Coverage (Ex-SBL)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_RESI_ACL_Coverage",           "Display":"Resi Reserve % of Norm ACL",   "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE Reserve % of Norm ACL",    "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_Comm_ACL_Coverage",           "Display":"C&I Reserve % of Norm Loans",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_Resi_ACL_Coverage",            "Display":"Resi ACL / Wealth Resi Balance",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE ACL / CRE Investment Balance",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_Comm_ACL_Coverage",           "Display":"Comm ACL / SBL Balance",       "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_Investment_Composition", "Display":"Norm: CRE Invest. % (Ex-ADC)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_OO_Composition",         "Display":"Norm: CRE Owner-Occ %",        "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"ASSET", "Display":"Assets",                      "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":0, "Basis":"level"},
@@ -5764,6 +5764,31 @@ class BankPerformanceDashboard:
         else:
             norm_diag_df = pd.DataFrame()
 
+        # --- Build Resi Normalized Audit sheet ---
+        resi_audit_cols = [
+            'CERT', 'REPDTE', 'NAME',
+            'Wealth_Resi_Balance',
+            'Wealth_Resi_TTM_NCO_Rate', 'Wealth_Resi_NA_Rate', 'Wealth_Resi_Delinquency_Rate',
+            'Norm_Wealth_Resi_Composition', 'Wealth_Resi_Composition',
+            'Norm_Resi_ACL_Share', 'Norm_Resi_ACL_Coverage',
+        ]
+        available_resi_cols = [c for c in resi_audit_cols if c in proc_df_with_peers.columns]
+        if available_resi_cols:
+            resi_audit_df = proc_df_with_peers[available_resi_cols].copy()
+            # Only latest quarter
+            if 'REPDTE' in resi_audit_df.columns:
+                latest_q = resi_audit_df['REPDTE'].max()
+                resi_audit_df = resi_audit_df[resi_audit_df['REPDTE'] == latest_q]
+            # Add mapping/label status
+            resi_audit_df['_mapping_status'] = 'ok'
+            resi_audit_df['_label_status'] = 'ok'
+            # Flag if Norm_Wealth_Resi_Composition exists but Norm_Resi_Composition also present (collision)
+            if 'Norm_Resi_Composition' in proc_df_with_peers.columns:
+                resi_audit_df['_mapping_status'] = 'COLLISION: both Norm_Resi_Composition and Norm_Wealth_Resi_Composition exist'
+            resi_audit_df['_impacted_outputs'] = 'detailed_peer_table, segment_focus_resi, ratio_components_normalized'
+        else:
+            resi_audit_df = pd.DataFrame()
+
         # --- Peer Group Definitions sheet + validation ---
         peer_group_defs_df = build_peer_group_definitions_df()
         pg_issues = validate_peer_group_uniqueness()
@@ -5788,6 +5813,7 @@ class BankPerformanceDashboard:
             Metric_Validation_Audit=metric_validation_df,
             Normalization_Diagnostics=norm_diag_df,
             Peer_Group_Definitions=peer_group_defs_df,
+            Resi_Normalized_Audit=resi_audit_df,
         )
 
 

@@ -262,6 +262,90 @@ def test_semantic_validation_on_synthetic_data():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 6. RESIDENTIAL NORMALIZED METRICS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_no_resi_naming_collision():
+    """Norm_Resi_Composition must not exist — canonical name is Norm_Wealth_Resi_Composition."""
+    from metric_registry import DERIVED_METRIC_SPECS
+
+    assert "Norm_Wealth_Resi_Composition" in DERIVED_METRIC_SPECS, (
+        "Canonical resi composition metric Norm_Wealth_Resi_Composition not in registry"
+    )
+    # Norm_Resi_Composition should NOT be registered (it's the deprecated phantom name)
+    assert "Norm_Resi_Composition" not in DERIVED_METRIC_SPECS, (
+        "Deprecated Norm_Resi_Composition should not be in metric registry"
+    )
+    print("  [PASS] test_no_resi_naming_collision")
+
+
+def test_resi_acl_coverage_vs_share():
+    """Coverage metric must divide by loan balance, share by total ACL.
+    No metric labeled 'coverage' may actually be a share."""
+    from metric_registry import DERIVED_METRIC_SPECS
+
+    # Norm_Resi_ACL_Share: numerator=RIC_Resi_ACL, denominator=Norm_ACL_Balance
+    share_spec = DERIVED_METRIC_SPECS.get("Norm_Resi_ACL_Share")
+    assert share_spec is not None, "Norm_Resi_ACL_Share not in registry"
+    assert "Norm_ACL_Balance" in share_spec.dependencies, (
+        f"Share metric should depend on Norm_ACL_Balance, got {share_spec.dependencies}"
+    )
+
+    # Norm_Resi_ACL_Coverage: numerator=RIC_Resi_ACL, denominator=Wealth_Resi_Balance
+    cov_spec = DERIVED_METRIC_SPECS.get("Norm_Resi_ACL_Coverage")
+    assert cov_spec is not None, "Norm_Resi_ACL_Coverage not in registry"
+    assert "Wealth_Resi_Balance" in cov_spec.dependencies, (
+        f"Coverage metric should depend on Wealth_Resi_Balance, got {cov_spec.dependencies}"
+    )
+    print("  [PASS] test_resi_acl_coverage_vs_share")
+
+
+def test_resi_composition_numerator_denominator():
+    """Norm_Wealth_Resi_Composition must be Wealth_Resi_Balance / Norm_Gross_Loans."""
+    from metric_registry import DERIVED_METRIC_SPECS
+
+    spec = DERIVED_METRIC_SPECS["Norm_Wealth_Resi_Composition"]
+    assert "Wealth_Resi_Balance" in spec.dependencies, (
+        f"Numerator should be Wealth_Resi_Balance, got deps: {spec.dependencies}"
+    )
+    assert "Norm_Gross_Loans" in spec.dependencies, (
+        f"Denominator should be Norm_Gross_Loans, got deps: {spec.dependencies}"
+    )
+
+    # Validate computation
+    df = pd.DataFrame({
+        "Wealth_Resi_Balance": [5000.0, 3000.0],
+        "Norm_Gross_Loans": [10000.0, 6000.0],
+    })
+    result = spec.compute(df)
+    assert abs(result.iloc[0] - 0.5) < 1e-6, f"Expected 0.5, got {result.iloc[0]}"
+    assert abs(result.iloc[1] - 0.5) < 1e-6, f"Expected 0.5, got {result.iloc[1]}"
+    print("  [PASS] test_resi_composition_numerator_denominator")
+
+
+def test_report_generator_uses_canonical_resi_names():
+    """report_generator.py must reference Norm_Wealth_Resi_Composition,
+    not phantom Norm_Resi_Composition."""
+    import re
+    report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_generator.py")
+    with open(report_path, "r") as f:
+        content = f.read()
+
+    # Should NOT contain Norm_Resi_Composition as a column reference
+    # (but may contain it in comments or this test reference)
+    phantom_refs = [m.start() for m in re.finditer(r'"Norm_Resi_Composition"', content)]
+    assert len(phantom_refs) == 0, (
+        f"report_generator.py still references phantom 'Norm_Resi_Composition' at {len(phantom_refs)} locations"
+    )
+
+    # Should contain canonical name
+    assert '"Norm_Wealth_Resi_Composition"' in content, (
+        "report_generator.py missing canonical Norm_Wealth_Resi_Composition references"
+    )
+    print("  [PASS] test_report_generator_uses_canonical_resi_names")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -288,6 +372,11 @@ def run_all_tests():
         test_high_severity_metrics_have_consumers,
         test_metric_registry_semantic_rules,
         test_semantic_validation_on_synthetic_data,
+        # 6. Residential normalized metrics
+        test_no_resi_naming_collision,
+        test_resi_acl_coverage_vs_share,
+        test_resi_composition_numerator_denominator,
+        test_report_generator_uses_canonical_resi_names,
     ]
 
     passed = 0

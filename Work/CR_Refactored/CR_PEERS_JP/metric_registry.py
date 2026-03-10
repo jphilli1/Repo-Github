@@ -203,6 +203,43 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
         consumers=["segment_focus_resi"],
     ),
 
+    # ── Normalized Residential ───────────────────────────────────────────
+    "Norm_Wealth_Resi_Composition": MetricSpec(
+        code="Norm_Wealth_Resi_Composition",
+        dependencies=["Wealth_Resi_Balance", "Norm_Gross_Loans"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["Wealth_Resi_Balance"], df["Norm_Gross_Loans"]),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        max_value=1.0,
+        consumers=["detailed_peer_table", "ratio_components_normalized", "segment_focus_resi"],
+    ),
+    "Norm_Resi_ACL_Share": MetricSpec(
+        code="Norm_Resi_ACL_Share",
+        dependencies=["RIC_Resi_ACL", "Norm_ACL_Balance"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["RIC_Resi_ACL"], df.get("Norm_ACL_Balance", 0)),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        max_value=1.0,
+        consumers=["ratio_components_normalized", "segment_focus_resi"],
+    ),
+    "Norm_Resi_ACL_Coverage": MetricSpec(
+        code="Norm_Resi_ACL_Coverage",
+        dependencies=["RIC_Resi_ACL", "Wealth_Resi_Balance"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["RIC_Resi_ACL"], df["Wealth_Resi_Balance"]),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        consumers=["segment_focus_resi"],
+    ),
+
     # ── Upstream Choke-Point Placeholders ────────────────────────────────
     # These are *source* columns, not derived.  Registered so the reverse-
     # dependency graph knows who depends on them.
