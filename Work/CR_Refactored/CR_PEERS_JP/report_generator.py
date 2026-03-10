@@ -756,56 +756,145 @@ def _trend_class(diff_val) -> str:
 
 def generate_detailed_peer_table(
     proc_df_with_peers: pd.DataFrame,
-    subject_bank_cert: int = 34221
+    subject_bank_cert: int = 34221,
+    is_normalized: bool = False,
 ) -> Optional[str]:
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date].copy()
 
-    # Identify Composite Certs to separate them from real peers
-    composite_certs = [90001, 90002, 90003, 99998, 99999, 88888]
+    composite_certs = [90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888]
     msbna_cert = 32992
 
-    # 1. Get real, individual peers (excluding Subject, MSBNA, and Composites)
-    individual_peer_certs = [c for c in latest_data["CERT"].unique() if c not in composite_certs + [subject_bank_cert, msbna_cert]]
-
-    # Build dictionary of all columns in the exact requested order
-    col_mapping = {}
-    for c in individual_peer_certs:
-        name = latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]
-        name = name.title().replace(" National Association", "").replace(" N.A.", "").strip()
-        col_mapping[c] = name
-
-    # Force MSPBNA, MSBNA on the right, followed by Peer Avg and Diff
-    col_mapping[subject_bank_cert] = "MSPBNA"
-    col_mapping[msbna_cert] = "MSBNA"
-
-    peer_avg_cert = 99999 if 99999 in latest_data["CERT"].values else 90003
-    col_mapping[peer_avg_cert] = "All Peers"
-
-    ordered_certs = individual_peer_certs + [subject_bank_cert, msbna_cert, peer_avg_cert]
-
-    metrics = [
-        ("Total Assets ($B)", "ASSET", "B"),
-        ("Total Loans ($B)", "LNLS", "B"),
-        ("Risk-Adj ACL Ratio (%)", "Risk_Adj_Allowance_Coverage", "%"),
-        ("Headline ACL Ratio (%)", "Allowance_to_Gross_Loans_Rate", "%"),
-        ("Nonaccrual Rate (%)", "Nonaccrual_to_Gross_Loans_Rate", "%"),
-        ("NCO Rate (TTM) (%)", "TTM_NCO_Rate", "%"),
-        ("SBL % of Loans", "SBL_Composition", "%"),
-        ("Resi % of Loans", "RIC_Resi_Loan_Share", "%"),
-        ("CRE % of Loans", "RIC_CRE_Loan_Share", "%"),
-        ("CRE % of ACL", "RIC_CRE_ACL_Share", "%"),
-        ("CRE ACL Ratio (%)", "RIC_CRE_ACL_Coverage", "%"),
-        ("CRE NPL Coverage (x)", "RIC_CRE_Risk_Adj_Coverage", "x"),
-        ("% of CRE in Nonaccrual", "RIC_CRE_Nonaccrual_Rate", "%"),
-        ("CRE NCO Rate (TTM)", "RIC_CRE_NCO_Rate", "%")
+    # 1. Individual peers excluding Subject, MSBNA, and Composites
+    individual_peer_certs = [
+        c for c in latest_data["CERT"].unique()
+        if c not in composite_certs + [subject_bank_cert, msbna_cert]
     ]
 
-    html = f"""
-    <html><head><style>
+    col_mapping = {subject_bank_cert: "MSPBNA", msbna_cert: "MSBNA"}
+    for c in individual_peer_certs:
+        name = latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]
+        col_mapping[c] = str(name).title().replace(" National Association", "").replace(" N.A.", "").strip()
+
+    peer_avg_cert = 90006 if is_normalized else (99999 if 99999 in latest_data["CERT"].values else 90003)
+    col_mapping[peer_avg_cert] = "All Peers (Norm)" if is_normalized else "All Peers"
+
+    # ORDER: MSPBNA, MSBNA on the LEFT
+    ordered_certs = [subject_bank_cert, msbna_cert] + individual_peer_certs + [peer_avg_cert]
+
+    if is_normalized:
+        title = "Detailed Peer Analysis (Normalized)"
+        metrics = [
+            ("Total Assets ($B)", "ASSET", "B"),
+            ("Norm Gross Loans ($B)", "Norm_Gross_Loans", "B"),
+            ("Norm Risk-Adj ACL Ratio (%)", "Norm_Risk_Adj_Allowance_Coverage", "%"),
+            ("Norm ACL Ratio (%)", "Norm_ACL_Coverage", "%"),
+            ("Norm Nonaccrual Rate (%)", "Norm_Nonaccrual_Rate", "%"),
+            ("Norm NCO Rate (TTM) (%)", "Norm_NCO_Rate", "%"),
+            ("Norm SBL % of Loans", "Norm_SBL_Composition", "%"),
+            ("Norm Resi % of Loans", "Norm_Resi_Composition", "%"),
+            ("Norm CRE % of Loans", "Norm_CRE_Investment_Composition", "%"),
+            ("Norm CRE % of ACL", "Norm_CRE_ACL_Share", "%"),
+            ("Norm CRE ACL Ratio (%)", "Norm_CRE_ACL_Coverage", "%"),
+        ]
+    else:
+        title = "Detailed Peer Analysis (Standard)"
+        metrics = [
+            ("Total Assets ($B)", "ASSET", "B"),
+            ("Total Loans ($B)", "LNLS", "B"),
+            ("Risk-Adj ACL Ratio (%)", "Risk_Adj_Allowance_Coverage", "%"),
+            ("Headline ACL Ratio (%)", "Allowance_to_Gross_Loans_Rate", "%"),
+            ("Nonaccrual Rate (%)", "Nonaccrual_to_Gross_Loans_Rate", "%"),
+            ("NCO Rate (TTM) (%)", "TTM_NCO_Rate", "%"),
+            ("SBL % of Loans", "SBL_Composition", "%"),
+            ("Resi % of Loans", "RIC_Resi_Loan_Share", "%"),
+            ("CRE % of Loans", "RIC_CRE_Loan_Share", "%"),
+            ("CRE % of ACL", "RIC_CRE_ACL_Share", "%"),
+            ("CRE ACL Ratio (%)", "RIC_CRE_ACL_Coverage", "%"),
+            ("CRE NPL Coverage (x)", "RIC_CRE_Risk_Adj_Coverage", "x"),
+            ("% of CRE in Nonaccrual", "RIC_CRE_Nonaccrual_Rate", "%"),
+            ("CRE NCO Rate (TTM)", "RIC_CRE_NCO_Rate", "%"),
+        ]
+
+    return _build_dynamic_peer_html(
+        title, ordered_certs, col_mapping, metrics,
+        latest_data, subject_bank_cert, peer_avg_cert, latest_date,
+    )
+
+
+def generate_core_pb_peer_table(
+    proc_df_with_peers: pd.DataFrame,
+    subject_bank_cert: int = 34221,
+    is_normalized: bool = False,
+) -> Optional[str]:
+    latest_date = proc_df_with_peers["REPDTE"].max()
+    latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date].copy()
+    msbna_cert = 32992
+
+    # Identify Core PB constituents (Goldman and UBS)
+    core_pb_certs = []
+    col_mapping = {subject_bank_cert: "MSPBNA", msbna_cert: "MSBNA"}
+    for c in latest_data["CERT"].unique():
+        name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]).upper()
+        if "GOLDMAN" in name or "UBS" in name:
+            if c not in [90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888]:
+                core_pb_certs.append(c)
+                col_mapping[c] = "Goldman Sachs" if "GOLDMAN" in name else "UBS"
+
+    peer_avg_cert = 90004 if is_normalized else 90001
+    col_mapping[peer_avg_cert] = "Core PB Avg (Norm)" if is_normalized else "Core PB Avg"
+
+    # ORDER: MSPBNA, MSBNA on the LEFT
+    ordered_certs = [subject_bank_cert, msbna_cert] + core_pb_certs + [peer_avg_cert]
+
+    if is_normalized:
+        title = "Core PB Analysis (Normalized)"
+        metrics = [
+            ("Total Assets ($B)", "ASSET", "B"),
+            ("Norm Gross Loans ($B)", "Norm_Gross_Loans", "B"),
+            ("Norm Risk-Adj ACL Ratio (%)", "Norm_Risk_Adj_Allowance_Coverage", "%"),
+            ("Norm ACL Ratio (%)", "Norm_ACL_Coverage", "%"),
+            ("Norm Nonaccrual Rate (%)", "Norm_Nonaccrual_Rate", "%"),
+            ("Norm NCO Rate (TTM) (%)", "Norm_NCO_Rate", "%"),
+            ("Norm SBL % of Loans", "Norm_SBL_Composition", "%"),
+            ("Norm Resi % of Loans", "Norm_Resi_Composition", "%"),
+            ("Norm CRE % of Loans", "Norm_CRE_Investment_Composition", "%"),
+            ("Norm CRE % of ACL", "Norm_CRE_ACL_Share", "%"),
+            ("Norm CRE ACL Ratio (%)", "Norm_CRE_ACL_Coverage", "%"),
+        ]
+    else:
+        title = "Core PB Analysis (Standard)"
+        metrics = [
+            ("Total Assets ($B)", "ASSET", "B"),
+            ("Total Loans ($B)", "LNLS", "B"),
+            ("Risk-Adj ACL Ratio (%)", "Risk_Adj_Allowance_Coverage", "%"),
+            ("Headline ACL Ratio (%)", "Allowance_to_Gross_Loans_Rate", "%"),
+            ("Nonaccrual Rate (%)", "Nonaccrual_to_Gross_Loans_Rate", "%"),
+            ("NCO Rate (TTM) (%)", "TTM_NCO_Rate", "%"),
+            ("SBL % of Loans", "SBL_Composition", "%"),
+            ("Resi % of Loans", "RIC_Resi_Loan_Share", "%"),
+            ("CRE % of Loans", "RIC_CRE_Loan_Share", "%"),
+            ("CRE % of ACL", "RIC_CRE_ACL_Share", "%"),
+            ("CRE ACL Ratio (%)", "RIC_CRE_ACL_Coverage", "%"),
+            ("CRE NPL Coverage (x)", "RIC_CRE_Risk_Adj_Coverage", "x"),
+            ("% of CRE in Nonaccrual", "RIC_CRE_Nonaccrual_Rate", "%"),
+            ("CRE NCO Rate (TTM)", "RIC_CRE_NCO_Rate", "%"),
+        ]
+
+    return _build_dynamic_peer_html(
+        title, ordered_certs, col_mapping, metrics,
+        latest_data, subject_bank_cert, peer_avg_cert, latest_date,
+    )
+
+
+def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
+                             latest_data, subject_cert, avg_cert, latest_date):
+    """Shared HTML builder for detailed peer and core PB tables."""
+    html = f"""<html><head><style>
         body {{ font-family: Arial, sans-serif; background-color: transparent; }}
         .email-container {{ background-color: transparent; padding: 20px; max-width: 1600px; margin: 0 auto; text-align: center; }}
         h3 {{ color: #002F6C; margin-bottom: 5px; text-align: center; }}
+        p.date-header {{ margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }}
         table {{ width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; background-color: transparent; }}
         th {{ background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }}
         td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; background-color: transparent; }}
@@ -817,70 +906,63 @@ def generate_detailed_peer_table(
         .neutral-trend {{ color: #757575; font-weight: bold; }}
     </style></head><body>
     <div class="email-container">
-        <h3>Detailed Peer Analysis</h3>
-        <table><thead><tr>
-            <th>Metric</th>
-    """
+        <h3>{title}</h3>
+        <p class="date-header">{latest_date.strftime('%B %d, %Y')}</p>
+        <table><thead><tr><th>Metric</th>"""
 
-    for c in ordered_certs: html += f"<th>{col_mapping[c]}</th>"
-    html += "<th>Diff Vs All Peers</th></tr></thead><tbody>"
+    for c in ordered_certs:
+        html += f"<th>{col_mapping[c]}</th>"
+    html += f"<th>Diff Vs {col_mapping[avg_cert]}</th></tr></thead><tbody>"
+
+    msbna_cert = 32992
 
     for disp, code, fmt in metrics:
-        # Suppress flatlined metrics: check if all certs have zero/NaN for this metric
-        _all_vals = [
-            latest_data[latest_data["CERT"] == c].iloc[0].get(code, np.nan)
-            if not latest_data[latest_data["CERT"] == c].empty else np.nan
-            for c in ordered_certs
-        ]
-        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in _all_vals):
-            continue
-
         html += f'<tr><td class="metric-name"><b>{disp}</b></td>'
-
-        subj_val = np.nan
-        avg_val = np.nan
+        subj_val, avg_val = np.nan, np.nan
 
         for c in ordered_certs:
             row_slice = latest_data[latest_data["CERT"] == c]
             val = row_slice.iloc[0].get(code, np.nan) if not row_slice.empty else np.nan
+            if c == subject_cert:
+                subj_val = val
+            if c == avg_cert:
+                avg_val = val
 
-            if c == subject_bank_cert: subj_val = val
-            if c == peer_avg_cert: avg_val = val
+            if pd.isna(val):
+                f_v = "N/A"
+            elif fmt == "x":
+                f_v = f"{val:.2f}x"
+            elif fmt == "B":
+                f_v = f"${val / 1e6:.1f}B"
+            else:
+                f_v = f"{val * 100:.2f}%" if abs(val) < 1.0 else f"{val:.2f}%"
 
-            def fmt_val(v, fmt_type):
-                if pd.isna(v): return "N/A"
-                if fmt_type == "x": return f"{v:.2f}x"
-                if fmt_type == "B": return f"${v/1e6:,.1f}B"
-                return f"{v*100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
+            cls = ('class="subject-value"' if c == subject_cert
+                   else ('class="msbna-value"' if c == msbna_cert else ''))
+            html += f"<td {cls}>{f_v}</td>"
 
-            cls = ""
-            if c == subject_bank_cert: cls = 'class="subject-value"'
-            elif c == msbna_cert: cls = 'class="msbna-value"'
-
-            html += f"<td {cls}>{fmt_val(val, fmt)}</td>"
-
-        # Diff vs All Peers Logic (percentage-point delta, NOT relative %)
         diff = subj_val - avg_val if pd.notna(subj_val) and pd.notna(avg_val) else np.nan
         if pd.isna(diff):
-            f_diff = "N/A"
-            diff_cls = "neutral-trend"
+            f_diff, diff_cls = "N/A", "neutral-trend"
         else:
-            # Use subj_val to determine scale: decimal (<1.0) vs pct-point (>=1.0)
-            if fmt == "%":
-                scale = 100.0 if pd.notna(subj_val) and abs(float(subj_val)) < 1.0 else 1.0
-                f_diff = f"{diff * scale:+.2f}%"
-            elif fmt == "x": f_diff = f"{diff:+.2f}x"
-            else: f_diff = f"{diff/1e6:+.1f}B"
+            if fmt == "x":
+                f_diff = f"{diff:+.2f}x"
+            elif fmt == "B":
+                f_diff = f"{diff / 1e6:+.1f}B"
+            else:
+                f_diff = f"{diff * 100:+.2f}%" if abs(diff) < 1.0 else f"{diff:+.2f}%"
 
-            is_risk = any(k in disp for k in ['Nonaccrual', 'NCO', 'Delinq', 'Risk'])
-            is_safe = any(k in disp for k in ['Coverage', 'Ratio', 'Equity', 'ROA', 'ROE', 'Yield', 'Margin'])
+            is_risk = any(k in disp for k in ['Nonaccrual', 'NCO', 'Delinq', 'Risk', 'Past Due'])
+            is_safe = any(k in disp for k in ['Coverage', 'Ratio', 'Equity', 'ROA', 'ROE', 'Yield', 'Margin', 'Assets'])
 
-            # Use scaled diff for threshold comparison
-            scaled_diff = abs(diff * scale) if fmt == "%" else abs(diff)
-            if scaled_diff < 0.01: diff_cls = "neutral-trend"
-            elif is_risk: diff_cls = "bad-trend" if diff > 0 else "good-trend"
-            elif is_safe: diff_cls = "good-trend" if diff > 0 else "bad-trend"
-            else: diff_cls = "neutral-trend"
+            if abs(diff) < 0.001:
+                diff_cls = "neutral-trend"
+            elif is_risk:
+                diff_cls = "bad-trend" if diff > 0 else "good-trend"
+            elif is_safe:
+                diff_cls = "good-trend" if diff > 0 else "bad-trend"
+            else:
+                diff_cls = "neutral-trend"
 
         html += f'<td class="{diff_cls}">{f_diff}</td></tr>'
 
@@ -1084,54 +1166,93 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
     return html
 
 
-def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
-                                 subject_bank_cert: int = 34221,
-                                 segment_name: str = "CRE") -> Optional[str]:
+def generate_segment_focus_table(
+    proc_df_with_peers: pd.DataFrame,
+    subject_bank_cert: int = 34221,
+    segment_name: str = "CRE",
+    is_normalized: bool = False,
+) -> Optional[str]:
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    # 99999 is All Peers avg
-    peer_avg_cert = 99999 if 99999 in latest_data["CERT"].values else 90003
-    certs = { "MSPBNA": subject_bank_cert, "MSBNA": 32992, "All Peers": peer_avg_cert }
-    row_data = {k: latest_data[latest_data["CERT"] == v].iloc[0] if v in latest_data["CERT"].values else pd.Series() for k, v in certs.items()}
+    peer_avg_cert = 90006 if is_normalized else (99999 if 99999 in latest_data["CERT"].values else 90003)
+    certs = {"MSPBNA": subject_bank_cert, "MSBNA": 32992, "All Peers": peer_avg_cert}
+    row_data = {
+        k: latest_data[latest_data["CERT"] == v].iloc[0]
+        if v in latest_data["CERT"].values else pd.Series()
+        for k, v in certs.items()
+    }
 
-    common_metrics = [
-        ("LNLS", "Total Loans ($B)*", "B", False),
-        ("SBL_Composition", "SBL % of Loans*", "%", False),
-        ("RIC_Resi_Loan_Share", "Resi % of Loans*", "%", False),
-        ("RIC_CRE_Loan_Share", "CRE % of Loans*", "%", False),
-        ("Risk_Adj_Allowance_Coverage", "Risk-Adj ACL Ratio (%)*", "%", True),
-        ("Nonaccrual_to_Gross_Loans_Rate", "Nonaccrual Rate (%)*", "%", False),
-        ("TTM_NCO_Rate", "NCO Rate (TTM) (%)*", "%", False),
-        ("TTM_Past_Due_Rate", "Delinquency Rate (%)*", "%", False)
-    ]
-
-    if segment_name == "CRE":
-        metrics = common_metrics + [
-            ("RIC_CRE_Balance", "CRE Balance ($B)", "B", False),
-            ("RIC_CRE_ACL_Share", "CRE % of ACL*", "%", False),
-            ("RIC_CRE_ACL_Coverage", "CRE ACL Ratio (%)*", "%", True),
-            ("RIC_CRE_Risk_Adj_Coverage", "CRE NPL Coverage (x)", "x", True),
-            ("RIC_CRE_Nonaccrual_Rate", "% of CRE in Nonaccrual", "%", False),
-            ("RIC_CRE_NCO_Rate", "CRE NCO Rate (TTM)", "%", False),
-            ("RIC_CRE_Delinquency_Rate", "CRE Delinquency Rate (%)", "%", False)
+    if is_normalized:
+        title = f"{segment_name} Segment Analysis (Normalized)"
+        common = [
+            ("Norm_Gross_Loans", "Total Loans ($B)*", "B", False),
+            ("Norm_SBL_Composition", "SBL % of Loans*", "%", False),
+            ("Norm_Resi_Composition", "Resi % of Loans*", "%", False),
+            ("Norm_CRE_Investment_Composition", "CRE % of Loans*", "%", False),
+            ("Norm_Risk_Adj_Allowance_Coverage", "Risk-Adj ACL Ratio (%)*", "%", True),
+            ("Norm_Nonaccrual_Rate", "Nonaccrual Rate (%)*", "%", False),
+            ("Norm_NCO_Rate", "NCO Rate (TTM) (%)*", "%", False),
+            ("Norm_Delinquency_Rate", "Delinquency Rate (%)*", "%", False),
         ]
-    else:  # Resi
-        metrics = common_metrics + [
-            ("RIC_Resi_Balance", "Resi Balance ($B)*", "B", False),
-            ("RIC_Resi_ACL_Share", "Resi % of ACL*", "%", False),
-            ("RIC_Resi_ACL_Coverage", "Resi ACL Ratio (%)*", "%", True),
-            ("RIC_Resi_Risk_Adj_Coverage", "Resi NPL Coverage (x)", "x", True),
-            ("RIC_Resi_Nonaccrual_Rate", "% of Resi in Nonaccrual*", "%", False),
-            ("RIC_Resi_NCO_Rate", "Resi NCO Rate (TTM)*", "%", False),
-            ("RIC_Resi_Delinquency_Rate", "Resi Delinquency Rate (%)*", "%", False)
+        if segment_name == "CRE":
+            metrics = common + [
+                ("RIC_CRE_Balance", "CRE Balance ($B)", "B", False),
+                ("Norm_CRE_ACL_Share", "CRE % of ACL*", "%", False),
+                ("Norm_CRE_ACL_Coverage", "CRE ACL Ratio (%)*", "%", True),
+                ("RIC_CRE_Risk_Adj_Coverage", "CRE NPL Coverage (x)", "x", True),
+                ("RIC_CRE_Nonaccrual_Rate", "% of CRE in Nonaccrual", "%", False),
+                ("RIC_CRE_NCO_Rate", "CRE NCO Rate (TTM)", "%", False),
+                ("RIC_CRE_Delinquency_Rate", "CRE Delinquency Rate (%)", "%", False),
+            ]
+        else:
+            metrics = common + [
+                ("RIC_Resi_Balance", "Resi Balance ($B)*", "B", False),
+                ("Norm_Resi_ACL_Share", "Resi % of ACL*", "%", False),
+                ("Norm_Resi_ACL_Coverage", "Resi ACL Ratio (%)*", "%", True),
+                ("RIC_Resi_Risk_Adj_Coverage", "Resi NPL Coverage (x)", "x", True),
+                ("RIC_Resi_Nonaccrual_Rate", "% of Resi in Nonaccrual*", "%", False),
+                ("RIC_Resi_NCO_Rate", "Resi NCO Rate (TTM)*", "%", False),
+                ("RIC_Resi_Delinquency_Rate", "Resi Delinquency Rate (%)*", "%", False),
+            ]
+    else:
+        title = f"{segment_name} Segment Analysis (Standard)"
+        common = [
+            ("LNLS", "Total Loans ($B)*", "B", False),
+            ("SBL_Composition", "SBL % of Loans*", "%", False),
+            ("RIC_Resi_Loan_Share", "Resi % of Loans*", "%", False),
+            ("RIC_CRE_Loan_Share", "CRE % of Loans*", "%", False),
+            ("Risk_Adj_Allowance_Coverage", "Risk-Adj ACL Ratio (%)*", "%", True),
+            ("Nonaccrual_to_Gross_Loans_Rate", "Nonaccrual Rate (%)*", "%", False),
+            ("TTM_NCO_Rate", "NCO Rate (TTM) (%)*", "%", False),
+            ("TTM_Past_Due_Rate", "Delinquency Rate (%)*", "%", False),
         ]
+        if segment_name == "CRE":
+            metrics = common + [
+                ("RIC_CRE_Balance", "CRE Balance ($B)", "B", False),
+                ("RIC_CRE_ACL_Share", "CRE % of ACL*", "%", False),
+                ("RIC_CRE_ACL_Coverage", "CRE ACL Ratio (%)*", "%", True),
+                ("RIC_CRE_Risk_Adj_Coverage", "CRE NPL Coverage (x)", "x", True),
+                ("RIC_CRE_Nonaccrual_Rate", "% of CRE in Nonaccrual", "%", False),
+                ("RIC_CRE_NCO_Rate", "CRE NCO Rate (TTM)", "%", False),
+                ("RIC_CRE_Delinquency_Rate", "CRE Delinquency Rate (%)", "%", False),
+            ]
+        else:
+            metrics = common + [
+                ("RIC_Resi_Balance", "Resi Balance ($B)*", "B", False),
+                ("RIC_Resi_ACL_Share", "Resi % of ACL*", "%", False),
+                ("RIC_Resi_ACL_Coverage", "Resi ACL Ratio (%)*", "%", True),
+                ("RIC_Resi_Risk_Adj_Coverage", "Resi NPL Coverage (x)", "x", True),
+                ("RIC_Resi_Nonaccrual_Rate", "% of Resi in Nonaccrual*", "%", False),
+                ("RIC_Resi_NCO_Rate", "Resi NCO Rate (TTM)*", "%", False),
+                ("RIC_Resi_Delinquency_Rate", "Resi Delinquency Rate (%)*", "%", False),
+            ]
 
-    html = f"""
-    <html><head><style>
+    html = f"""<html><head><style>
         body {{ font-family: Arial, sans-serif; background-color: transparent; }}
         .email-container {{ background-color: transparent; padding: 20px; max-width: 1400px; margin: 0 auto; text-align: center; }}
         h3 {{ color: #002F6C; margin-bottom: 5px; text-align: center; }}
+        p.date-header {{ margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }}
         table {{ width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; background-color: transparent; }}
         th {{ background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }}
         td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; background-color: transparent; }}
@@ -1145,7 +1266,8 @@ def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
         .neutral-trend {{ color: #795548; font-weight: normal; }}
     </style></head><body>
     <div class="email-container">
-        <h3>{segment_name} Segment Analysis</h3>
+        <h3>{title}</h3>
+        <p class="date-header">{latest_date.strftime('%B %d, %Y')}</p>
         <table><thead><tr>
             <th>Metric</th><th>MSPBNA</th><th>MSBNA</th><th>All Peers</th><th>Diff vs All Peers</th>
         </tr></thead><tbody>
@@ -1153,38 +1275,33 @@ def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
 
     for code, disp, fmt, higher_is_better in metrics:
         vals = {k: row_data[k].get(code, np.nan) for k in certs}
-
-        # Suppress flatlined metrics: skip if all entities show zero/NaN
-        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in vals.values()):
-            continue
-
-        subj_raw = vals["MSPBNA"]
-        diff = subj_raw - vals["All Peers"] if pd.notna(subj_raw) and pd.notna(vals["All Peers"]) else np.nan
-
-        # Determine scale from the subject value: decimal (<1.0) vs pct-point (>=1.0)
-        pct_scale = 100.0 if fmt == "%" and pd.notna(subj_raw) and abs(float(subj_raw)) < 1.0 else 1.0
+        diff = vals["MSPBNA"] - vals["All Peers"] if pd.notna(vals["MSPBNA"]) and pd.notna(vals["All Peers"]) else np.nan
 
         def fmt_val(v, fmt_type):
             if pd.isna(v): return "N/A"
             if fmt_type == "x": return f"{v:.2f}x"
-            if fmt_type == "B": return f"${v/1e6:.1f}B"
-            return f"{v*100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
+            if fmt_type == "B": return f"${v / 1e6:.1f}B"
+            return f"{v * 100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
 
         f_vals = {k: fmt_val(v, fmt) for k, v in vals.items()}
 
         if pd.isna(diff):
-            f_diff = "N/A"
+            f_diff, diff_cls = "N/A", "neutral-trend"
         else:
-            if fmt == "%": f_diff = f"{diff * pct_scale:+.2f}%"
-            elif fmt == "x": f_diff = f"{diff:+.2f}x"
-            else: f_diff = f"{diff/1e6:+.1f}B"
+            if fmt == "x":
+                f_diff = f"{diff:+.2f}x"
+            elif fmt == "B":
+                f_diff = f"{diff / 1e6:+.1f}B"
+            else:
+                f_diff = f"{diff * 100:+.2f}%" if abs(diff) < 1.0 else f"{diff:+.2f}%"
 
-        if pd.isna(diff) or abs(diff * pct_scale if fmt == "%" else diff) < 0.01:
-            subj_cls, diff_cls = "mspbna-neutral", "neutral-trend"
-        else:
-            is_good = (diff > 0) if higher_is_better else (diff < 0)
-            subj_cls = "mspbna-good" if is_good else "mspbna-bad"
-            diff_cls = "good-trend" if is_good else "bad-trend"
+            if abs(diff) < 0.0001:
+                diff_cls = "neutral-trend"
+            else:
+                is_good = (diff > 0) if higher_is_better else (diff < 0)
+                diff_cls = "good-trend" if is_good else "bad-trend"
+
+        subj_cls = f"mspbna-{diff_cls.split('-')[0]}" if diff_cls != "neutral-trend" else "mspbna-neutral"
 
         html += f"""<tr>
             <td class="metric-name"><b>{disp}</b></td>
@@ -1418,16 +1535,6 @@ def generate_reports(
             if std_df is not None:
                 print(f"  Table contains {len(std_df)} credit metrics")
 
-        # Detailed Peer Analysis (dynamic columns with all individual peers)
-        detail_html = generate_detailed_peer_table(
-            proc_df_with_peers, subject_bank_cert
-        )
-        if detail_html:
-            dp = tables_dir / f"{base}_detailed_peer_table_{stamp}.html"
-            with open(dp, "w", encoding="utf-8") as f:
-                f.write(detail_html)
-            print(f"  Detailed peer table saved: {dp}")
-
         # ------------------------------------------------------------------
         # STANDARD CREDIT DETERIORATION CHART -> charts_dir
         # ------------------------------------------------------------------
@@ -1600,26 +1707,40 @@ def generate_reports(
                 f.write(normcmp_html)
             print(f"  Normalized comparison table saved: {nc}")
 
-        # GENERATE RATIO AND SEGMENT TABLES
-        print("\nGENERATING DETAILED RATIO & SEGMENT TABLES...")
+        # GENERATE DETAILED PEER, RATIO & SEGMENT TABLES
+        print("\nGENERATING DETAILED PEER, RATIO & SEGMENT TABLES...")
 
-        # 1. Ratio Components (Standard & Normalized)
-        ratio_std = generate_ratio_components_table(proc_df_with_peers, subject_bank_cert, is_normalized=False)
-        if ratio_std:
-            with open(tables_dir / f"{base}_ratio_components_standard_{stamp}.html", "w") as f: f.write(ratio_std)
+        for is_norm in [False, True]:
+            norm_str = "normalized" if is_norm else "standard"
 
-        ratio_norm = generate_ratio_components_table(proc_df_with_peers, subject_bank_cert, is_normalized=True)
-        if ratio_norm:
-            with open(tables_dir / f"{base}_ratio_components_normalized_{stamp}.html", "w") as f: f.write(ratio_norm)
+            # Detailed Peer Table
+            dt = generate_detailed_peer_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
+            if dt:
+                with open(tables_dir / f"{base}_detailed_peer_table_{norm_str}_{stamp}.html", "w") as f:
+                    f.write(dt)
 
-        # 2. Segment Focus (CRE & Resi)
-        cre_seg = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, "CRE")
-        if cre_seg:
-            with open(tables_dir / f"{base}_cre_segment_normalized_{stamp}.html", "w") as f: f.write(cre_seg)
+            # Core PB Detailed Table
+            cpb = generate_core_pb_peer_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
+            if cpb:
+                with open(tables_dir / f"{base}_core_pb_peer_table_{norm_str}_{stamp}.html", "w") as f:
+                    f.write(cpb)
 
-        resi_seg = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, "Resi")
-        if resi_seg:
-            with open(tables_dir / f"{base}_resi_segment_normalized_{stamp}.html", "w") as f: f.write(resi_seg)
+            # Ratio Components
+            rc = generate_ratio_components_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
+            if rc:
+                with open(tables_dir / f"{base}_ratio_components_{norm_str}_{stamp}.html", "w") as f:
+                    f.write(rc)
+
+            # Segments
+            cre = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, segment_name="CRE", is_normalized=is_norm)
+            if cre:
+                with open(tables_dir / f"{base}_cre_segment_{norm_str}_{stamp}.html", "w") as f:
+                    f.write(cre)
+
+            resi = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, segment_name="Resi", is_normalized=is_norm)
+            if resi:
+                with open(tables_dir / f"{base}_resi_segment_{norm_str}_{stamp}.html", "w") as f:
+                    f.write(resi)
 
         # ------------------------------------------------------------------
         # SEGMENT-LEVEL CHARTS -> charts_dir
