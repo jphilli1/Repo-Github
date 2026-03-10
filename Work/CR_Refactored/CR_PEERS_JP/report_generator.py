@@ -309,268 +309,210 @@ def _fmt_percent_auto(v: float) -> str:
     return f"{f:.2f}%"
 
 
-def generate_html_email_table(df: pd.DataFrame, report_date: datetime,
-                              col_labels: Optional[Dict[str, str]] = None) -> str:
-    """
-    Generates a properly formatted HTML table for email.
-    col_labels can override column header names. Keys in df should match.
-    """
-    formatted_date = report_date.strftime('%B %d, %Y') if hasattr(report_date, 'strftime') else str(report_date)
+def _fmt_money_billions(v: float) -> str:
+    """Format a value (assumed already in thousands or raw) as $X.XB."""
+    if pd.isna(v):
+        return "N/A"
+    v = float(v)
+    if abs(v) >= 1e9:
+        return f"${v/1e9:,.1f}B"
+    if abs(v) >= 1e6:
+        return f"${v/1e6:,.1f}B"
+    if abs(v) >= 1e3:
+        return f"${v/1e3:,.1f}M"
+    return f"${v:,.0f}"
 
-    # Determine column names from df
-    # Expected columns: Metric, MSPBNA, then peer columns, then diff columns
-    peer_cols = [c for c in df.columns if c not in ('Metric', 'MSPBNA') and not c.startswith('Diff')]
-    diff_cols = [c for c in df.columns if c.startswith('Diff')]
+def _fmt_money_billions_diff(v: float) -> str:
+    """Format a diff value as +/-$X.XB."""
+    if pd.isna(v):
+        return "N/A"
+    sign = "+" if v >= 0 else "-"
+    base = _fmt_money_billions(abs(v))
+    return f"{sign}{base}"
+
+def _fmt_multiple(v: float) -> str:
+    """Format a value as Xx multiplier."""
+    if pd.isna(v):
+        return "N/A"
+    return f"{float(v):.2f}x"
+
+def _fmt_multiple_diff(v: float) -> str:
+    """Format a diff value as +/-Xx."""
+    if pd.isna(v):
+        return "N/A"
+    return f"{float(v):+.2f}x"
+
+def _fmt_percent(v: float) -> str:
+    """Format a value as percentage. Auto-detects decimal vs pct-point scale."""
+    if pd.isna(v):
+        return "N/A"
+    v = float(v)
+    if abs(v) < 1.0:
+        v *= 100.0
+    return f"{v:.2f}%"
+
+def _fmt_call_report_date(d) -> str:
+    """Format a report date for display in table headers."""
+    if hasattr(d, 'strftime'):
+        return d.strftime('%B %d, %Y')
+    return str(d)
+
+
+def generate_html_email_table_dynamic(df: pd.DataFrame, report_date: datetime, table_type: str) -> str:
+    cols = df.columns.tolist()
+    date_str = _fmt_call_report_date(report_date)
+
+    title = "Executive Credit Summary" if table_type == "summary" else "Detailed Peer Analysis"
+    max_width = "1200px" if table_type == "summary" else "1600px"
 
     html = f"""
-    <html>
-    <head>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                margin: 20px;
-                background-color: #f5f5f5;
-            }}
-            .email-container {{
-                background-color: white;
-                padding: 30px;
-                border-radius: 8px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                max-width: 1100px;
-                margin: 0 auto;
-            }}
-            .header {{
-                text-align: center;
-                margin-bottom: 30px;
-                color: #2c3e50;
-            }}
-            .header h2 {{
-                margin: 0;
-                font-size: 24px;
-                font-weight: 600;
-            }}
-            .header p {{
-                margin: 5px 0 0 0;
-                color: #7f8c8d;
-                font-size: 14px;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 20px 0;
-                font-size: 12px;
-            }}
-            th {{
-                background-color: #34495e;
-                color: white;
-                padding: 12px 8px;
-                text-align: center;
-                font-weight: 600;
-                border: 1px solid #2c3e50;
-            }}
-            td {{
-                padding: 10px 8px;
-                text-align: center;
-                border: 1px solid #bdc3c7;
-            }}
-            tr:nth-child(even) {{
-                background-color: #f8f9fa;
-            }}
-            tr:hover {{
-                background-color: #e3f2fd;
-            }}
-            .metric-name {{
-                text-align: left !important;
-                font-weight: 500;
-                color: #2c3e50;
-            }}
-            .mspbna-value {{
-                background-color: #fff3cd;
-                font-weight: 600;
-                color: #856404;
-            }}
-            .positive {{
-                color: #d32f2f;
-                font-weight: 600;
-            }}
-            .negative {{
-                color: #388e3c;
-                font-weight: 600;
-            }}
-            .neutral {{
-                color: #5d4037;
-            }}
-            .footer {{
-                margin-top: 30px;
-                padding-top: 20px;
-                border-top: 2px solid #ecf0f1;
-                font-size: 12px;
-                color: #7f8c8d;
-                text-align: center;
-            }}
-            .legend {{
-                margin: 20px 0;
-                padding: 15px;
-                background-color: #f8f9fa;
-                border-radius: 5px;
-                font-size: 11px;
-                color: #495057;
-            }}
-            .legend strong {{
-                color: #2c3e50;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="email-container">
-            <div class="header">
-                <h2>Credit Risk Metrics Comparison</h2>
-                <p>MSPBNA vs Peer Groups Analysis | Report Date: {formatted_date}</p>
-            </div>
+    <html><head><style>
+        body {{ font-family: Arial, sans-serif; background-color: transparent; }}
+        .email-container {{
+            background-color: transparent; padding: 20px; max-width: {max_width}; margin: 0 auto; text-align: center;
+        }}
+        h3 {{ color: #002F6C; margin-bottom: 5px; text-align: center; }}
+        p.date-header {{ margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; background-color: transparent; }}
+        th {{ background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }}
+        td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; background-color: transparent; }}
 
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 25%;">Credit Metric</th>
-                        <th style="width: 10%;">MSPBNA</th>
-    """
+        .metric-name {{ text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 180px; background-color: transparent; }}
+        .subject-value {{ background-color: #E6F3FF !important; font-weight: bold; color: #002F6C; border-left: 2px solid #002F6C; border-right: 2px solid #002F6C; }}
+        .msbna-value {{ background-color: rgba(76, 120, 168, 0.08) !important; font-weight: 600; color: #444; }}
 
-    for pc in peer_cols:
-        display = col_labels.get(pc, pc) if col_labels else pc
-        html += f'<th style="width: 12%;">{display}</th>\n'
+        .bad-trend {{ color: #d32f2f; font-weight: bold; }}
+        .good-trend {{ color: #388e3c; font-weight: bold; }}
+        .neutral-trend {{ color: #757575; font-weight: bold; }}
 
-    for dc in diff_cols:
-        display = col_labels.get(dc, dc) if col_labels else dc
-        html += f'<th style="width: 12%;">{display}</th>\n'
+        .footnote {{ font-size: 10px; color: #666; margin-top: 20px; border-top: 1px solid #ccc; padding-top: 10px; text-align: left; }}
+    </style></head><body>
 
-    html += """
-                    </tr>
-                </thead>
-                <tbody>
-    """
+    <div class="email-container">
+        <h3>{title}</h3>
+        <p class="date-header">{date_str}</p>
+        <table><thead><tr>"""
+
+    for c in cols: html += f"<th>{c}</th>"
+    html += "</tr></thead><tbody>"
 
     for _, row in df.iterrows():
-        html += f"""
-                    <tr>
-                        <td class="metric-name">{row['Metric']}</td>
-                        <td class="mspbna-value">{row['MSPBNA']}</td>
-        """
-        for pc in peer_cols:
-            html += f'<td>{row[pc]}</td>\n'
-        for dc in diff_cols:
-            diff_class = get_diff_class(str(row[dc]))
-            html += f'<td class="{diff_class}">{row[dc]}</td>\n'
+        metric = row['Metric']
+        html += "<tr>"
+        for c in cols:
+            val = row[c]
+            cls = ""
+            if c == "Metric": val = f"<b>{val}</b>"; cls = 'class="metric-name"'
+            elif c == "MSPBNA": cls = 'class="subject-value"'
+            elif c == "MSBNA": cls = 'class="msbna-value"'
+
+            # Trend Coloring Logic based on original files
+            if "Diff" in c and "N/A" not in str(val):
+                try:
+                    num = float(str(val).replace('+','').replace('%','').replace('x','').replace('$','').replace('B','').replace(',',''))
+                    if abs(num) < 0.001:
+                        cls = 'class="neutral-trend"'
+                    else:
+                        is_risk = any(k in metric for k in ['Nonaccrual', 'NCO', 'Delinq', 'Risk'])
+                        is_safe = any(k in metric for k in ['Coverage', 'Ratio', 'Equity', 'ROA', 'ROE', 'Yield', 'Margin'])
+                        if is_risk: cls = 'class="bad-trend"' if num > 0 else 'class="good-trend"'
+                        elif is_safe: cls = 'class="good-trend"' if num > 0 else 'class="bad-trend"'
+                        else: cls = 'class="neutral-trend"'
+                except: pass
+
+            html += f"<td {cls}>{val}</td>"
         html += "</tr>"
 
-    html += """
-                </tbody>
-            </table>
-
-            <div class="legend">
-                <strong>Legend:</strong><br>
-                &bull; <span style="color: #d32f2f; font-weight: 600;">Red values</span>: MSPBNA performs worse than peer group (higher is worse for most credit metrics)<br>
-                &bull; <span style="color: #388e3c; font-weight: 600;">Green values</span>: MSPBNA performs better than peer group (lower is better for most credit metrics)<br>
-                &bull; All values are as of the latest available quarter
-            </div>
-
-            <div class="footer">
-                <p>This report is generated automatically from FDIC call report data.<br>
-                For questions or additional analysis, please contact the Credit Risk team.</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
+    html += """</tbody></table>
+    <div class="footnote">
+        <p><b>Methodology:</b></p>
+        <p><b>Risk-Adj ACL Ratio:</b> Total ACL / (Gross Loans - SBL). Removes low-risk SBL to show coverage on core credit.</p>
+        <p><b>CRE NPL Coverage:</b> CRE-Specific ACL / CRE Nonaccrual Loans.</p>
+    </div></div></body></html>"""
 
     return html
 
 
 def generate_credit_metrics_email_table(
     proc_df_with_peers: pd.DataFrame,
-    subject_bank_cert: int,
-    peer_certs: Dict[int, str] = None,
-    table_label: str = "Standard",
+    subject_bank_cert: int = 34221
 ) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
-    """
-    Build the email HTML table for a given set of peer groups.
-    peer_certs maps CERT -> display name, e.g. {90001: "Core PB", 90002: "MSPBNA+Wealth", 90003: "All Peers"}.
-    """
-    if peer_certs is None:
-        peer_certs = {90001: "Core PB", 90002: "MSPBNA+Wealth", 90003: "All Peers"}
 
-    important_metrics = {
-        "ASSET": "Assets",
-        "LNLS": "Gross Loans",
-        "CI_to_Capital_Risk": "C&I to Capital Risk (%)",
-        "CRE_Concentration_Capital_Risk": "CRE Concentration Risk (%)",
-        "MSPBNA_CRE_Growth_TTM": "CRE Growth TTM (%)",
-        "MSPBNA_CRE_Growth_36M": "CRE Growth 36M (%)",
-        "TTM_NCO_Rate": "TTM NCO Rate (%)",
-        "NPL_to_Gross_Loans_Rate": "NPL to Gross Loans (%)",
-        "Allowance_to_Gross_Loans_Rate": "Allowance to Gross Loans (%)",
-        "TTM_Past_Due_Rate": "TTM Past Due Rate (%)",
-        "TTM_PD30_Rate": "TTM Past Due (30-90 Days) Rate (%)",
-        "TTM_PD90_Rate": "TTM Past Due (>90 Days) Rate (%)",
+    metric_map = {
+        "ASSET": ("Total Assets ($B)", 'B'),
+        "LNLS":  ("Total Loans ($B)", 'B'),
+        "Risk_Adj_Allowance_Coverage":   ("Risk-Adj ACL Ratio (%)", '%'),
+        "Allowance_to_Gross_Loans_Rate": ("Headline ACL Ratio (%)", '%'),
+        "Nonaccrual_to_Gross_Loans_Rate":("Nonaccrual Rate (%)", '%'),
+        "TTM_NCO_Rate":                  ("NCO Rate (TTM) (%)", '%'),
+        "Norm_NCO_Rate":           ("Norm NCO Rate (%)", '%'),
+        "Norm_Nonaccrual_Rate":    ("Norm Nonaccrual Rate (%)", '%'),
+        "Norm_ACL_Coverage":       ("Norm ACL Ratio (%)", '%'),
+        "Norm_Exclusion_Pct":      ("Excluded Loans (%)", '%'),
+        "SBL_Composition":     ("SBL % of Loans", '%'),
+        "RIC_Resi_Loan_Share": ("Resi % of Loans", '%'),
+        "RIC_CRE_Loan_Share":  ("CRE % of Loans", '%'),
+        "RIC_CRE_ACL_Share":   ("CRE % of ACL", '%'),
+        "RIC_CRE_ACL_Coverage":    ("CRE ACL Ratio (%)", '%'),
+        "RIC_CRE_Risk_Adj_Coverage": ("CRE NPL Coverage (x)", 'x'),
+        "RIC_CRE_Nonaccrual_Rate": ("% of CRE in Nonaccrual", '%'),
+        "RIC_CRE_NCO_Rate":        ("CRE NCO Rate (TTM)", '%'),
+        "Norm_SBL_Composition":          ("Norm SBL % of Loans", '%'),
+        "Norm_Fund_Finance_Composition": ("Norm Fund Finance %", '%'),
+        "Norm_Wealth_Resi_Composition":  ("Norm Wealth Resi %", '%'),
+        "Liquidity_Ratio":   ("Liquidity Ratio (%)", '%'),
+        "HQLA_Ratio":        ("HQLA Ratio (%)", '%'),
+        "Loans_to_Deposits": ("Loans to Deposits (%)", '%'),
+        "ROA":               ("ROA (%)", '%'),
+        "ROE":               ("ROE (%)", '%'),
+        "NIMY":              ("Net Interest Margin (%)", '%'),
+        "EEFFR":             ("Efficiency Ratio (%)", '%'),
+        "Norm_Loan_Yield":       ("Norm Loan Yield (%)", '%'),
+        "Norm_Provision_Rate":   ("Norm Provision Rate (%)", '%'),
+        "Norm_Loss_Adj_Yield":   ("Norm Loss-Adj Yield (%)", '%'),
     }
-
-    # Also try IDB_ prefixed columns as fallback
-    for code in list(important_metrics.keys()):
-        if code.startswith("MSPBNA_"):
-            fallback = code.replace("MSPBNA_", "IDB_")
-            important_metrics[fallback] = important_metrics[code]
 
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    subj = latest_data[latest_data["CERT"] == subject_bank_cert]
-    if subj.empty:
-        print(f"Missing data for subject bank CERT {subject_bank_cert}")
-        return None, None
-    subj = subj.iloc[0]
-
-    peer_rows = {}
-    for cert, name in peer_certs.items():
-        pr = latest_data[latest_data["CERT"] == cert]
-        if not pr.empty:
-            peer_rows[cert] = pr.iloc[0]
-
-    if not peer_rows:
-        print("Missing data for all peer groups")
+    try:
+        idb = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
+        msbna = latest_data[latest_data["CERT"] == 32992].iloc[0] if 32992 in latest_data["CERT"].values else None
+        core = latest_data[latest_data["CERT"] == 90001].iloc[0] if 90001 in latest_data["CERT"].values else None
+        wealth = latest_data[latest_data["CERT"] == 90002].iloc[0] if 90002 in latest_data["CERT"].values else None
+    except IndexError:
         return None, None
 
     rows = []
-    seen_display = set()
-    for code, disp in important_metrics.items():
-        if disp in seen_display:
-            continue
-        if code not in subj.index:
-            continue
-        seen_display.add(disp)
+    for code, (disp, fmt) in metric_map.items():
+        if code not in idb.index: continue
 
-        v_subj = subj.get(code, np.nan)
-        row_data = {"Metric": disp, "MSPBNA": None}
+        v_idb = idb.get(code, np.nan)
+        v_msbna = msbna.get(code, np.nan) if msbna is not None else np.nan
+        v_core = core.get(code, np.nan) if core is not None else np.nan
+        v_wealth = wealth.get(code, np.nan) if wealth is not None else np.nan
 
-        if code in CURRENCY_MM_CODES:
-            row_data["MSPBNA"] = _fmt_money_millions(v_subj)
-        else:
-            row_data["MSPBNA"] = _fmt_percent_auto(v_subj)
+        d_msbna = v_idb - v_msbna if pd.notna(v_idb) and pd.notna(v_msbna) else np.nan
+        d_core = v_idb - v_core if pd.notna(v_idb) and pd.notna(v_core) else np.nan
+        d_wealth = v_idb - v_wealth if pd.notna(v_idb) and pd.notna(v_wealth) else np.nan
 
-        for cert, name in peer_certs.items():
-            pr = peer_rows.get(cert)
-            v_peer = pr.get(code, np.nan) if pr is not None else np.nan
-            d = (v_subj - v_peer) if not pd.isna(v_peer) else np.nan
+        if fmt == 'B': f, fd = _fmt_money_billions, _fmt_money_billions_diff
+        elif fmt == 'x': f, fd = _fmt_multiple, _fmt_multiple_diff
+        else: f, fd = _fmt_percent, _fmt_percent
 
-            if code in CURRENCY_MM_CODES:
-                row_data[name] = _fmt_money_millions(v_peer)
-                row_data[f"Diff vs {name}"] = _fmt_money_millions_with_sign(d)
-            else:
-                row_data[name] = _fmt_percent_auto(v_peer)
-                row_data[f"Diff vs {name}"] = _fmt_percent_auto(d)
-
-        rows.append(row_data)
+        rows.append({
+            "Metric": disp,
+            "MSPBNA": f(v_idb),
+            "MSBNA": f(v_msbna),
+            "Core PB": f(v_core),
+            "MS+Wealth": f(v_wealth),
+            "Diff vs MSBNA": fd(d_msbna),
+            "Diff vs Core": fd(d_core),
+            "Diff vs MS+": fd(d_wealth)
+        })
 
     df = pd.DataFrame(rows)
-    html = generate_html_email_table(df, latest_date)
+    html = generate_html_email_table_dynamic(df, latest_date, table_type="summary")
     return html, df
 
 
@@ -746,89 +688,16 @@ def _trend_class(diff_val) -> str:
 
 
 def generate_detailed_peer_table(
-    df: pd.DataFrame,
-    subject_cert: int,
-    peer_certs: Optional[Dict[int, str]] = None,
-) -> Optional[str]:
-    """
-    Wide HTML table showing all individual banks + peer-group averages side-by-side.
-    Each row is a metric; columns are MSPBNA then each peer group.
-    """
-    if peer_certs is None:
-        peer_certs = {90001: "Core PB", 90002: "MSPBNA+Wealth", 90003: "All Peers"}
+    proc_df_with_peers: pd.DataFrame,
+    subject_bank_cert: int = 34221
+) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
 
-    latest_date = df["REPDTE"].max()
-    latest = df[df["REPDTE"] == latest_date]
-
-    subj = latest[latest["CERT"] == subject_cert]
-    if subj.empty:
-        print("  Skipped detailed peer table: no subject bank data")
-        return None
-    subj = subj.iloc[0]
-
-    peer_rows = {}
-    for cert, name in peer_certs.items():
-        pr = latest[latest["CERT"] == cert]
-        if not pr.empty:
-            peer_rows[name] = pr.iloc[0]
-
-    if not peer_rows:
-        print("  Skipped detailed peer table: no peer data")
-        return None
-
-    metrics = {
-        "ASSET": ("Total Assets", True),
-        "LNLS": ("Gross Loans", True),
-        "TTM_NCO_Rate": ("TTM NCO Rate", False),
-        "NPL_to_Gross_Loans_Rate": ("NPL to Gross Loans", False),
-        "Allowance_to_Gross_Loans_Rate": ("ALLL / Gross Loans", False),
-        "TTM_Past_Due_Rate": ("TTM Past Due Rate", False),
-        "TTM_PD30_Rate": ("Past Due 30-90 Days", False),
-        "TTM_PD90_Rate": ("Past Due >90 Days", False),
-        "CRE_Concentration_Capital_Risk": ("CRE Concentration Risk", False),
-        "CI_to_Capital_Risk": ("C&I to Capital Risk", False),
-        "Norm_NCO_Rate": ("Norm NCO Rate", False),
-        "Norm_Nonaccrual_Rate": ("Norm Nonaccrual Rate", False),
-    }
-
-    col_headers = ["MSPBNA"] + list(peer_rows.keys())
-    diff_headers = [f"Diff vs {n}" for n in peer_rows.keys()]
-
-    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
-<div class="tbl-container">
-<h2>Detailed Peer Analysis</h2>
-<p class="sub">MSPBNA vs Peer Groups | {latest_date.strftime('%B %d, %Y')}</p>
-<table><thead><tr><th>Credit Metric</th>"""
-    for h in col_headers:
-        html += f"<th>{h}</th>"
-    for h in diff_headers:
-        html += f"<th>{h}</th>"
-    html += "</tr></thead><tbody>\n"
-
-    for code, (display, is_money) in metrics.items():
-        if code not in subj.index:
-            continue
-        sv = _safe_val(subj, code)
-        fmt_s = _fmt_money_millions(sv) if is_money else _fmt_percent_auto(sv)
-        html += f'<tr><td class="metric-name">{display}</td><td class="mspbna-value">{fmt_s}</td>'
-
-        diffs = []
-        for name, pr in peer_rows.items():
-            pv = _safe_val(pr, code)
-            fmt_p = _fmt_money_millions(pv) if is_money else _fmt_percent_auto(pv)
-            html += f"<td>{fmt_p}</td>"
-            d = (sv - pv) if (not pd.isna(sv) and not pd.isna(pv)) else np.nan
-            if is_money:
-                diffs.append(("neutral", _fmt_money_millions_with_sign(d)))
-            else:
-                dc = _trend_class(d)
-                diffs.append((dc, _fmt_percent_auto(d)))
-        for cls, val in diffs:
-            html += f'<td class="{cls}">{val}</td>'
-        html += "</tr>\n"
-
-    html += "</tbody></table></div></body></html>"
-    return html
+    # Use exact same metric map to keep it synchronized
+    html, df = generate_credit_metrics_email_table(proc_df_with_peers, subject_bank_cert)
+    # Just route to the dynamic HTML generator with "detailed" type so it renders wider
+    if df is not None:
+        html = generate_html_email_table_dynamic(df, proc_df_with_peers["REPDTE"].max(), table_type="detailed")
+    return html, df
 
 
 def generate_normalized_comparison_table(
@@ -1284,48 +1153,33 @@ def generate_reports(
         print(f"Loaded FDIC data: {len(proc_df_with_peers)} records across {proc_df_with_peers['CERT'].nunique()} banks")
 
         # ------------------------------------------------------------------
-        # B6: 3-GROUP HTML TABLES (STANDARD + NORMALIZED) -> tables_dir
+        # EXECUTIVE SUMMARY & DETAILED PEER TABLES -> tables_dir
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
-        print("GENERATING HTML TABLES (STANDARD + NORMALIZED)")
+        print("GENERATING EXECUTIVE SUMMARY & DETAILED PEER TABLES")
         print("-" * 60)
 
-        # STANDARD table: MSPBNA_CERT + 90001 (Core PB), 90002 (MSPBNA+Wealth), 90003 (All Peers)
-        std_peer_certs = {90001: "Core PB", 90002: "MSPBNA+Wealth", 90003: "All Peers"}
-        # B7: Exclude MS_COMBINED_CERT from All Banks listing if applicable
-        if REPORT_VIEW == "MSPBNA_WEALTH_NORM":
-            std_peer_certs = {k: v for k, v in std_peer_certs.items() if k != MS_COMBINED_CERT}
-
+        # Executive Summary (31-metric, MSPBNA vs MSBNA vs Core PB vs MS+Wealth)
         std_html, std_df = generate_credit_metrics_email_table(
-            proc_df_with_peers, subject_bank_cert,
-            peer_certs=std_peer_certs,
-            table_label="Standard",
+            proc_df_with_peers, subject_bank_cert
         )
         if std_html:
-            std_path = tables_dir / f"{base}_standard_table_{stamp}.html"
+            std_path = tables_dir / f"{base}_executive_summary_{stamp}.html"
             with open(std_path, "w", encoding="utf-8") as f:
                 f.write(std_html)
-            print(f"  Standard table saved: {std_path}")
+            print(f"  Executive summary table saved: {std_path}")
             if std_df is not None:
                 print(f"  Table contains {len(std_df)} credit metrics")
 
-        # NORMALIZED table: MSPBNA_CERT + 90004 (Core PB Norm), 90005 (MSPBNA+Wealth Norm), 90006 (All Peers Norm)
-        norm_peer_certs = {90004: "Core PB Norm", 90005: "MSPBNA+Wealth Norm", 90006: "All Peers Norm"}
-        if REPORT_VIEW == "MSPBNA_WEALTH_NORM":
-            norm_peer_certs = {k: v for k, v in norm_peer_certs.items() if k != MS_COMBINED_CERT}
-
-        norm_html, norm_df = generate_credit_metrics_email_table(
-            proc_df_with_peers, subject_bank_cert,
-            peer_certs=norm_peer_certs,
-            table_label="Normalized",
+        # Detailed Peer Analysis (same 31-metric map, wider layout)
+        detail_html, detail_df = generate_detailed_peer_table(
+            proc_df_with_peers, subject_bank_cert
         )
-        if norm_html:
-            norm_path = tables_dir / f"{base}_normalized_table_{stamp}.html"
-            with open(norm_path, "w", encoding="utf-8") as f:
-                f.write(norm_html)
-            print(f"  Normalized table saved: {norm_path}")
-            if norm_df is not None:
-                print(f"  Table contains {len(norm_df)} credit metrics")
+        if detail_html:
+            dp = tables_dir / f"{base}_detailed_peer_table_{stamp}.html"
+            with open(dp, "w", encoding="utf-8") as f:
+                f.write(detail_html)
+            print(f"  Detailed peer table saved: {dp}")
 
         # ------------------------------------------------------------------
         # STANDARD CREDIT DETERIORATION CHART -> charts_dir
@@ -1491,15 +1345,7 @@ def generate_reports(
         print("GENERATING DETAILED HTML TABLES")
         print("-" * 60)
 
-        # 1. Detailed Peer Analysis (Wide)
-        detail_html = generate_detailed_peer_table(proc_df_with_peers, subject_bank_cert)
-        if detail_html:
-            dp = tables_dir / f"{base}_detailed_peer_table_{stamp}.html"
-            with open(dp, "w", encoding="utf-8") as f:
-                f.write(detail_html)
-            print(f"  Detailed peer table saved: {dp}")
-
-        # 2. Normalized Comparison (Side-by-side)
+        # Normalized Comparison (Side-by-side)
         normcmp_html = generate_normalized_comparison_table(proc_df_with_peers, subject_bank_cert)
         if normcmp_html:
             nc = tables_dir / f"{base}_normalized_comparison_{stamp}.html"
