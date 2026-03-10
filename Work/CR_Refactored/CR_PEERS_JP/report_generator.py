@@ -131,6 +131,18 @@ def get_diff_class(diff_str: str) -> str:
 # All known composite/alias CERTs — must never appear as peer dots in scatter plots
 ALL_COMPOSITE_CERTS = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888}
 
+# Plotted peer-average composites by chart path
+_STANDARD_COMPOSITES = {90003, 90001}   # primary=All Peers, alt=Core PB
+_NORMALIZED_COMPOSITES = {90006, 90004}  # primary=All Peers Norm, alt=Core PB Norm
+
+# Readable artifact names for suppressed_charts
+_ARTIFACT_NAMES = {
+    "normalized_credit_chart": "Normalized credit deterioration chart",
+    "normalized_scatter_nco_vs_nonaccrual": "Normalized scatter: NCO vs Nonaccrual",
+    "standard_scatter_nco_vs_npl": "Standard scatter: NCO vs NPL",
+    "standard_scatter_pd_vs_npl": "Standard scatter: PD vs NPL",
+}
+
 
 def validate_output_inputs(
     proc_df: pd.DataFrame,
@@ -160,40 +172,76 @@ def validate_output_inputs(
             vals = pd.to_numeric(proc_df[metric], errors="coerce")
             if vals.isna().all():
                 warnings.append(f"{metric} is entirely NaN — normalized charts will be empty")
-                suppressed.append(f"normalized_chart_{metric}")
+                suppressed.append("normalized_credit_chart")
             elif (vals == 0).all():
                 warnings.append(f"{metric} is entirely zero — normalized charts may be misleading")
 
-    # 3. Check severity columns for material failures
-    #    Material normalization failures BLOCK normalized chart generation.
-    material_failure_count = 0
-    for sev_col in ["_Norm_NCO_Severity", "_Norm_NA_Severity", "_Norm_Loans_Severity"]:
-        if sev_col in proc_df.columns:
-            material = (proc_df[sev_col] == "material_nan")
-            if material.any():
-                n = material.sum()
-                material_failure_count += n
-                # Check if subject bank has material failures (blocking)
-                subject_material = proc_df.loc[
-                    (proc_df["CERT"] == subject_cert) & material
-                ]
-                if not subject_material.empty:
-                    errors.append(
-                        f"BLOCKING: {sev_col} — subject bank (CERT {subject_cert}) has "
-                        f"{len(subject_material)} material over-exclusion rows"
-                    )
-                    suppressed.append(f"normalized_chart_{sev_col}")
-                else:
-                    warnings.append(f"{sev_col}: {n} peer rows have material over-exclusion (NaN)")
+    # 3. Check severity columns for material failures on subject bank
+    #    AND on plotted peer-average composites. Both are blocking.
+    sev_cols = ["_Norm_NCO_Severity", "_Norm_NA_Severity", "_Norm_Loans_Severity"]
+    blocking_certs = {subject_cert} | _NORMALIZED_COMPOSITES  # 90004, 90006
+    for sev_col in sev_cols:
+        if sev_col not in proc_df.columns:
+            continue
+        material = (proc_df[sev_col] == "material_nan")
+        if not material.any():
+            continue
 
-    # 4. Check composites don't contaminate peer scatter
+        # Check blocking CERTs (subject + plotted peer-average composites)
+        for cert in blocking_certs:
+            cert_material = proc_df.loc[
+                (proc_df["CERT"] == cert) & material
+            ]
+            if not cert_material.empty:
+                label = f"subject bank (CERT {cert})" if cert == subject_cert else f"peer-average composite (CERT {cert})"
+                errors.append(
+                    f"BLOCKING: {sev_col} — {label} has "
+                    f"{len(cert_material)} material over-exclusion rows"
+                )
+                suppressed.append("normalized_credit_chart")
+                suppressed.append("normalized_scatter_nco_vs_nonaccrual")
+
+        # Non-blocking CERTs get warnings only
+        non_blocking = proc_df.loc[
+            material & ~proc_df["CERT"].isin(blocking_certs)
+        ]
+        if not non_blocking.empty:
+            warnings.append(
+                f"{sev_col}: {len(non_blocking)} non-critical peer rows "
+                f"have material over-exclusion (NaN)"
+            )
+
+    # 4. Validate required peer-average composite CERTs exist
+    proc_certs = set(proc_df["CERT"].unique()) if "CERT" in proc_df.columns else set()
+    rolling_certs = set(rolling_df["CERT"].unique()) if "CERT" in rolling_df.columns else set()
+
+    # Standard flow composites
+    for cert in _STANDARD_COMPOSITES:
+        if cert not in proc_certs and cert not in rolling_certs:
+            errors.append(
+                f"BLOCKING: Standard composite CERT {cert} missing from data — "
+                f"standard charts/scatter cannot plot peer average"
+            )
+            suppressed.append("standard_scatter_nco_vs_npl")
+            suppressed.append("standard_scatter_pd_vs_npl")
+
+    # Normalized flow composites
+    for cert in _NORMALIZED_COMPOSITES:
+        if cert not in proc_certs and cert not in rolling_certs:
+            errors.append(
+                f"BLOCKING: Normalized composite CERT {cert} missing from data — "
+                f"normalized charts/scatter cannot plot peer average"
+            )
+            suppressed.append("normalized_credit_chart")
+            suppressed.append("normalized_scatter_nco_vs_nonaccrual")
+
+    # 5. Check composites don't contaminate peer scatter
     if "CERT" in rolling_df.columns:
-        composite_in_data = set(rolling_df["CERT"].unique()) & ALL_COMPOSITE_CERTS
-        real_peers = set(rolling_df["CERT"].unique()) - ALL_COMPOSITE_CERTS - {subject_cert}
+        real_peers = rolling_certs - ALL_COMPOSITE_CERTS - {subject_cert}
         if len(real_peers) == 0:
             errors.append("No real peer banks found in rolling 8Q data — scatter plots impossible")
 
-    # 5. Run semantic validation if available
+    # 6. Run semantic validation if available
     semantic_report = pd.DataFrame()
     if _HAS_SEMANTIC_VALIDATION:
         try:
@@ -204,6 +252,9 @@ def validate_output_inputs(
                     warnings.append(f"Semantic: {row.get('Rule', '?')} — {row.get('Detail', '?')}")
         except Exception as e:
             warnings.append(f"Semantic validation failed: {e}")
+
+    # Deduplicate suppressed list
+    suppressed = list(dict.fromkeys(suppressed))
 
     valid = len(errors) == 0
     return {
