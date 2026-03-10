@@ -210,8 +210,18 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
         code="Norm_Gross_Loans",
         dependencies=["Gross_Loans", "Excluded_Balance"],
         compute=lambda df: pd.Series(
-            (pd.to_numeric(df["Gross_Loans"], errors="coerce")
-             - pd.to_numeric(df["Excluded_Balance"], errors="coerce")).clip(lower=0),
+            np.where(
+                (pd.to_numeric(df["Gross_Loans"], errors="coerce")
+                 - pd.to_numeric(df["Excluded_Balance"], errors="coerce")) >= 0,
+                pd.to_numeric(df["Gross_Loans"], errors="coerce")
+                - pd.to_numeric(df["Excluded_Balance"], errors="coerce"),
+                np.where(
+                    (pd.to_numeric(df["Gross_Loans"], errors="coerce")
+                     - pd.to_numeric(df["Excluded_Balance"], errors="coerce"))
+                    / pd.to_numeric(df["Gross_Loans"], errors="coerce").replace(0, np.nan) >= -0.05,
+                    0.0, np.nan
+                )
+            ),
             index=df.index
         ),
         unit="dollars",
@@ -382,3 +392,184 @@ def run_upstream_validation_suite(
             res["REPDTE"] = df.get("REPDTE")
             results.append(res)
     return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SEMANTIC VALIDATION RULES (A–E)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ValidationRule:
+    """A single semantic validation rule."""
+    rule_id: str
+    description: str
+    check: Callable[[pd.DataFrame], pd.DataFrame]
+    severity: str = "high"   # high, medium, low
+
+
+def _check_over_exclusion(df: pd.DataFrame) -> pd.DataFrame:
+    """Rule A: Flag rows where Excluded_* > Total_* (over-exclusion)."""
+    rows = []
+    pairs = [
+        ("Excluded_NCO_TTM", "Total_NCO_TTM", "NCO"),
+        ("Excluded_Nonaccrual", "Total_Nonaccrual", "Nonaccrual"),
+        ("Excluded_Balance", "Gross_Loans", "Balance"),
+    ]
+    for excl_col, total_col, label in pairs:
+        if excl_col not in df.columns or total_col not in df.columns:
+            continue
+        excl = pd.to_numeric(df[excl_col], errors="coerce").fillna(0)
+        total = pd.to_numeric(df[total_col], errors="coerce").fillna(0)
+        mask = excl > total
+        if mask.any():
+            flagged = df.loc[mask, ["CERT", "REPDTE"]].copy() if "CERT" in df.columns else pd.DataFrame(index=df.index[mask])
+            flagged["Rule"] = f"OverExclusion_{label}"
+            flagged["Detail"] = (excl[mask].astype(str) + " > " + total[mask].astype(str))
+            flagged["Severity"] = "high"
+            flagged["Pct_Over"] = ((excl[mask] - total[mask]) / total[mask].replace(0, np.nan) * 100).round(2)
+            rows.append(flagged)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def _check_flatline_anomaly(df: pd.DataFrame) -> pd.DataFrame:
+    """Rule B: Flag metrics that are constant (zero or otherwise) across all CERTs for latest quarter."""
+    rows = []
+    if "REPDTE" not in df.columns:
+        return pd.DataFrame()
+    latest_q = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_q]
+    norm_metrics = ["Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+                    "Norm_ACL_Coverage", "Norm_Exclusion_Pct"]
+    for metric in norm_metrics:
+        if metric not in latest.columns:
+            continue
+        vals = pd.to_numeric(latest[metric], errors="coerce").dropna()
+        if len(vals) > 1 and vals.nunique() <= 1:
+            rows.append({
+                "Rule": f"Flatline_{metric}",
+                "Detail": f"All {len(vals)} values = {vals.iloc[0]:.6f} in {latest_q}",
+                "Severity": "medium",
+                "REPDTE": latest_q,
+            })
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _check_duplicate_composites(df: pd.DataFrame) -> pd.DataFrame:
+    """Rule C: Flag if standard and normalized composites produce identical values."""
+    rows = []
+    pairs_to_check = [(90001, 90004), (90002, 90005), (90003, 90006)]
+    rate_cols = ["TTM_NCO_Rate", "NPL_to_Gross_Loans_Rate", "Norm_NCO_Rate", "Norm_Nonaccrual_Rate"]
+    if "CERT" not in df.columns or "REPDTE" not in df.columns:
+        return pd.DataFrame()
+    latest_q = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_q]
+    for std_cert, norm_cert in pairs_to_check:
+        std_row = latest[latest["CERT"] == std_cert]
+        norm_row = latest[latest["CERT"] == norm_cert]
+        if std_row.empty or norm_row.empty:
+            continue
+        for col in rate_cols:
+            if col not in latest.columns:
+                continue
+            sv = pd.to_numeric(std_row[col].iloc[0], errors="coerce")
+            nv = pd.to_numeric(norm_row[col].iloc[0], errors="coerce")
+            if pd.notna(sv) and pd.notna(nv) and np.isclose(sv, nv, rtol=1e-6):
+                rows.append({
+                    "Rule": "DuplicateComposite",
+                    "Detail": f"CERT {std_cert} vs {norm_cert}: {col} = {sv:.6f} (identical)",
+                    "Severity": "medium",
+                    "REPDTE": latest_q,
+                })
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _check_output_contamination(df: pd.DataFrame) -> pd.DataFrame:
+    """Rule D: Flag if composite CERTs appear where they shouldn't (e.g., 90004-90006 in standard metrics)."""
+    rows = []
+    if "CERT" not in df.columns:
+        return pd.DataFrame()
+    std_composites = {90001, 90002, 90003}
+    norm_composites = {90004, 90005, 90006}
+    norm_rate_cols = ["Norm_NCO_Rate", "Norm_Nonaccrual_Rate"]
+    std_rate_cols = ["TTM_NCO_Rate", "NPL_to_Gross_Loans_Rate"]
+    # Standard composites should have NaN norm rates
+    for cert in std_composites:
+        cert_data = df[df["CERT"] == cert]
+        if cert_data.empty:
+            continue
+        for col in norm_rate_cols:
+            if col in cert_data.columns:
+                valid = pd.to_numeric(cert_data[col], errors="coerce").dropna()
+                if not valid.empty and (valid != 0).any():
+                    rows.append({
+                        "Rule": "OutputContamination",
+                        "Detail": f"Standard composite {cert} has non-null {col}",
+                        "Severity": "high",
+                    })
+    # Normalized composites should have NaN standard rates
+    for cert in norm_composites:
+        cert_data = df[df["CERT"] == cert]
+        if cert_data.empty:
+            continue
+        for col in std_rate_cols:
+            if col in cert_data.columns:
+                valid = pd.to_numeric(cert_data[col], errors="coerce").dropna()
+                if not valid.empty and (valid != 0).any():
+                    rows.append({
+                        "Rule": "OutputContamination",
+                        "Detail": f"Normalized composite {cert} has non-null {col}",
+                        "Severity": "high",
+                    })
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _check_consumer_linkage(
+    specs: Dict[str, MetricSpec] = DERIVED_METRIC_SPECS,
+) -> pd.DataFrame:
+    """Rule E: Flag metrics with no declared consumers (orphaned metrics)."""
+    rows = []
+    for code, spec in specs.items():
+        if not spec.consumers:
+            rows.append({
+                "Rule": "OrphanedMetric",
+                "Detail": f"Metric '{code}' has no declared downstream consumers",
+                "Severity": "low",
+            })
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+SEMANTIC_VALIDATION_RULES = [
+    ValidationRule("A_OverExclusion", "Excluded values exceed totals", _check_over_exclusion, "high"),
+    ValidationRule("B_FlatlineAnomaly", "Metric flatlines across all entities", _check_flatline_anomaly, "medium"),
+    ValidationRule("C_DuplicateComposite", "Standard/Normalized composites produce identical values", _check_duplicate_composites, "medium"),
+    ValidationRule("D_OutputContamination", "Composite CERTs have metric values they shouldn't", _check_output_contamination, "high"),
+    ValidationRule("E_ConsumerLinkage", "Metrics with no downstream consumers", lambda df: _check_consumer_linkage(), "low"),
+]
+
+
+def run_semantic_validation(df: pd.DataFrame) -> pd.DataFrame:
+    """Run all semantic validation rules and return a combined report."""
+    results = []
+    for rule in SEMANTIC_VALIDATION_RULES:
+        try:
+            res = rule.check(df)
+            if not res.empty:
+                res["Rule_ID"] = rule.rule_id
+                res["Rule_Description"] = rule.description
+                results.append(res)
+        except Exception as e:
+            results.append(pd.DataFrame([{
+                "Rule_ID": rule.rule_id,
+                "Rule_Description": rule.description,
+                "Rule": "ERROR",
+                "Detail": str(e),
+                "Severity": rule.severity,
+            }]))
+    return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+
+
+def run_full_validation_suite(df: pd.DataFrame) -> tuple:
+    """Run both formula and semantic validation. Returns (formula_report, semantic_report)."""
+    formula_report = run_upstream_validation_suite(df)
+    semantic_report = run_semantic_validation(df)
+    return formula_report, semantic_report

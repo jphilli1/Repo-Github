@@ -951,6 +951,46 @@ def get_all_peer_certs():
     for group in PEER_GROUPS.values():
         all_certs.update(group['certs'])
     return list(all_certs)
+
+
+def validate_peer_group_uniqueness() -> list:
+    """Hard validation: no two peer groups with the SAME use_normalized flag
+    may share an identical sorted member-cert tuple."""
+    issues = []
+    by_mode = {}  # (use_normalized, tuple(sorted certs)) -> list of group names
+    for pg_type, pg_def in PEER_GROUPS.items():
+        key = (pg_def.get("use_normalized", False), tuple(sorted(pg_def["certs"])))
+        by_mode.setdefault(key, []).append(pg_type.value if hasattr(pg_type, 'value') else str(pg_type))
+    for key, names in by_mode.items():
+        if len(names) > 1:
+            issues.append(
+                f"DUPLICATE: Groups {names} share identical certs {key[1]} "
+                f"with use_normalized={key[0]}"
+            )
+    return issues
+
+
+def build_peer_group_definitions_df() -> 'pd.DataFrame':
+    """Build a DataFrame documenting all peer group definitions for the Excel output."""
+    import pandas as pd
+    rows = []
+    for pg_type, pg_def in PEER_GROUPS.items():
+        cert_id = {
+            "Core_Private_Bank": 90001, "MS_Family_Plus": 90002, "All_Peers": 90003,
+            "Core_Private_Bank_Norm": 90004, "MS_Family_Plus_Norm": 90005, "All_Peers_Norm": 90006,
+        }.get(pg_type.value if hasattr(pg_type, 'value') else str(pg_type), 0)
+        rows.append({
+            "Composite_CERT": cert_id,
+            "Group_Type": pg_type.value if hasattr(pg_type, 'value') else str(pg_type),
+            "Short_Name": pg_def.get("short_name", ""),
+            "Description": pg_def.get("description", ""),
+            "Member_CERTs": str(sorted(pg_def["certs"])),
+            "Member_Count": len(pg_def["certs"]),
+            "Use_Normalized": pg_def.get("use_normalized", False),
+            "Use_Case": pg_def.get("use_case", ""),
+            "Display_Order": pg_def.get("display_order", 0),
+        })
+    return pd.DataFrame(rows)
 # MSPBNA V6 SEGMENTATION (Adapted for V5 Structure)
 # NOTE: SBL and Fund Finance NCOs are not separately reported in Call Reports.
 # They are lumped into 'NTOTH' (All Other). They are left empty [] here to
@@ -3199,20 +3239,60 @@ class BankMetricsProcessor:
 
 
 
-        df_processed['Norm_Total_NCO'] = (df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']).clip(lower=0)
+        # --- Diagnostics-first normalization (no silent .clip(lower=0)) ---
+        # Raw residuals: can be negative if exclusions > totals (over-exclusion)
+        _nco_residual = df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']
+        df_processed['_Norm_NCO_Residual'] = _nco_residual
 
-        # FIX: ensure Total_Nonaccrual exists before using it
         total_na = (
             df_processed['Total_Nonaccrual']
             if 'Total_Nonaccrual' in df_processed.columns
             else pd.Series(0.0, index=df_processed.index)
         )
-        # [#3] Define total_na immediately before using it (prevents NameError)
-        total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
+        _na_residual = total_na - df_processed.get('Excluded_Nonaccrual', 0.0)
+        df_processed['_Norm_NA_Residual'] = _na_residual
 
-        df_processed['Norm_Total_Nonaccrual'] = (
-            (total_na - df_processed.get('Excluded_Nonaccrual', 0.0))
-            .clip(lower=0)
+        # Over-exclusion flags (True = exclusion exceeds total)
+        df_processed['_Flag_NCO_OverExclusion'] = (_nco_residual < 0).astype(int)
+        df_processed['_Flag_NA_OverExclusion'] = (_na_residual < 0).astype(int)
+
+        # Over-exclusion percentage (how far negative as % of total)
+        df_processed['_NCO_OverExclusion_Pct'] = np.where(
+            df_processed['Total_NCO_TTM'].abs() > 0,
+            (_nco_residual / df_processed['Total_NCO_TTM'].replace(0, np.nan)) * 100,
+            np.nan
+        )
+        df_processed['_NA_OverExclusion_Pct'] = np.where(
+            total_na.abs() > 0,
+            (_na_residual / total_na.replace(0, np.nan)) * 100,
+            np.nan
+        )
+
+        # Tolerance-aware clipping: minor negatives (<5% of total) -> 0, material -> NaN
+        OVEREXCL_TOLERANCE = -0.05  # 5% tolerance threshold
+        df_processed['Norm_Total_NCO'] = np.where(
+            _nco_residual >= 0, _nco_residual,
+            np.where(
+                (_nco_residual / df_processed['Total_NCO_TTM'].replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan  # Minor negative -> 0, material -> NaN
+            )
+        )
+        df_processed['Norm_Total_Nonaccrual'] = np.where(
+            _na_residual >= 0, _na_residual,
+            np.where(
+                (_na_residual / total_na.replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+
+        # Severity: 'ok', 'minor_clip', 'material_nan'
+        df_processed['_Norm_NCO_Severity'] = np.where(
+            _nco_residual >= 0, 'ok',
+            np.where(df_processed['Norm_Total_NCO'].notna(), 'minor_clip', 'material_nan')
+        )
+        df_processed['_Norm_NA_Severity'] = np.where(
+            _na_residual >= 0, 'ok',
+            np.where(df_processed['Norm_Total_Nonaccrual'].notna(), 'minor_clip', 'material_nan')
         )
         # =========================================================
         # OVERRIDE: Normalized Performance (Wealth Segments Only)
@@ -3255,7 +3335,25 @@ class BankMetricsProcessor:
 
         #(D) Wealth-only denominator ---
         # --- G. Calculate Normalized Master Metrics (COMPONENTS ONLY) ---
-        df_processed['Norm_Gross_Loans'] = (df_processed['Gross_Loans'] - df_processed['Excluded_Balance']).clip(lower=0)
+        _loans_residual = df_processed['Gross_Loans'] - df_processed['Excluded_Balance']
+        df_processed['_Norm_Loans_Residual'] = _loans_residual
+        df_processed['_Flag_Loans_OverExclusion'] = (_loans_residual < 0).astype(int)
+        df_processed['_Loans_OverExclusion_Pct'] = np.where(
+            df_processed['Gross_Loans'].abs() > 0,
+            (_loans_residual / df_processed['Gross_Loans'].replace(0, np.nan)) * 100,
+            np.nan
+        )
+        df_processed['Norm_Gross_Loans'] = np.where(
+            _loans_residual >= 0, _loans_residual,
+            np.where(
+                (_loans_residual / df_processed['Gross_Loans'].replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+        df_processed['_Norm_Loans_Severity'] = np.where(
+            _loans_residual >= 0, 'ok',
+            np.where(df_processed['Norm_Gross_Loans'].notna(), 'minor_clip', 'material_nan')
+        )
 
         # [#4] Ensure Total_NCO_TTM is truly TTM of quarterly NCO derived from YTD
         if 'Total_NCO_TTM' not in df_processed.columns:
@@ -3271,11 +3369,37 @@ class BankMetricsProcessor:
             if 'Total_NCO_TTM' not in df_processed.columns:
                 df_processed['Total_NCO_TTM'] = 0.0
 
-        df_processed['Norm_Total_NCO'] = (df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']).clip(lower=0)
+        # Diagnostics-first normalization (second pass, same tolerance logic)
+        _nco_res2 = df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']
+        df_processed['_Norm_NCO_Residual'] = _nco_res2
+        df_processed['_Flag_NCO_OverExclusion'] = (_nco_res2 < 0).astype(int)
+        df_processed['Norm_Total_NCO'] = np.where(
+            _nco_res2 >= 0, _nco_res2,
+            np.where(
+                (_nco_res2 / df_processed['Total_NCO_TTM'].replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+        df_processed['_Norm_NCO_Severity'] = np.where(
+            _nco_res2 >= 0, 'ok',
+            np.where(df_processed['Norm_Total_NCO'].notna(), 'minor_clip', 'material_nan')
+        )
 
-        # [#3] Define total_na immediately before using it
         total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
-        df_processed['Norm_Total_Nonaccrual'] = (total_na - df_processed['Excluded_Nonaccrual']).clip(lower=0)
+        _na_res2 = total_na - df_processed['Excluded_Nonaccrual']
+        df_processed['_Norm_NA_Residual'] = _na_res2
+        df_processed['_Flag_NA_OverExclusion'] = (_na_res2 < 0).astype(int)
+        df_processed['Norm_Total_Nonaccrual'] = np.where(
+            _na_res2 >= 0, _na_res2,
+            np.where(
+                (_na_res2 / total_na.replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+        df_processed['_Norm_NA_Severity'] = np.where(
+            _na_res2 >= 0, 'ok',
+            np.where(df_processed['Norm_Total_Nonaccrual'].notna(), 'minor_clip', 'material_nan')
+        )
         # NOTE: Rates (Norm_Delinquency_Rate, etc.) are calculated in Section 4 using safe_div.
 
         # ---------------------------------------------------------
@@ -5629,6 +5753,24 @@ class BankPerformanceDashboard:
             fdic_meta_df["Direct_Dependencies"] = dep_col
             fdic_meta_df["Downstream_Report_Consumers"] = consumer_col
 
+        # --- Build Normalization Diagnostics sheet ---
+        diag_cols = [c for c in proc_df_with_peers.columns if c.startswith('_Norm_') or c.startswith('_Flag_') or c.endswith('_OverExclusion_Pct') or c.endswith('_Severity')]
+        if diag_cols:
+            norm_diag_df = proc_df_with_peers[['CERT', 'REPDTE'] + diag_cols].copy()
+            # Only include rows with at least one flag or non-ok severity
+            flag_cols = [c for c in diag_cols if c.startswith('_Flag_')]
+            if flag_cols:
+                norm_diag_df = norm_diag_df[norm_diag_df[flag_cols].sum(axis=1) > 0]
+        else:
+            norm_diag_df = pd.DataFrame()
+
+        # --- Peer Group Definitions sheet + validation ---
+        peer_group_defs_df = build_peer_group_definitions_df()
+        pg_issues = validate_peer_group_uniqueness()
+        if pg_issues:
+            for issue in pg_issues:
+                logging.warning(f"PEER GROUP VALIDATION: {issue}")
+
         self.output_gen.write_excel_output(
             file_path=fname,
             Summary_Dashboard=peer_comp_df,
@@ -5644,6 +5786,8 @@ class BankPerformanceDashboard:
             FRED_Descriptions=fred_desc_df,
             Data_Validation_Report=validation_df,
             Metric_Validation_Audit=metric_validation_df,
+            Normalization_Diagnostics=norm_diag_df,
+            Peer_Group_Definitions=peer_group_defs_df,
         )
 
 

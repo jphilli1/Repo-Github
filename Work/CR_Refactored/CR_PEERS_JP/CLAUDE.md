@@ -20,6 +20,7 @@ The two core scripts are:
 | `fred_case_shiller_discovery.py` | Async Case-Shiller release-table discovery |
 | `fred_transforms.py` | Transforms, spreads, z-scores, regime flags |
 | `fred_ingestion_engine.py` | Async FRED fetcher, validation, sheet routing, Excel output |
+| `test_regression.py` | Regression tests: scatter integrity, peer groups, over-exclusion, validation |
 
 ---
 
@@ -101,6 +102,8 @@ report_generator.py
 | `FRED_CaseShiller_Master` | Full Case-Shiller registry (all discovered series) |
 | `FRED_CaseShiller_Selected` | Curated Case-Shiller subset for dashboard |
 | `FRED_Expansion_Registry` | Full metadata registry audit sheet |
+| `Normalization_Diagnostics` | Over-exclusion flags, residuals, severity per CERT/quarter |
+| `Peer_Group_Definitions` | All 6 peer group definitions with member CERTs and metadata |
 
 ### Output File Naming
 
@@ -140,10 +143,12 @@ These are **non-negotiable** for any agent editing this codebase:
 - Never hardcode `19977` or any CERT number directly. Always use the config/env pattern.
 - The FRED API key must come from `os.getenv('FRED_API_KEY')` or `.env`.
 
-### ALIASING
+### SCATTER & CHART COMPOSITE HANDLING
 
-- When plotting, use the `build_plot_df_with_alias(df, alias_map)` helper to rename composite CERTs (e.g., `{99999: 90006, 99998: 90004}`) rather than modifying the core dataframe permanently.
-- The alias map creates temporary copies — the original dataframe must remain unmodified.
+- **Do NOT use `build_plot_df_with_alias()` for normalized scatter or chart paths.** The function appends duplicate rows that contaminate peer scatter dots.
+- Pass true composite CERTs directly: `peer_avg_cert_primary=90006, peer_avg_cert_alt=90004` for normalized, `peer_avg_cert_primary=90003, peer_avg_cert_alt=90001` for standard.
+- `plot_scatter_dynamic()` has a `composite_certs` parameter (default: `{90001..90006, 99998, 99999, 88888}`) that excludes ALL composites from appearing as blue peer dots.
+- The `build_plot_df_with_alias()` function is retained but unused — it exists only for backward compatibility.
 
 ### PEER GROUPINGS
 
@@ -153,6 +158,10 @@ HTML tables must always reflect **3 peer columns** per table type:
 |---|---|---|---|
 | **Standard** | 90001 — Core PB | 90002 — MSPBNA+Wealth | 90003 — All Peers |
 | **Normalized** | 90004 — Core PB Norm | 90005 — MSPBNA+Wealth Norm | 90006 — All Peers Norm |
+
+**Cross-mode duplication by design**: 90001/90004, 90002/90005, and 90003/90006 share identical member CERTs. The distinction is `use_normalized`: standard composites NaN-out `Norm_*` columns; normalized composites NaN-out standard rate columns. Hard validation (`validate_peer_group_uniqueness()`) ensures no two groups within the SAME `use_normalized` mode share identical cert lists.
+
+**Peer_Group_Definitions sheet**: A new Excel sheet documents all 6 peer group definitions with member CERTs, use cases, and display order.
 
 ### MS COMBINED ENTITY
 
@@ -294,6 +303,28 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 
 6. **CLAUDE.md conventions added**: Table Column Ordering, Table Completeness, and Table Duplication rules added to Section 4.
 
+### 2026-03-10 — 7-Part Defect Fix (Normalized Metrics, Scatter, Validation)
+
+**Root Causes:**
+- Scatter contamination: `build_plot_df_with_alias` appended alias rows instead of replacing, causing composite CERTs (90004, 90006) to appear as blue peer dots in normalized scatter plots.
+- Silent NCO zeroing: `.clip(lower=0)` at 6 locations masked over-exclusion errors where Excluded_* exceeded Total_*, producing misleading zero values instead of NaN.
+- Duplicate peer groups: 90001/90004, 90002/90005, 90003/90006 share identical cert lists — distinction is only `use_normalized` flag.
+
+**Fixes applied:**
+1. **Scatter integrity (report_generator.py)**: Removed all `build_plot_df_with_alias` calls. `plot_scatter_dynamic()` now has `composite_certs` parameter (default: all 9 synthetic CERTs) that excludes composites from peer dots. Standard/normalized scatters pass true composite CERTs (`90003`/`90006`) directly via `peer_avg_cert_primary`.
+
+2. **Diagnostics-first normalization (MSPBNA_CR_Normalized.py)**: Replaced `.clip(lower=0)` with tolerance-aware logic: minor negatives (<5% of total) clip to 0, material negatives become NaN. Added diagnostic columns: `_Norm_NCO_Residual`, `_Norm_NA_Residual`, `_Norm_Loans_Residual`, `_Flag_*_OverExclusion`, `_*_OverExclusion_Pct`, `_Norm_*_Severity` (ok/minor_clip/material_nan).
+
+3. **Peer group validation (MSPBNA_CR_Normalized.py)**: Added `validate_peer_group_uniqueness()` — hard validation that no two groups within the same `use_normalized` mode share identical cert lists. Added `build_peer_group_definitions_df()` for Excel output.
+
+4. **Semantic validation rules (metric_registry.py)**: Added `ValidationRule` dataclass and 5 rules: (A) over-exclusion check, (B) flatline anomaly detection, (C) duplicate composite detection, (D) output contamination check, (E) consumer linkage audit. `run_semantic_validation()` and `run_full_validation_suite()` entry points.
+
+5. **Preflight validation (report_generator.py)**: Added `validate_output_inputs()` — runs before report generation, checks for missing subject bank, all-NaN/all-zero normalized metrics, material over-exclusion severity, missing real peers, and semantic validation. Aborts on blocking errors, prints warnings.
+
+6. **Regression tests (test_regression.py)**: 11 executable assertions covering scatter integrity, peer group uniqueness, over-exclusion detection, workbook sanity, consumer trace, and semantic validation.
+
+**New Excel sheets:** `Normalization_Diagnostics`, `Peer_Group_Definitions`
+
 ---
 
 ## 7. To-Do / Known Issues
@@ -345,6 +376,40 @@ Results are exported to the `Metric_Validation_Audit` sheet in the Excel dashboa
 ### Dependency Graph
 
 `build_reverse_dependency_map()` returns `{upstream_col: [derived_metrics]}`, enabling impact analysis: if an upstream column (e.g., `Gross_Loans`) is missing or corrupt, the graph shows exactly which derived metrics and downstream reports are affected.
+
+### Semantic Validation Rules (A–E)
+
+Beyond formula recomputation, `metric_registry.py` now includes 5 semantic validation rules via `run_semantic_validation(df)`:
+
+| Rule | ID | Description |
+|---|---|---|
+| Over-Exclusion | A | Flags rows where `Excluded_*` exceeds `Total_*` |
+| Flatline Anomaly | B | Flags normalized metrics that are constant across all entities in latest quarter |
+| Duplicate Composite | C | Flags standard/normalized composites producing identical metric values |
+| Output Contamination | D | Flags composite CERTs with metric values they shouldn't have (e.g., std composite with non-null Norm_* rates) |
+| Consumer Linkage | E | Flags metrics with no declared downstream consumers (orphans) |
+
+`run_full_validation_suite(df)` returns both the formula validation report and the semantic validation report.
+
+### Normalization Diagnostics
+
+The normalization pipeline no longer uses silent `.clip(lower=0)`. Instead:
+
+| Column | Purpose |
+|---|---|
+| `_Norm_NCO_Residual` / `_Norm_NA_Residual` / `_Norm_Loans_Residual` | Raw subtraction residual (can be negative) |
+| `_Flag_NCO_OverExclusion` / `_Flag_NA_OverExclusion` / `_Flag_Loans_OverExclusion` | Boolean (1 = exclusion > total) |
+| `_*_OverExclusion_Pct` | Residual as % of total |
+| `_Norm_*_Severity` | `ok` / `minor_clip` (< 5% over, clipped to 0) / `material_nan` (>= 5% over, set to NaN) |
+
+### Preflight Validation
+
+`validate_output_inputs()` in `report_generator.py` runs before any chart/table generation:
+1. Checks subject bank CERT exists in data
+2. Flags all-NaN or all-zero normalized metrics
+3. Checks for material over-exclusion severity
+4. Validates real peers exist for scatter plots
+5. Runs semantic validation if metric_registry is available
 
 ---
 

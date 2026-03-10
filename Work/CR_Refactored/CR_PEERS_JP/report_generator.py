@@ -32,9 +32,11 @@ from matplotlib.gridspec import GridSpec
 # charts/tables that consume it.  This enables impact analysis when a metric
 # fails upstream validation.
 try:
-    from metric_registry import REPORT_CONSUMER_MAP
+    from metric_registry import REPORT_CONSUMER_MAP, run_semantic_validation
+    _HAS_SEMANTIC_VALIDATION = True
 except ImportError:
     REPORT_CONSUMER_MAP = {}
+    _HAS_SEMANTIC_VALIDATION = False
 
 # Set style for better-looking charts
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -111,6 +113,83 @@ def get_diff_class(diff_str: str) -> str:
             return "neutral"
     except:
         return "neutral"
+
+
+# ==================================================================================
+# PREFLIGHT VALIDATION
+# ==================================================================================
+
+# All known composite/alias CERTs — must never appear as peer dots in scatter plots
+ALL_COMPOSITE_CERTS = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888}
+
+
+def validate_output_inputs(
+    proc_df: pd.DataFrame,
+    rolling_df: pd.DataFrame,
+    subject_cert: int,
+) -> Dict[str, Any]:
+    """Preflight validation before generating reports.
+
+    Returns a dict with keys:
+        - valid: bool — True if all critical checks pass
+        - warnings: list[str] — non-blocking issues
+        - errors: list[str] — blocking issues
+        - suppressed_charts: list[str] — charts that should be suppressed/annotated
+        - semantic_report: DataFrame — semantic validation results (if available)
+    """
+    warnings = []
+    errors = []
+    suppressed = []
+
+    # 1. Subject bank exists
+    if subject_cert not in proc_df["CERT"].values:
+        errors.append(f"Subject bank CERT {subject_cert} not found in data")
+
+    # 2. Check normalized metrics are not all-zero or all-NaN
+    for metric in ["Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Gross_Loans"]:
+        if metric in proc_df.columns:
+            vals = pd.to_numeric(proc_df[metric], errors="coerce")
+            if vals.isna().all():
+                warnings.append(f"{metric} is entirely NaN — normalized charts will be empty")
+                suppressed.append(f"normalized_chart_{metric}")
+            elif (vals == 0).all():
+                warnings.append(f"{metric} is entirely zero — normalized charts may be misleading")
+
+    # 3. Check severity columns for material failures
+    for sev_col in ["_Norm_NCO_Severity", "_Norm_NA_Severity", "_Norm_Loans_Severity"]:
+        if sev_col in proc_df.columns:
+            material = (proc_df[sev_col] == "material_nan")
+            if material.any():
+                n = material.sum()
+                warnings.append(f"{sev_col}: {n} rows have material over-exclusion (NaN)")
+
+    # 4. Check composites don't contaminate peer scatter
+    if "CERT" in rolling_df.columns:
+        composite_in_data = set(rolling_df["CERT"].unique()) & ALL_COMPOSITE_CERTS
+        real_peers = set(rolling_df["CERT"].unique()) - ALL_COMPOSITE_CERTS - {subject_cert}
+        if len(real_peers) == 0:
+            errors.append("No real peer banks found in rolling 8Q data — scatter plots impossible")
+
+    # 5. Run semantic validation if available
+    semantic_report = pd.DataFrame()
+    if _HAS_SEMANTIC_VALIDATION:
+        try:
+            semantic_report = run_semantic_validation(proc_df)
+            high_sev = semantic_report[semantic_report.get("Severity", pd.Series()) == "high"] if not semantic_report.empty else pd.DataFrame()
+            if not high_sev.empty:
+                for _, row in high_sev.head(5).iterrows():
+                    warnings.append(f"Semantic: {row.get('Rule', '?')} — {row.get('Detail', '?')}")
+        except Exception as e:
+            warnings.append(f"Semantic validation failed: {e}")
+
+    valid = len(errors) == 0
+    return {
+        "valid": valid,
+        "warnings": warnings,
+        "errors": errors,
+        "suppressed_charts": suppressed,
+        "semantic_report": semantic_report,
+    }
 
 
 # ==================================================================================
@@ -1807,6 +1886,22 @@ def generate_reports(
         print(f"Loaded FDIC data: {len(proc_df_with_peers)} records across {proc_df_with_peers['CERT'].nunique()} banks")
 
         # ------------------------------------------------------------------
+        # PREFLIGHT VALIDATION
+        # ------------------------------------------------------------------
+        preflight = validate_output_inputs(proc_df_with_peers, rolling8q_df, subject_bank_cert)
+        if preflight["warnings"]:
+            print(f"\n  PREFLIGHT WARNINGS ({len(preflight['warnings'])}):")
+            for w in preflight["warnings"]:
+                print(f"    [!] {w}")
+        if preflight["errors"]:
+            print(f"\n  PREFLIGHT ERRORS ({len(preflight['errors'])}):")
+            for e in preflight["errors"]:
+                print(f"    [X] {e}")
+            print("  Aborting report generation due to preflight errors.")
+            return
+        suppressed_charts = set(preflight.get("suppressed_charts", []))
+
+        # ------------------------------------------------------------------
         # EXECUTIVE SUMMARY & DETAILED PEER TABLES -> tables_dir
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
@@ -1850,7 +1945,8 @@ def generate_reports(
         print("GENERATING NORMALIZED CREDIT DETERIORATION CHART")
         print("-" * 60)
 
-        norm_df_plot = build_plot_df_with_alias(proc_df_with_peers, {99999: 90006, 99998: 90004})
+        # Use true normalized composite CERTs directly — no alias-row duplication
+        norm_df_plot = proc_df_with_peers
 
         # Determine line metric with fallback
         norm_line_metric = "Norm_Nonaccrual_Rate"
@@ -1865,8 +1961,8 @@ def generate_reports(
             start_date=start_date,
             bar_metric="Norm_NCO_Rate",
             line_metric=norm_line_metric,
-            bar_entities=[subject_bank_cert, 99999, 99998],
-            line_entities=[subject_bank_cert, 99999, 99998],
+            bar_entities=[subject_bank_cert, 90006, 90004],
+            line_entities=[subject_bank_cert, 90006, 90004],
             figsize=credit_figsize,
             title_size=title_size,
             axis_label_size=axis_label_size,
@@ -1893,14 +1989,15 @@ def generate_reports(
                 rolling8q_df[c] = pd.to_numeric(rolling8q_df[c], errors="coerce")
 
         # -- Standard scatters --
-        std_scatter_df = build_plot_df_with_alias(rolling8q_df, {99999: 90003, 99998: 90001})
-
+        # Use true composite CERTs directly; peer avg displayed via 90003 (All Peers)
         s1_path = scatter_dir / f"{base}_scatter_nco_vs_npl_{stamp}.png"
         plot_scatter_dynamic(
-            df=std_scatter_df,
+            df=rolling8q_df,
             x_col="NPL_to_Gross_Loans_Rate",
             y_col="TTM_NCO_Rate",
             subject_cert=subject_bank_cert,
+            peer_avg_cert_primary=90003,
+            peer_avg_cert_alt=90001,
             use_alt_peer_avg=False,
             show_peers_avg_label=True,
             show_mspbna_label=True,
@@ -1920,10 +2017,12 @@ def generate_reports(
 
         s2_path = scatter_dir / f"{base}_scatter_pd_vs_npl_{stamp}.png"
         plot_scatter_dynamic(
-            df=std_scatter_df,
+            df=rolling8q_df,
             x_col="NPL_to_Gross_Loans_Rate",
             y_col="TTM_Past_Due_Rate",
             subject_cert=subject_bank_cert,
+            peer_avg_cert_primary=90003,
+            peer_avg_cert_alt=90001,
             use_alt_peer_avg=False,
             show_peers_avg_label=True,
             show_mspbna_label=True,
@@ -1941,15 +2040,15 @@ def generate_reports(
         )
         print(f"  Standard scatter (PD vs NPL) saved: {s2_path}")
 
-        # -- Normalized scatter --
-        norm_scatter_df = build_plot_df_with_alias(rolling8q_df, {99999: 90006, 99998: 90004})
-
+        # -- Normalized scatter — use true composite CERTs directly, no alias rows --
         s3_path = scatter_dir / f"{base}_scatter_norm_nco_vs_nonaccrual_{stamp}.png"
         plot_scatter_dynamic(
-            df=norm_scatter_df,
+            df=rolling8q_df,
             x_col="Norm_Nonaccrual_Rate",
             y_col="Norm_NCO_Rate",
             subject_cert=subject_bank_cert,
+            peer_avg_cert_primary=90006,
+            peer_avg_cert_alt=90004,
             use_alt_peer_avg=False,
             show_peers_avg_label=True,
             show_mspbna_label=True,
@@ -2474,6 +2573,7 @@ def plot_scatter_dynamic(
     peer_avg_cert_primary: int = 99999,
     peer_avg_cert_alt: int = 99998,
     use_alt_peer_avg: bool = False,
+    composite_certs: Optional[set] = None,
     show_peers_avg_label: bool = True,
     show_mspbna_label: bool = True,
     identify_outliers: bool = True,
@@ -2497,6 +2597,10 @@ def plot_scatter_dynamic(
             return s/100.0
         return s
 
+    # Default composite exclusion set: all synthetic CERTs that must never appear as "peer" dots
+    if composite_certs is None:
+        composite_certs = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888}
+
     peers_cert = peer_avg_cert_alt if use_alt_peer_avg else peer_avg_cert_primary
     df = df.copy()
     df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
@@ -2511,9 +2615,11 @@ def plot_scatter_dynamic(
         ax.tick_params(axis="both", labelsize=tick_size, colors="#2B2B2B")
         ax.grid(True, color="#D0D0D0", linewidth=0.8, alpha=0.35)
 
+    # Exclude subject + ALL composite/alias CERTs from peer dots
+    exclude_set = composite_certs | {subject_cert}
     mspbna = df[df["CERT"] == subject_cert]
     peer_avg = df[df["CERT"] == peers_cert]
-    others = df[~df["CERT"].isin([subject_cert, peer_avg_cert_primary, peer_avg_cert_alt])]
+    others = df[~df["CERT"].isin(exclude_set)]
 
     Xo, Yo = to_decimals_series(others[x_col]), to_decimals_series(others[y_col])
     ax.scatter(Xo, Yo, s=42, alpha=0.9, color=PEER, edgecolor="white", linewidth=0.6, label="Peers")
@@ -2562,7 +2668,7 @@ def plot_scatter_dynamic(
         cx = px if px is not None else float(X_all.mean())
         cy = py if py is not None else float(Y_all.mean())
         d = ((X_all - cx)**2 + (Y_all - cy)**2)**0.5
-        mask_excl = df["CERT"].isin([peer_avg_cert_primary, peer_avg_cert_alt])
+        mask_excl = df["CERT"].isin(exclude_set)
         cand = d[~mask_excl].sort_values(ascending=False)
 
         top_idx = list(cand.index[:outliers_topn+1])
