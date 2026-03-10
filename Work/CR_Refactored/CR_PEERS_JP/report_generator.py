@@ -892,188 +892,193 @@ def generate_normalized_comparison_table(
     return html
 
 
-def generate_ratio_components_table(
-    df: pd.DataFrame,
-    subject_cert: int,
-    is_normalized: bool = False,
-    peer_cert: int = 90003,
-) -> Optional[str]:
-    """
-    Recreates the legacy 'Ratio Components' table showing numerator/denominator
-    breakdowns for key credit ratios.
-    """
-    latest_date = df["REPDTE"].max()
-    latest = df[df["REPDTE"] == latest_date]
+def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
+                                    subject_bank_cert: int = 34221,
+                                    is_normalized: bool = False) -> Optional[str]:
+    latest_date = proc_df_with_peers["REPDTE"].max()
+    latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    subj = latest[latest["CERT"] == subject_cert]
-    peer = latest[latest["CERT"] == (90006 if is_normalized else peer_cert)]
-    if subj.empty:
-        print(f"  Skipped ratio components ({'Norm' if is_normalized else 'Std'}): no subject data")
+    try:
+        subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
+        # Fallback to 90001 (Core PB) or 99999 depending on availability
+        peer_cert = 90001 if 90001 in latest_data["CERT"].values else 99999
+        peer = latest_data[latest_data["CERT"] == peer_cert].iloc[0]
+    except IndexError:
         return None
-    subj = subj.iloc[0]
-    peer = peer.iloc[0] if not peer.empty else None
 
+    # Exact metrics mapping from original user files
     if is_normalized:
-        ratios = [
-            ("Norm NCO Rate", "Norm_NCO_TTM", "Norm_Gross_Loans", "Norm_NCO_Rate"),
-            ("Norm Nonaccrual Rate", "Norm_Nonaccrual_Bal", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
-            ("Norm Allowance Rate", "Norm_ALLL", "Norm_Gross_Loans", "Norm_Allowance_Rate"),
-            ("Norm Past Due Rate", "Norm_PastDue_TTM", "Norm_Gross_Loans", "Norm_Past_Due_Rate"),
+        title = "Normalized Ratio Components"
+        metrics = [
+            ("Norm Resi ACL Coverage", "RIC_Resi_ACL", "Resi ACL", "Total_ACL", "ACL Balance", "Norm_Resi_ACL_Coverage"),
+            ("Excluded % of Total", "Excluded_Balance", "Excluded Balance", "LNLS", "Gross Loans", "Norm_Exclusion_Pct")
         ]
+        footnote = "<p><b>Normalized Metrics:</b> Exclude C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag loans.</p><p><b>Norm_Gross_Loans:</b> Gross Loans minus Excluded Balance.</p><p><b>Norm_ACL_Balance:</b> Total ACL minus reserves for ADC...</p>"
     else:
-        ratios = [
-            ("TTM NCO Rate", "NTLNLS_TTM", "LNLS", "TTM_NCO_Rate"),
-            ("NPL to Gross Loans", "NPL_Total", "LNLS", "NPL_to_Gross_Loans_Rate"),
-            ("ALLL / Gross Loans", "ALLL", "LNLS", "Allowance_to_Gross_Loans_Rate"),
-            ("TTM Past Due Rate", "PastDue_TTM", "LNLS", "TTM_Past_Due_Rate"),
-            ("Resi NCO Rate", "RIC_Resi_NCO_TTM", "RIC_Resi_Bal", "RIC_Resi_NCO_Rate"),
-            ("CRE NCO Rate", "RIC_CRE_NCO_TTM", "RIC_CRE_Bal", "RIC_CRE_NCO_Rate"),
-            ("C&I NCO Rate", "RIC_Comm_NCO_TTM", "RIC_Comm_Bal", "RIC_Comm_NCO_Rate"),
+        title = "Standard Ratio Components"
+        metrics = [
+            ("Resi ACL Coverage", "RIC_Resi_ACL", "Resi ACL", "RIC_Resi_Balance", "Resi Bal.", "RIC_Resi_ACL_Coverage"),
+            ("Resi NCO Rate", "RIC_Resi_NCO", "Resi NCO TTM", "RIC_Resi_Balance", "Resi Bal.", "RIC_Resi_NCO_Rate"),
+            ("Resi Delinquency Rate", "RIC_Resi_Delinq", "Resi PD30 + Resi PD90", "RIC_Resi_Balance", "Resi Bal.", "RIC_Resi_Delinquency_Rate")
         ]
+        footnote = "<p>Standard metrics based on Call Report totals.</p>"
 
-    label = "Normalized" if is_normalized else "Standard"
-    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
-<div class="tbl-container">
-<h2>Ratio Components — {label}</h2>
-<p class="sub">Numerator / Denominator Breakdown | {latest_date.strftime('%B %d, %Y')}</p>
-<table><thead><tr>
-<th>Ratio Name</th><th>Formula (Num)</th><th>Value (Num)</th>
-<th>Formula (Denom)</th><th>Value (Denom)</th>
-<th>Subject Ratio</th><th>Peer Ratio</th>
-</tr></thead><tbody>\n"""
+    html = f"""
+    <html><head><style>
+        body {{ font-family: Arial, sans-serif; background-color: transparent; }}
+        .email-container {{ background-color: transparent; padding: 20px; max-width: 1600px; margin: 0 auto; }}
+        h3 {{ color: #002F6C; margin-bottom: 5px; text-align: center; }}
+        p.date-header {{ margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 10px; }}
+        th {{ background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; text-align: center; }}
+        td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; }}
+        .ratio-name {{ text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 150px; background-color: #f8f9fa; }}
+        .formula-col {{ text-align: left !important; font-size: 9px; color: #666; font-style: italic; }}
+        .value-col {{ background-color: rgba(0, 47, 108, 0.04); font-family: monospace; font-size: 11px; }}
+        .ratio-col {{ font-weight: bold; color: #002F6C; background-color: #E6F3FF; font-size: 11px; }}
+        .peer-col {{ font-size: 11px; color: #444; }}
+    </style></head><body>
+    <div class="email-container">
+        <h3>{title}</h3>
+        <p class="date-header">{latest_date.strftime('%B %d, %Y')}</p>
+        <table><thead><tr>
+            <th>Ratio Name</th><th>Formula (Num)</th><th>Value (Num)</th><th>Formula (Denom)</th><th>Value (Denom)</th><th>Subject Ratio</th><th>Peer Ratio</th>
+        </tr></thead><tbody>
+    """
 
-    for rname, num_col, den_col, ratio_col in ratios:
-        # Skip entirely if neither numerator nor ratio column exists
-        if num_col not in subj.index and ratio_col not in subj.index:
-            continue
+    for disp, num_col, num_lbl, den_col, den_lbl, rat_col in metrics:
+        v_num = subj.get(num_col, np.nan)
+        v_den = subj.get(den_col, np.nan)
+        v_rat = subj.get(rat_col, np.nan)
+        p_rat = peer.get(rat_col, np.nan)
 
-        sv_num = _safe_val(subj, num_col)
-        sv_den = _safe_val(subj, den_col)
-        sv_ratio = _safe_val(subj, ratio_col)
-        pv_ratio = _safe_val(peer, ratio_col) if peer is not None else np.nan
+        # Format millions properly, or $0K if close to zero
+        if pd.isna(v_num): f_num = "N/A"
+        elif abs(v_num) < 1000: f_num = "$0K"
+        else: f_num = f"${abs(v_num)/1e6:,.1f}M"
 
-        fmt_num = _fmt_money_millions(sv_num) if not pd.isna(sv_num) else "N/A"
-        fmt_den = _fmt_money_millions(sv_den) if not pd.isna(sv_den) else "N/A"
+        if pd.isna(v_den): f_den = "N/A"
+        elif abs(v_den) < 1000: f_den = "$0K"
+        else: f_den = f"${abs(v_den)/1e6:,.1f}M"
 
-        html += f'<tr><td class="metric-name">{rname}</td>'
-        html += f"<td>{num_col}</td><td>{fmt_num}</td>"
-        html += f"<td>{den_col}</td><td>{fmt_den}</td>"
-        html += f'<td class="mspbna-value">{_fmt_percent_auto(sv_ratio)}</td>'
-        html += f"<td>{_fmt_percent_auto(pv_ratio)}</td></tr>\n"
+        f_rat = f"{v_rat*100:.2f}%" if pd.notna(v_rat) and abs(v_rat) < 1.0 else (f"{v_rat:.2f}%" if pd.notna(v_rat) else "N/A")
+        f_prat = f"{p_rat*100:.2f}%" if pd.notna(p_rat) and abs(p_rat) < 1.0 else (f"{p_rat:.2f}%" if pd.notna(p_rat) else "N/A")
 
-    html += "</tbody></table></div></body></html>"
+        html += f"""
+            <tr>
+                <td class="ratio-name">{disp}</td>
+                <td class="formula-col">{num_lbl}</td>
+                <td class="value-col">{f_num}</td>
+                <td class="formula-col">{den_lbl}</td>
+                <td class="value-col">{f_den}</td>
+                <td class="ratio-col">{f_rat}</td>
+                <td class="peer-col">{f_prat}</td>
+            </tr>"""
+
+    html += f"""
+        </tbody></table>
+        <div class="footnote">
+            <p><b>Calculation Methodology:</b></p>
+            {footnote}
+        </div>
+    </div></body></html>"""
     return html
 
 
-def generate_segment_focus_table(
-    df: pd.DataFrame,
-    subject_cert: int,
-    segment_name: str,
-    msbna_cert: Optional[int] = None,
-) -> Optional[str]:
-    """
-    Recreates the legacy 'Segment Focus' table (e.g., CRE Segment, Resi Segment).
-    Shows only metrics relevant to the given segment, with columns for
-    MSPBNA, MSBNA (optional), Core PB, and All Peers, plus a Trend column.
-    """
-    segment_metrics = {
-        "CRE": {
-            "RIC_CRE_Nonaccrual_Rate": "CRE Nonaccrual Rate",
-            "RIC_CRE_NCO_Rate": "CRE NCO Rate",
-            "RIC_CRE_PastDue_Rate": "CRE Past Due Rate",
-            "RIC_CRE_ACL_Share": "CRE Share of ACL",
-            "RIC_CRE_Loan_Share": "CRE Share of Loans",
-            "CRE_Concentration_Capital_Risk": "CRE Concentration Risk",
-            "MSPBNA_CRE_Growth_TTM": "CRE Growth TTM",
-            "MSPBNA_CRE_Growth_36M": "CRE Growth 36M",
-            "RIC_CRE_Years_of_Reserves": "CRE Years of Reserves",
-        },
-        "Resi": {
-            "RIC_Resi_Nonaccrual_Rate": "Resi Nonaccrual Rate",
-            "RIC_Resi_NCO_Rate": "Resi NCO Rate",
-            "RIC_Resi_PastDue_Rate": "Resi Past Due Rate",
-            "RIC_Resi_ACL_Share": "Resi Share of ACL",
-            "RIC_Resi_Loan_Share": "Resi Share of Loans",
-            "RIC_Resi_Years_of_Reserves": "Resi Years of Reserves",
-        },
+def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
+                                 subject_bank_cert: int = 34221,
+                                 segment_name: str = "CRE") -> Optional[str]:
+    latest_date = proc_df_with_peers["REPDTE"].max()
+    latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
+
+    # Map exact peer groups from original files
+    certs = {
+        "MSPBNA": subject_bank_cert,
+        "MSBNA": 32992,
+        "Core PB": 90001,
+        "MS+Wealth": 90002,
+        "All Peers": 90003
     }
+    row_data = {k: latest_data[latest_data["CERT"] == v].iloc[0] if v in latest_data["CERT"].values else pd.Series() for k, v in certs.items()}
 
-    metrics = segment_metrics.get(segment_name, {})
-    if not metrics:
-        print(f"  Skipped segment table: unknown segment '{segment_name}'")
-        return None
+    if segment_name == "CRE":
+        metrics = [
+            ("RIC_CRE_ACL_Coverage", "CRE ACL Coverage (x)", "x", True),
+            ("RIC_CRE_Nonaccrual_Rate", "% of CRE in Nonaccrual", "%", False),
+            ("RIC_CRE_NCO_Rate", "CRE NCO Rate (TTM)", "%", False),
+            ("RIC_CRE_Delinquency_Rate", "CRE Delinquency Rate (%)", "%", False)
+        ]
+    else:  # Resi
+        metrics = [
+            ("RIC_Resi_Nonaccrual_Rate", "% of Resi in Nonaccrual*", "%", False),
+            ("RIC_Resi_NCO_Rate", "Resi NCO Rate (TTM)*", "%", False),
+            ("RIC_Resi_Delinquency_Rate", "Resi Delinquency Rate (%)*", "%", False)
+        ]
 
-    latest_date = df["REPDTE"].max()
-    latest = df[df["REPDTE"] == latest_date]
+    html = f"""
+    <html><head><style>
+        body {{ font-family: Arial, sans-serif; background-color: transparent; }}
+        .email-container {{ background-color: transparent; padding: 20px; max-width: 1400px; margin: 0 auto; text-align: center; }}
+        h3 {{ color: #002F6C; margin-bottom: 5px; text-align: center; }}
+        p.date-header {{ margin-top: 0; font-weight: bold; color: #555; text-align: center; margin-bottom: 20px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 0 auto; font-size: 11px; background-color: transparent; }}
+        th {{ background-color: #002F6C; color: white; padding: 8px; border: 1px solid #2c3e50; }}
+        td {{ padding: 6px; text-align: center; border: 1px solid #e0e0e0; background-color: transparent; }}
+        .metric-name {{ text-align: left !important; font-weight: bold; color: #2c3e50; min-width: 180px; background-color: transparent; }}
+        .msbna-value {{ background-color: rgba(76, 120, 168, 0.08) !important; font-weight: 600; color: #444; }}
+        .mspbna-good {{ background-color: #E8F5E9 !important; font-weight: bold; color: #2E7D32; border-left: 2px solid #2E7D32; }}
+        .mspbna-bad {{ background-color: #FFEBEE !important; font-weight: bold; color: #C62828; border-left: 2px solid #C62828; }}
+        .mspbna-neutral {{ background-color: #FFF8E1 !important; font-weight: bold; color: #F57F17; border-left: 2px solid #F57F17; }}
+        .good-trend {{ color: #388e3c; font-weight: bold; }}
+        .bad-trend {{ color: #d32f2f; font-weight: bold; }}
+        .neutral-trend {{ color: #757575; font-weight: bold; }}
+        .footnote {{ font-size: 10px; color: #666; margin-top: 20px; border-top: 1px solid #ccc; padding-top: 10px; text-align: left; }}
+    </style></head><body>
+    <div class="email-container">
+        <h3>{segment_name} Portfolio Credit Profile</h3>
+        <p class="date-header">{latest_date.strftime('%B %d, %Y')}</p>
+        <table><thead><tr>
+            <th>Metric</th><th>MSPBNA</th><th>MSBNA</th><th>Core PB</th><th>MS+Wealth</th><th>All Peers</th><th>Diff vs Core</th>
+        </tr></thead><tbody>
+    """
 
-    subj = latest[latest["CERT"] == subject_cert]
-    if subj.empty:
-        print(f"  Skipped {segment_name} segment table: no subject data")
-        return None
-    subj = subj.iloc[0]
+    for code, disp, fmt, higher_is_better in metrics:
+        vals = {k: row_data[k].get(code, np.nan) for k in certs}
+        diff = vals["MSPBNA"] - vals["Core PB"] if pd.notna(vals["MSPBNA"]) and pd.notna(vals["Core PB"]) else np.nan
 
-    # Check if there's a prior quarter for trend calc
-    dates_sorted = sorted(df["REPDTE"].dropna().unique())
-    prior_date = dates_sorted[-2] if len(dates_sorted) >= 2 else None
-    subj_prior = None
-    if prior_date is not None:
-        sp = df[(df["CERT"] == subject_cert) & (df["REPDTE"] == prior_date)]
-        if not sp.empty:
-            subj_prior = sp.iloc[0]
+        # Formatting matching exact files
+        def fmt_val(v):
+            if pd.isna(v): return "N/A"
+            if fmt == "x": return f"{v:.2f}x"
+            return f"{v*100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
 
-    # Load MSBNA cert from env if not passed
-    if msbna_cert is None:
-        msbna_cert = int(os.getenv("MSBNA_CERT", "0"))
+        f_vals = {k: fmt_val(v) for k, v in vals.items()}
+        f_diff = f"{diff*100:+.2f}%" if pd.notna(diff) and fmt == "%" else (f"{diff:+.2f}x" if pd.notna(diff) else "N/A")
 
-    entity_map = {"MSPBNA": subject_cert}
-    if msbna_cert and msbna_cert != subject_cert:
-        entity_map["MSBNA"] = msbna_cert
-    entity_map["Core PB"] = 90001
-    entity_map["All Peers"] = 90003
-
-    entity_rows = {}
-    for name, cert in entity_map.items():
-        r = latest[latest["CERT"] == cert]
-        if not r.empty:
-            entity_rows[name] = r.iloc[0]
-
-    # Filter to metrics actually present in data
-    available_metrics = {k: v for k, v in metrics.items() if k in subj.index}
-    if not available_metrics:
-        print(f"  Skipped {segment_name} segment table: no matching columns in data")
-        return None
-
-    col_names = list(entity_rows.keys())
-    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
-<div class="tbl-container">
-<h2>{segment_name} Segment Focus</h2>
-<p class="sub">Segment-Level Credit Metrics | {latest_date.strftime('%B %d, %Y')}</p>
-<table><thead><tr><th>Metric</th>"""
-    for cn in col_names:
-        html += f"<th>{cn}</th>"
-    html += "<th>Trend (QoQ)</th></tr></thead><tbody>\n"
-
-    for code, display in available_metrics.items():
-        html += f'<tr><td class="metric-name">{display}</td>'
-        for cn in col_names:
-            er = entity_rows.get(cn)
-            v = _safe_val(er, code) if er is not None else np.nan
-            cls = "mspbna-value" if cn == "MSPBNA" else ""
-            html += f'<td class="{cls}">{_fmt_percent_auto(v)}</td>'
-
-        # Trend: compare subject current vs prior quarter
-        curr_v = _safe_val(subj, code)
-        prev_v = _safe_val(subj_prior, code) if subj_prior is not None else np.nan
-        if not pd.isna(curr_v) and not pd.isna(prev_v):
-            diff = float(curr_v) - float(prev_v)
-            tcls = _trend_class(diff)
-            arrow = "+" if diff > 0 else ""
-            html += f'<td class="{tcls}">{arrow}{diff:.2f}%</td>'
+        # Exact Trend styling logic
+        if pd.isna(diff) or abs(diff) < 0.0001:
+            subj_cls, diff_cls = "mspbna-neutral", "neutral-trend"
         else:
-            html += '<td class="neutral">N/A</td>'
-        html += "</tr>\n"
+            is_good = (diff > 0) if higher_is_better else (diff < 0)
+            subj_cls = "mspbna-good" if is_good else "mspbna-bad"
+            diff_cls = "good-trend" if is_good else "bad-trend"
 
-    html += "</tbody></table></div></body></html>"
+        html += f"""<tr>
+            <td class="metric-name"><b>{disp}</b></td>
+            <td class="{subj_cls}">{f_vals["MSPBNA"]}</td>
+            <td class="msbna-value">{f_vals["MSBNA"]}</td>
+            <td >{f_vals["Core PB"]}</td><td >{f_vals["MS+Wealth"]}</td><td >{f_vals["All Peers"]}</td>
+            <td class="{diff_cls}">{f_diff}</td>
+        </tr>"""
+
+    html += """</tbody></table>
+    <div class="footnote">
+        <p><b>Peer Definitions:</b></p>
+        <p><b>1. Core PB:</b> Goldman Sachs Bank USA, UBS Bank USA.</p>
+        <p><b>2. All Peers:</b> US G-SIB Credit Intermediaries + UBS.</p>
+        <br>
+        <p><b>Color Coding:</b> Subject bank cells highlighted green if performing better than Core PB Avg, red if worse, yellow if neutral.</p>
+    </div></div></body></html>"""
     return html
 
 
@@ -1502,45 +1507,26 @@ def generate_reports(
                 f.write(normcmp_html)
             print(f"  Normalized comparison table saved: {nc}")
 
-        # 3. Ratio Components (Standard)
-        rc_std_html = generate_ratio_components_table(
-            proc_df_with_peers, subject_bank_cert, is_normalized=False
-        )
-        if rc_std_html:
-            rcs = tables_dir / f"{base}_ratio_components_standard_{stamp}.html"
-            with open(rcs, "w", encoding="utf-8") as f:
-                f.write(rc_std_html)
-            print(f"  Ratio components (standard) saved: {rcs}")
+        # GENERATE RATIO AND SEGMENT TABLES
+        print("\nGENERATING DETAILED RATIO & SEGMENT TABLES...")
 
-        # 4. Ratio Components (Normalized)
-        rc_norm_html = generate_ratio_components_table(
-            proc_df_with_peers, subject_bank_cert, is_normalized=True
-        )
-        if rc_norm_html:
-            rcn = tables_dir / f"{base}_ratio_components_normalized_{stamp}.html"
-            with open(rcn, "w", encoding="utf-8") as f:
-                f.write(rc_norm_html)
-            print(f"  Ratio components (normalized) saved: {rcn}")
+        # 1. Ratio Components (Standard & Normalized)
+        ratio_std = generate_ratio_components_table(proc_df_with_peers, subject_bank_cert, is_normalized=False)
+        if ratio_std:
+            with open(tables_dir / f"{base}_ratio_components_standard_{stamp}.html", "w") as f: f.write(ratio_std)
 
-        # 5. CRE Segment Focus
-        cre_html = generate_segment_focus_table(
-            proc_df_with_peers, subject_bank_cert, segment_name="CRE"
-        )
-        if cre_html:
-            crp = tables_dir / f"{base}_segment_CRE_{stamp}.html"
-            with open(crp, "w", encoding="utf-8") as f:
-                f.write(cre_html)
-            print(f"  CRE segment table saved: {crp}")
+        ratio_norm = generate_ratio_components_table(proc_df_with_peers, subject_bank_cert, is_normalized=True)
+        if ratio_norm:
+            with open(tables_dir / f"{base}_ratio_components_normalized_{stamp}.html", "w") as f: f.write(ratio_norm)
 
-        # 6. Resi Segment Focus
-        resi_html = generate_segment_focus_table(
-            proc_df_with_peers, subject_bank_cert, segment_name="Resi"
-        )
-        if resi_html:
-            rsp = tables_dir / f"{base}_segment_Resi_{stamp}.html"
-            with open(rsp, "w", encoding="utf-8") as f:
-                f.write(resi_html)
-            print(f"  Resi segment table saved: {rsp}")
+        # 2. Segment Focus (CRE & Resi)
+        cre_seg = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, "CRE")
+        if cre_seg:
+            with open(tables_dir / f"{base}_cre_segment_normalized_{stamp}.html", "w") as f: f.write(cre_seg)
+
+        resi_seg = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, "Resi")
+        if resi_seg:
+            with open(tables_dir / f"{base}_resi_segment_normalized_{stamp}.html", "w") as f: f.write(resi_seg)
 
         # ------------------------------------------------------------------
         # SEGMENT-LEVEL CHARTS -> charts_dir
