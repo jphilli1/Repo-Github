@@ -30,6 +30,7 @@ from tqdm.asyncio import tqdm as tqdm_asyncio
 
 # --- Consolidated Data Dictionary (same package) ---
 from master_data_dictionary import MasterDataDictionary, LOCAL_DERIVED_METRICS
+from case_shiller_zip_mapper import build_case_shiller_zip_sheets
 
 
 
@@ -364,15 +365,7 @@ PEER_GROUPS = {
         "display_order": 1,
         "use_normalized": False
     },
-    PeerGroupType.MS_FAMILY_PLUS: {
-        "name": "MSPBNA + Wealth",
-        "short_name": "MSPBNA+Wealth",
-        "description": "MSPBNA plus wealth management peers (excludes MSBNA)",
-        "certs": [MSPBNA_CERT, 33124, 57565],  # MSPBNA + GS + UBS  (NO MSBNA)
-        "use_case": "Internal MS comparison plus broader wealth industry view",
-        "display_order": 2,
-        "use_normalized": False
-    },
+    # MS_FAMILY_PLUS removed: identical cert set to CORE_PRIVATE_BANK (no distinct membership)
     PeerGroupType.ALL_PEERS: {
         "name": "Full Peer Universe",
         "short_name": "All Peers",
@@ -394,15 +387,7 @@ PEER_GROUPS = {
         "display_order": 4,
         "use_normalized": True
     },
-    PeerGroupType.MS_FAMILY_PLUS_NORM: {
-        "name": "MSPBNA + Wealth (Normalized)",
-        "short_name": "MSPBNA+Wealth Norm",
-        "description": "MSPBNA + wealth peers with normalized metrics (excludes MSBNA)",
-        "certs": [MSPBNA_CERT, 33124, 57565],  # Same as MS_FAMILY_PLUS (NO MSBNA)
-        "use_case": "Internal MS comparison on private bank comparable portfolios",
-        "display_order": 5,
-        "use_normalized": True
-    },
+    # MS_FAMILY_PLUS_NORM removed: identical cert set to CORE_PRIVATE_BANK_NORM (no distinct membership)
     PeerGroupType.ALL_PEERS_NORM: {
         "name": "Full Peer Universe (Normalized)",
         "short_name": "All Peers Norm",
@@ -413,6 +398,21 @@ PEER_GROUPS = {
         "use_normalized": True
     }
 }
+
+def validate_peer_group_uniqueness(peer_groups):
+    """Raise ValueError if two groups with the same use_normalized flag have identical sorted cert membership."""
+    seen = {}
+    for gk, gv in peer_groups.items():
+        norm_flag = gv.get('use_normalized', False)
+        cert_key = (norm_flag, tuple(sorted(gv['certs'])))
+        if cert_key in seen:
+            raise ValueError(
+                f"Peer group '{gk}' has identical cert membership as '{seen[cert_key]}' "
+                f"(use_normalized={norm_flag}, certs={sorted(gv['certs'])}). "
+                f"Remove the duplicate or provide distinct membership."
+            )
+        seen[cert_key] = gk
+
 
 # Helper to ensure we fetch data for ALL distinct certs mentioned in any group
 def get_all_peer_certs():
@@ -2739,26 +2739,86 @@ class BankMetricsProcessor:
 
 
 
-        df_processed['Norm_Total_NCO'] = (df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']).clip(lower=0)
+        # =========================================================
+        # calc_normalized_residual: Top-down normalization with
+        # over-exclusion detection. No silent .clip(lower=0).
+        # =========================================================
+        def calc_normalized_residual(total, excluded, label, tolerance_pct=0.05):
+            """Top-down normalization: total - excluded, with over-exclusion detection.
 
-        # FIX: ensure Total_Nonaccrual exists before using it
-        total_na = (
-            df_processed['Total_Nonaccrual']
-            if 'Total_Nonaccrual' in df_processed.columns
-            else pd.Series(0.0, index=df_processed.index)
-        )
-        # [#3] Define total_na immediately before using it (prevents NameError)
+            Returns dict of Series:
+              final_value, residual, over_exclusion_flag, over_exclusion_pct, severity
+
+            Severity values:
+              ok            - residual >= 0
+              minor_clip    - negative residual within tolerance_pct of total -> clamped to 0
+              material_nan  - negative residual beyond tolerance -> set to NaN
+            """
+            residual = total - excluded
+            severity = pd.Series('ok', index=total.index)
+            final_value = residual.copy()
+            over_exclusion_pct = pd.Series(0.0, index=total.index)
+
+            pos_total = total > 0
+            over_exclusion_pct[pos_total] = (-residual[pos_total] / total[pos_total]).clip(lower=0)
+
+            minor_mask = (residual < 0) & pos_total & (over_exclusion_pct <= tolerance_pct)
+            final_value[minor_mask] = 0.0
+            severity[minor_mask] = 'minor_clip'
+
+            material_mask = (residual < 0) & (~minor_mask)
+            final_value[material_mask] = np.nan
+            severity[material_mask] = 'material_nan'
+
+            return {
+                'final_value': final_value,
+                'residual': residual,
+                'over_exclusion_flag': (residual < 0),
+                'over_exclusion_pct': over_exclusion_pct,
+                'severity': severity,
+            }
+
+        # --- Apply calc_normalized_residual to all normalized master metrics ---
         total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
+        tophouse_pd30 = df_processed['TopHouse_PD30'] if 'TopHouse_PD30' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
+        tophouse_pd90 = df_processed['TopHouse_PD90'] if 'TopHouse_PD90' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
 
-        df_processed['Norm_Total_Nonaccrual'] = (
-            (total_na - df_processed.get('Excluded_Nonaccrual', 0.0))
-            .clip(lower=0)
-        )
-        # =========================================================
-        # OVERRIDE: Normalized Performance (Wealth Segments Only)
-        # =========================================================
+        nco_result = calc_normalized_residual(df_processed['Total_NCO_TTM'], df_processed['Excluded_NCO_TTM'], 'NCO')
+        na_result = calc_normalized_residual(total_na, df_processed.get('Excluded_Nonaccrual', pd.Series(0.0, index=df_processed.index)), 'NA')
+        loans_result = calc_normalized_residual(df_processed['Gross_Loans'], df_processed['Excluded_Balance'], 'Loans')
+        pd30_result = calc_normalized_residual(tophouse_pd30, excluded_pd30, 'PD30')
+        pd90_result = calc_normalized_residual(tophouse_pd90, excluded_pd90, 'PD90')
 
-        # 1. Define Wealth Resi Balance
+        # Set normalized master totals (NO .clip, NO bottom-up override)
+        df_processed['Norm_Total_NCO'] = nco_result['final_value']
+        df_processed['Norm_Total_Nonaccrual'] = na_result['final_value']
+        df_processed['Norm_Gross_Loans'] = loans_result['final_value']
+        df_processed['Norm_PD30'] = pd30_result['final_value']
+        df_processed['Norm_PD90'] = pd90_result['final_value']
+
+        # Diagnostics columns
+        df_processed['_Norm_NCO_Residual'] = nco_result['residual']
+        df_processed['_Norm_NCO_OverExclusion_Pct'] = nco_result['over_exclusion_pct']
+        df_processed['_Flag_NCO_OverExclusion'] = nco_result['over_exclusion_flag']
+        df_processed['_Norm_NCO_Severity'] = nco_result['severity']
+
+        df_processed['_Norm_NA_Residual'] = na_result['residual']
+        df_processed['_Norm_NA_OverExclusion_Pct'] = na_result['over_exclusion_pct']
+        df_processed['_Flag_NA_OverExclusion'] = na_result['over_exclusion_flag']
+        df_processed['_Norm_NA_Severity'] = na_result['severity']
+
+        df_processed['_Norm_Loans_Residual'] = loans_result['residual']
+        df_processed['_Norm_Loans_OverExclusion_Pct'] = loans_result['over_exclusion_pct']
+        df_processed['_Flag_Loans_OverExclusion'] = loans_result['over_exclusion_flag']
+        df_processed['_Norm_Loans_Severity'] = loans_result['severity']
+
+        df_processed['_Norm_PD30_Residual'] = pd30_result['residual']
+        df_processed['_Norm_PD90_Residual'] = pd90_result['residual']
+
+        # =========================================================
+        # WEALTH RESI PURE: Segment-level numerators only (for
+        # segment tables / rates). NOT used to override master totals.
+        # =========================================================
         if 'Wealth_Resi_Balance' not in df_processed.columns:
             df_processed['Wealth_Resi_Balance'] = (
                 best_of(df_processed, ['LNRERES']).fillna(0) +
@@ -2766,56 +2826,19 @@ class BankMetricsProcessor:
             )
         wealth_resi_bal = df_processed['Wealth_Resi_Balance']
 
-        # 2. Calculate PURE Wealth Resi Numerators (Excluding CRE)
+        # Segment-level pure numerators (clip is OK for segment rates)
         wealth_resi_nco_pure = sum_cols(df_processed, ['NTRERES', 'NTRELOC']).clip(lower=0)
         wealth_resi_na_pure  = sum_cols(df_processed, ['NARERES', 'NARELOC']).clip(lower=0)
         wealth_resi_pd30_pure = sum_cols(df_processed, ['P3RERES', 'P3RELOC']).clip(lower=0)
         wealth_resi_pd90_pure = sum_cols(df_processed, ['P9RERES', 'P9RELOC']).clip(lower=0)
 
-        # 3. Calculate Rates for HTML Report
+        # Segment rates for HTML report
         df_processed['Wealth_Resi_TTM_NCO_Rate'] = safe_div(wealth_resi_nco_pure, wealth_resi_bal)
         df_processed['Wealth_Resi_NA_Rate'] = safe_div(wealth_resi_na_pure, wealth_resi_bal)
-
-        # Total Delinquency (30-89 + 90+)
         df_processed['Wealth_Resi_Delinquency_Rate'] = safe_div(
             wealth_resi_pd30_pure + wealth_resi_pd90_pure,
             wealth_resi_bal
         )
-
-        # 4. Normalized Master Metrics (Resi Pure + Inv CRE)
-        # Reconstruct total normalized metrics by adding Investment CRE back in
-        df_processed['Norm_Total_NCO'] = wealth_resi_nco_pure + sum_cols(df_processed, ['NTREMULT', 'NTRENROT'])
-
-        # Define total_na immediately before using it
-        total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
-
-        df_processed['Norm_Total_Nonaccrual'] = wealth_resi_na_pure + sum_cols(df_processed, ['NAREMULT', 'NARENROT'])
-        df_processed['Norm_PD30'] = wealth_resi_pd30_pure + sum_cols(df_processed, ['P3REMULT', 'P3RENROT'])
-        df_processed['Norm_PD90'] = wealth_resi_pd90_pure + sum_cols(df_processed, ['P9REMULT', 'P9RENROT'])
-
-        #(D) Wealth-only denominator ---
-        # --- G. Calculate Normalized Master Metrics (COMPONENTS ONLY) ---
-        df_processed['Norm_Gross_Loans'] = (df_processed['Gross_Loans'] - df_processed['Excluded_Balance']).clip(lower=0)
-
-        # [#4] Ensure Total_NCO_TTM is truly TTM of quarterly NCO derived from YTD
-        if 'Total_NCO_TTM' not in df_processed.columns:
-            if 'NTLNLS_Q' not in df_processed.columns:
-                df_processed['NTLNLS_Q'] = compute_quarterly_from_ytd(df_processed, 'NTLNLS')
-
-            _tmp = []
-            for cert, grp in df_processed.groupby('CERT'):
-                grp = grp.sort_values('REPDTE')
-                grp['Total_NCO_TTM'] = grp['NTLNLS_Q'].rolling(window=4, min_periods=1).sum()
-                _tmp.append(grp)
-            df_processed = pd.concat(_tmp) if _tmp else df_processed
-            if 'Total_NCO_TTM' not in df_processed.columns:
-                df_processed['Total_NCO_TTM'] = 0.0
-
-        df_processed['Norm_Total_NCO'] = (df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']).clip(lower=0)
-
-        # [#3] Define total_na immediately before using it
-        total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
-        df_processed['Norm_Total_Nonaccrual'] = (total_na - df_processed['Excluded_Nonaccrual']).clip(lower=0)
         # NOTE: Rates (Norm_Delinquency_Rate, etc.) are calculated in Section 4 using safe_div.
 
         # ---------------------------------------------------------
@@ -2903,7 +2926,7 @@ class BankMetricsProcessor:
         new_cols['Norm_NCO_Rate'] = safe_div(norm_nco, norm_loans)
         new_cols['Norm_Nonaccrual_Rate'] = safe_div(norm_na, norm_loans)
         new_cols['Norm_Delinquency_Rate'] = safe_div((norm_pd30 + norm_pd90), norm_loans)
-        new_cols['Norm_ACL_Coverage'] = safe_div(df_processed['Total_ACL'], norm_loans)
+        # Norm_ACL_Coverage is set below after Norm_ACL_Balance is computed
 
         # Normalized Composition (what % of remaining portfolio after exclusions)
         new_cols['Norm_Exclusion_Pct'] = safe_div(df_processed['Excluded_Balance'], df_processed['Gross_Loans'])
@@ -3009,7 +3032,7 @@ class BankMetricsProcessor:
         new_cols['Norm_CRE_ACL_Share'] = safe_div(df_processed['RIC_CRE_ACL'], norm_acl_balance)
         new_cols['Norm_Resi_ACL_Share'] = safe_div(df_processed['RIC_Resi_ACL'], norm_acl_balance)
 
-        new_cols['Norm_RESI_ACL_Coverage'] = safe_div(df_processed['RIC_Resi_ACL'], wealth_resi_bal)
+        new_cols['Norm_Resi_ACL_Coverage'] = safe_div(df_processed['RIC_Resi_ACL'], wealth_resi_bal)
         new_cols['Norm_CRE_ACL_Coverage']  = safe_div(df_processed['RIC_CRE_ACL'], df_processed['CRE_Investment_Pure_Balance'])
         new_cols['Norm_Comm_ACL_Coverage'] = safe_div(df_processed['RIC_Comm_ACL'], df_processed['SBL_Balance'])
 
@@ -5794,7 +5817,8 @@ class BankPerformanceDashboard:
             # --- Normalized ACL Metrics ---
             {"MetricCode":"Norm_ACL_Balance",                 "Display":"Normalized ACL Balance",       "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":2, "Basis":"level"},
             {"MetricCode":"Norm_Risk_Adj_Allowance_Coverage", "Display":"Norm: Risk-Adj Coverage (Ex-SBL)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_RESI_ACL_Coverage",           "Display":"Resi Reserve % of Norm ACL",   "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_Resi_ACL_Coverage",           "Display":"Resi ACL Coverage on Wealth Resi Balance",   "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_Resi_ACL_Share",              "Display":"Resi ACL Share of Norm ACL",   "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE Reserve % of Norm ACL",    "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Comm_ACL_Coverage",           "Display":"C&I Reserve % of Norm Loans",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_Investment_Composition", "Display":"Norm: CRE Invest. % (Ex-ADC)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
@@ -5878,10 +5902,48 @@ class BankPerformanceDashboard:
         # === END FDIC-META ===
 
 
+        # --- Normalization Diagnostics Sheet ---
+        norm_diag_cols = [
+            'CERT', 'REPDTE',
+            'Gross_Loans', 'Excluded_Balance', 'Norm_Gross_Loans',
+            '_Norm_Loans_Residual', '_Norm_Loans_OverExclusion_Pct', '_Norm_Loans_Severity',
+            'Total_NCO_TTM', 'Excluded_NCO_TTM', 'Norm_Total_NCO',
+            '_Norm_NCO_Residual', '_Norm_NCO_OverExclusion_Pct', '_Norm_NCO_Severity',
+            'Total_Nonaccrual', 'Excluded_Nonaccrual', 'Norm_Total_Nonaccrual',
+            '_Norm_NA_Residual', '_Norm_NA_OverExclusion_Pct', '_Norm_NA_Severity',
+            'TopHouse_PD30', 'Norm_PD30',
+            'TopHouse_PD90', 'Norm_PD90',
+        ]
+        avail_diag = [c for c in norm_diag_cols if c in proc_df_with_peers.columns]
+        norm_diagnostics_df = proc_df_with_peers[avail_diag].copy() if avail_diag else pd.DataFrame()
+
+        # --- Peer Group Definitions Sheet ---
+        peer_def_rows = []
+        for gk, gv in PEER_GROUPS.items():
+            peer_def_rows.append({
+                'group_key': gk.value if hasattr(gk, 'value') else str(gk),
+                'name': gv['name'],
+                'short_name': gv['short_name'],
+                'use_normalized': gv.get('use_normalized', False),
+                'cert_count': len(gv['certs']),
+                'cert_list': str(sorted(gv['certs'])),
+            })
+        peer_defs_df = pd.DataFrame(peer_def_rows)
+
+        # --- Validate peer group uniqueness ---
+        validate_peer_group_uniqueness(PEER_GROUPS)
+
+        # --- Case-Shiller ZIP Enrichment (standalone sheets) ---
+        cs_zip_sheets = build_case_shiller_zip_sheets()  # No ZIP data wired yet; produces audit/skip sheet
+        cs_kwargs = {}
+        for sheet_name, sheet_df in cs_zip_sheets.items():
+            if isinstance(sheet_df, pd.DataFrame) and not sheet_df.empty:
+                cs_kwargs[sheet_name] = sheet_df
+
         self.output_gen.write_excel_output(
             file_path=fname,
             Summary_Dashboard=peer_comp_df,
-            Normalized_Comparison=norm_comp_df,  # NEW: Ex-Commercial/Ex-Consumer view
+            Normalized_Comparison=norm_comp_df,
             Latest_Peer_Snapshot=snapshot_df,
             Averages_8Q_All_Metrics=avg_8q_all_metrics_df,
             FDIC_Metadata=fdic_meta_df,
@@ -5891,6 +5953,9 @@ class BankPerformanceDashboard:
             FRED_Metadata=fred_metadata_df,
             FRED_Descriptions=fred_desc_df,
             Data_Validation_Report=validation_df,
+            Normalization_Diagnostics=norm_diagnostics_df,
+            Peer_Group_Definitions=peer_defs_df,
+            **cs_kwargs,
         )
 
 
