@@ -878,7 +878,13 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
                                     subject_bank_cert: int = 34221,
                                     is_normalized: bool = False) -> Optional[str]:
     latest_date = proc_df_with_peers["REPDTE"].max()
-    latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
+    latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date].copy()
+
+    # Synthesize _Total_Past_Due for standard delinquency row
+    if 'TopHouse_PD30' in latest_data.columns and 'TopHouse_PD90' in latest_data.columns:
+        latest_data['_Total_Past_Due'] = latest_data['TopHouse_PD30'].fillna(0) + latest_data['TopHouse_PD90'].fillna(0)
+    elif '_Total_Past_Due' not in latest_data.columns:
+        latest_data['_Total_Past_Due'] = 0.0
 
     try:
         subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
@@ -887,19 +893,36 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
     except IndexError:
         return None
 
+    # Synthesize _Norm_Total_Past_Due for normalized delinquency row
+    for row_data in [latest_data]:
+        if 'Norm_PD30' in row_data.columns and 'Norm_PD90' in row_data.columns:
+            row_data = row_data.copy()
+            latest_data = row_data
+            latest_data['_Norm_Total_Past_Due'] = latest_data['Norm_PD30'].fillna(0) + latest_data['Norm_PD90'].fillna(0)
+    if '_Norm_Total_Past_Due' not in latest_data.columns:
+        latest_data = latest_data.copy()
+        latest_data['_Norm_Total_Past_Due'] = 0.0
+
+    # Re-pick subject/peer after adding synthetic column
+    try:
+        subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
+        peer = latest_data[latest_data["CERT"] == peer_cert].iloc[0]
+    except IndexError:
+        return None
+
     if is_normalized:
         title = "Ratio Components Analysis (Normalized)"
         metrics = [
-            ("Norm NCO Rate", "Total NCO", "Total_NCO", "Gross Loans", "Norm_Gross_Loans", "Norm_NCO_Rate"),
-            ("Norm Nonaccrual Rate", "Total Nonaccrual", "Nonaccrual_Total", "Gross Loans", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
-            ("Norm ACL Ratio", "ACL Balance", "Norm_ACL_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_ACL_Coverage"),
-            ("Norm Risk-Adj ACL", "ACL Balance", "Norm_ACL_Balance", "Gross Loans - SBL Balance", "Norm_Risk_Adj_Gross_Loans", "Norm_Risk_Adj_Allowance_Coverage"),
-            ("Norm Delinquency Rate", "PD30 + PD90", "Total_Past_Due", "Gross Loans", "Norm_Gross_Loans", "Norm_Delinquency_Rate"),
-            ("Norm SBL %", "SBL Balance", "SBL_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_SBL_Composition"),
-            ("Norm Resi %", "Resi Bal.", "RIC_Resi_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_Resi_Composition"),
-            ("Norm CRE % (Ex-ADC)", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
-            ("Norm CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
-            ("Norm Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "ACL Balance", "Norm_ACL_Balance", "Norm_Resi_ACL_Share"),
+            ("Norm NCO Rate", "Norm Total NCO", "Norm_Total_NCO", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_NCO_Rate"),
+            ("Norm Nonaccrual Rate", "Norm Total Nonaccrual", "Norm_Total_Nonaccrual", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
+            ("Norm ACL Ratio", "Norm ACL Balance", "Norm_ACL_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_ACL_Coverage"),
+            ("Norm Risk-Adj ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm Gross Loans - SBL Balance", "Norm_Risk_Adj_Gross_Loans", "Norm_Risk_Adj_Allowance_Coverage"),
+            ("Norm Delinquency Rate", "Norm PD30 + Norm PD90", "_Norm_Total_Past_Due", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Delinquency_Rate"),
+            ("Norm SBL %", "SBL Balance", "SBL_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_SBL_Composition"),
+            ("Norm Wealth Resi %", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Wealth_Resi_Composition"),
+            ("Norm CRE % (Ex-ADC)", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
+            ("Norm CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
+            ("Norm Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm_Resi_ACL_Coverage"),
             ("Excluded % of Total", "Excluded Balance", "Excluded_Balance", "Gross Loans", "LNLS", "Norm_Exclusion_Pct")
         ]
         footnote = "<p><b>Normalized Metrics:</b> Exclude C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag loans.</p>"
@@ -910,7 +933,7 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
             ("Nonaccrual Rate", "Total Nonaccrual", "Nonaccrual_Total", "Gross Loans", "LNLS", "Nonaccrual_to_Gross_Loans_Rate"),
             ("Headline ACL Ratio", "Total ACL", "Total_ACL", "Gross Loans", "LNLS", "Allowance_to_Gross_Loans_Rate"),
             ("Risk-Adj ACL Ratio", "Total ACL", "Total_ACL", "Gross Loans - SBL Balance", "Risk_Adj_Gross_Loans", "Risk_Adj_Allowance_Coverage"),
-            ("Delinquency Rate (30+)", "TopHouse PD30 + TopHouse PD90", "Total_Past_Due", "Gross Loans", "LNLS", "TTM_Past_Due_Rate"),
+            ("Delinquency Rate (30+)", "TopHouse PD30 + TopHouse PD90", "_Total_Past_Due", "Gross Loans", "LNLS", "TTM_Past_Due_Rate"),
             ("SBL % of Loans", "SBL Balance", "SBL_Balance", "Gross Loans", "LNLS", "SBL_Composition"),
             ("Resi % of Loans", "Resi Bal.", "RIC_Resi_Balance", "Gross Loans", "LNLS", "RIC_Resi_Loan_Share"),
             ("CRE % of Loans", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Gross Loans", "LNLS", "RIC_CRE_Loan_Share"),
