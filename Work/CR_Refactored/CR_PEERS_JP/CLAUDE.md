@@ -172,6 +172,18 @@ All charts must use this color palette consistently:
 
 Both standard and normalized credit-deterioration charts are generated.
 
+### TABLE COLUMN ORDERING
+
+- HTML tables comparing individual peers **must** always place the Subject Bank (MSPBNA) and MSBNA on the extreme left, followed by individual peers, followed by the peer average.
+
+### TABLE COMPLETENESS
+
+- Segment Focus tables must never truncate metrics. Both standard and normalized variants must explicitly map all 15 core segment series.
+
+### TABLE DUPLICATION
+
+- The Detailed Peer Analysis, Core PB Analysis, CRE Segment, and Resi Segment tables **must** ALWAYS output both a Standard and a Normalized version.
+
 ### FORMATTING RULES
 
 - **Diffs are Percentage-Point Deltas**: All "Diff vs Peer" columns MUST use simple subtraction (`v_subject - v_peer`), never relative percentage change (`(v_subject - v_peer) / v_peer`). Use `_fmt_percent_diff(diff, ref_value)` to format; it uses the reference value's scale to decide whether to multiply by 100.
@@ -242,6 +254,20 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 4. **Unit Formatting ($B display) (report_generator.py)**: Fixed `_fmt_money_billions()` and inline `fmt_val()` functions. FDIC stores dollar amounts in $K (thousands), so dividing by `1e6` gives billions. The inline formatters were incorrectly dividing by `1e9` (producing values like `$0.3B` instead of `$254.7B`). Also fixed label mismatches (`$254.7M` → `$254.7B`).
 
 5. **Dead Metric Suppression (report_generator.py)**: Added filtering in all 4 HTML table generators (`generate_credit_metrics_email_table`, `generate_ratio_components_table`, `generate_segment_focus_table`, `generate_detailed_peer_table`) to skip metric rows where all displayed entity values are 0 or NaN. Prevents misleading `0.00%` rows for metrics like `Norm_Loan_Yield` and `Norm_Provision_Rate`.
+
+### 2026-03-10 — HTML Table Overhaul (Standard + Normalized Split)
+
+1. **Detailed Peer Table refactored**: `generate_detailed_peer_table` now accepts `is_normalized` parameter. Standard version uses headline metrics (TTM_NCO_Rate, etc.); Normalized version uses Norm_ metrics. Column ordering changed: MSPBNA and MSBNA placed on the extreme left.
+
+2. **New Core PB Table**: Added `generate_core_pb_peer_table` that dynamically identifies Goldman/UBS CERTs and uses Core PB Avg (90001 standard, 90004 normalized).
+
+3. **Shared HTML builder**: Added `_build_dynamic_peer_html` helper to eliminate code duplication between detailed peer and core PB tables.
+
+4. **Segment Focus Table refactored**: `generate_segment_focus_table` now accepts `is_normalized` parameter. Normalized variant uses Norm_ common metrics and Norm_ segment-specific ACL share/coverage columns. Both variants maintain full 15-metric lists.
+
+5. **generate_reports() unified loop**: All detailed peer, core PB, ratio components, CRE segment, and Resi segment tables now generate both Standard and Normalized versions via `for is_norm in [False, True]` loop.
+
+6. **CLAUDE.md conventions added**: Table Column Ordering, Table Completeness, and Table Duplication rules added to Section 4.
 
 ---
 
