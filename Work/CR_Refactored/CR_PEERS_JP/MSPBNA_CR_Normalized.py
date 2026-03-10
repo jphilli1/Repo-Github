@@ -165,46 +165,46 @@ FDIC_FIELDS_TO_FETCH = [
     "LNATRES", "OTHBOR", "MUTUAL", "FREPP",
 
     # ==========================================================================
-    # RAW BALANCE SHEET SERIES (For Direct Calculations & Liquidity)
+    # RAW BALANCE SHEET SERIES — FDIC Text Aliases (handle 031/041 split natively)
     # ==========================================================================
-    "RCFD2170",   # Total Assets (raw)
-    "RCFD2948",   # Total Liabilities (raw)
-    "RCFD3210",   # Total Equity Capital (raw)
-    "RCFD2200",   # Total Deposits (raw)
-    "RCFD1400",   # Gross Loans (raw) - backup for LNLS
-    "RCFD3123",   # Allowance for Loan Losses (raw)
+    # FDIC top-level text aliases automatically resolve the FFIEC 031 (Consolidated)
+    # vs FFIEC 041/051 (Domestic) split. Prefer these over raw MDRM codes.
+    # Replaces: RCFD2170→ASSET, RCFD2948→LIAB, RCFD3210→EQ, RCFD2200→DEP,
+    #           RCFD1400→LNLSGR, RCFD3123→LNATRES (already in list above)
+    "LNLSGR",    # Gross Loans (replaces RCFD1400)
 
-    # --- Liquidity Components (RESTORED) ---
-    "RCFD0010",   # Cash and Balances Due from Depository Institutions
-    "RCFD0081",   # Federal Funds Sold
-    "RCFD1754",   # Held-to-Maturity Securities (Amortized Cost)
-    "RCFD1773",   # Available-for-Sale Securities (Fair Value)
-    "RCFD3545",   # Trading Assets (if applicable)
+    # --- Liquidity Components (Text Aliases where available) ---
+    "CHBAL",      # Cash and Balances Due (replaces RCFD0010)
+    "CHBALNI",    # Non-Interest-Bearing Cash (replaces RCFD0081)
+    "TRD",        # Trading Assets (replaces RCFD3545)
+    # HTM/AFS Securities: No text alias — fetch BOTH RCFD + RCON for 031/041 waterfall
+    "RCFD1754", "RCON1754",   # Held-to-Maturity Securities (Amortized Cost)
+    "RCFD1773", "RCON1773",   # Available-for-Sale Securities (Fair Value)
 
-    # --- Unused Commitments (RESTORED) ---
-    "RCFD3423",   # Unused Commitments
-    "RCFD3814",   # Credit Card Lines (unused portion)
-    "RCFD6550",   # Commercial Real Estate Commitments
+    # --- Unused Commitments: No text alias — fetch BOTH RCFD + RCON ---
+    "RCFD3423", "RCON3423",   # Unused Commitments
+    "RCFD3814", "RCON3814",   # HELOC Unused Commitments
+    "RCFD6550", "RCON6550",   # Non-RE Commitments
 
-    # --- Raw Income Statement (For Backup/Validation) ---
-    "RIAD4340",   # Net Income
-    "RIAD4107",   # Total Interest Income
-    "RIAD4073",   # Total Interest Expense
-    "RIAD4079",   # Total Noninterest Income
-    "RIAD4093",   # Total Noninterest Expense
-    "RIAD4301",   # Retained Earnings
-    "RIAD4010",   # Interest Income on Loans (raw)
-    "RIAD4115",   # Interest Expense on Deposits (raw)
-    "RIAD4608",   # Total Charge-Offs (raw)
-    "RIAD4609",   # Total Recoveries (raw)
+    # --- Raw Income Statement (Text Aliases) ---
+    "NETINC",     # Net Income (replaces RIAD4340)
+    "INTINC",     # Total Interest Income (replaces RIAD4107)
+    "INTEXP",     # Total Interest Expense (replaces RIAD4073)
+    "NONII",      # Total Noninterest Income (replaces RIAD4079)
+    "NONIX",      # Total Noninterest Expense (replaces RIAD4093)
+    "IBTX",       # Income Before Taxes (replaces RIAD4301)
+    "ILNDOM",     # Interest Income on Loans (Domestic) — replaces RIAD4010 part 1
+    "ILNFOR",     # Interest Income on Loans (Foreign) — replaces RIAD4010 part 2
+    "RIAD4115",   # Interest Expense on Deposits (raw — no alias)
+    "NTCI",       # C&I Net Charge-Offs (replaces RIAD4638 + RIAD4608)
+    "RIAD4609",   # Total Recoveries (raw — no alias)
+    "NTLS",       # Total Loan & Lease NCOs (replaces RIAD4658 + RIAD4659)
 
     # --- INCOME & PROFITABILITY (Corrected Series) ---
-    "ILNDOM",   # Int Inc Loans (Domestic)
-    "ILNFOR",   # Int Inc Loans (Foreign)
+    # Note: ILNDOM and ILNFOR now fetched via text aliases above
     "EDEPDOM",  # Int Exp Deposits (Domestic)
     "EDEPFOR",  # Int Exp Deposits (Foreign)
     "ELNATR",   # Provision for Credit Losses (YTD)
-    "EINTEXP",  # Total Interest Expense (YTD)
 
     # --- TOP HOUSE DELINQUENCY ---
     "P3LNLS",   # PD 30-89 Total
@@ -230,9 +230,9 @@ FDIC_FIELDS_TO_FETCH = [
 
     # --- LEGACY BALANCES (Mapped via Fallback) ---
     "LNREOTH",    # Will map to LNRENROT
-    "LNOTHPCS",   # Will map to RCFD1545
-    "LNOTHNONDEP",# Will map to RCFDJ454
-    "LNCONAUTO", "LNCONCC", "LNCONOTHX", # Will map/derive
+    # NOTE: LNOTHPCS, LNOTHNONDEP, LNCONAUTO, LNCONCC, LNCONOTHX are synthetic
+    # variables that do not exist in the FDIC API. They are calculated locally
+    # in pandas AFTER the API fetch completes (see FDIC_FALLBACK_MAP resolution).
 
     # --- NET CHARGE-OFFS ---
     "NTLNLS", "NCLNLS",
@@ -271,11 +271,8 @@ FDIC_FIELDS_TO_FETCH = [
 
     # --- 1. Domestic C&I (Remove standard business lending) ---
     "RCON1763",    # Balance: Commercial & Industrial loans to U.S. addressees (Domestic)
-    "RIAD4608",    # NCO: C&I Charge-offs (Domestic)
-    "RIAD4609",    # NCO: C&I Recoveries (Domestic) - subtract from charge-offs
-    "RCON1606",    # PD30: C&I Past Due 30-89 (Domestic)
-    "RCON1607",    # PD90: C&I Past Due 90+ (Domestic)
-    "RCON1608",    # NA: C&I Nonaccrual (Domestic)
+    # NTCI (text alias) replaces RIAD4638/RIAD4608 — already in fetch list above
+    # P3CI, P9CI, NACI (text aliases) replace RCON1606/1607/1608 — already in fetch list above
 
     # --- 2. Nondepository Financial Institutions (NDFI) - Fund Finance/Shadow Banking ---
     # --- 2. Nondepository Financial Institutions (NDFI) - Fund Finance/Shadow Banking ---
@@ -291,11 +288,8 @@ FDIC_FIELDS_TO_FETCH = [
 
     # --- 3. ADC Loans (Remove Construction Risk) ---
     "RCON1420",    # Balance: Construction, land development, and other land loans - Total
-    "RIAD4658",    # NCO: ADC Charge-offs
-    "RIAD4659",    # NCO: ADC Recoveries - subtract from charge-offs
-    "RCON2759",    # PD30: ADC Past Due 30-89
-    "RCON2769",    # PD90: ADC Past Due 90+
-    "RCON3492",    # NA: ADC Nonaccrual
+    # NTLS (text alias) replaces RIAD4658/RIAD4659 — already in fetch list above
+    # P3RECONS, P9RECONS, NARECONS (text aliases) replace RCON2759/2769/3492 — already in fetch list above
 
     # --- 4. Mass Market Consumer (Credit Cards, Auto, Ag) ---
     "RCFDB538",    # Balance: Credit Card Loans
@@ -318,7 +312,6 @@ FDIC_FIELDS_TO_FETCH = [
     "RCFD2005",    # Balance: Loans to Depository Institutions (Banks)
 
     # --- 6. C&I NCO Proxy (Alternative to segment-level calculation) ---
-    "RIAD4638",    # NCO: Commercial & Industrial Net Charge-offs (Total)
 ]
 
 
@@ -2127,6 +2120,73 @@ class BankMetricsProcessor:
         if df.empty: return df
         df_processed = df.copy()
 
+        # --- WATERFALL COALESCE: FFIEC 031 (Consolidated) vs FFIEC 041 (Domestic) ---
+        # For globally active banks (G-SIBs filing FFIEC 031), RCFD is the total.
+        # For domestic-only banks (FFIEC 041/051 filers), RCFD is null and RCON is the total.
+        # Coalesce RCFD.fillna(RCON) to ensure apples-to-apples comparisons.
+        coalesce_pairs = {
+            'HTM_Securities': ('RCFD1754', 'RCON1754'),
+            'AFS_Securities': ('RCFD1773', 'RCON1773'),
+            'Unused_Commitments_Total': ('RCFD3423', 'RCON3423'),
+            'Unused_Commitments_HELOC': ('RCFD3814', 'RCON3814'),
+            'Unused_Commitments_NonRE': ('RCFD6550', 'RCON6550'),
+        }
+
+        for final_col, (rcfd_col, rcon_col) in coalesce_pairs.items():
+            if rcfd_col in df_processed.columns and rcon_col in df_processed.columns:
+                df_processed[final_col] = df_processed[rcfd_col].fillna(df_processed[rcon_col])
+            elif rcon_col in df_processed.columns:
+                df_processed[final_col] = df_processed[rcon_col]
+            elif rcfd_col in df_processed.columns:
+                df_processed[final_col] = df_processed[rcfd_col]
+
+        # --- SPARSE NICHE SEGMENTS: Fill NaN with 0 for legitimately sparse series ---
+        # Fund Finance and NDFI series are sparse because few banks use them.
+        # Fill NaN to prevent downstream math errors.
+        sparse_niche_cols = ['RCONJ454', 'RCONJ458', 'RCONJ459', 'RCONJ460',
+                             'RCFDJ454', 'RCFDJ458', 'RCFDJ459', 'RCFDJ460']
+        for col in sparse_niche_cols:
+            if col in df_processed.columns:
+                df_processed[col] = df_processed[col].fillna(0)
+
+        # --- SYNTHETIC VARIABLE RESOLUTION ---
+        # These variables do not exist in the FDIC API; calculate from base components.
+        # LNOTHPCS (SBL): fallback to RCFD1545 → RCON1545 → LNOTHER
+        sbl_candidates = ['RCFD1545', 'RCON1545', 'LNOTHER']
+        df_processed['LNOTHPCS'] = pd.Series(np.nan, index=df_processed.index)
+        for col in sbl_candidates:
+            if col in df_processed.columns:
+                mask = df_processed['LNOTHPCS'].isna()
+                df_processed.loc[mask, 'LNOTHPCS'] = df_processed.loc[mask, col]
+        df_processed['LNOTHPCS'] = df_processed['LNOTHPCS'].fillna(0)
+
+        # LNOTHNONDEP (Fund Finance): fallback to RCFDJ454 → RCONJ454
+        nondep_candidates = ['RCFDJ454', 'RCONJ454']
+        df_processed['LNOTHNONDEP'] = pd.Series(np.nan, index=df_processed.index)
+        for col in nondep_candidates:
+            if col in df_processed.columns:
+                mask = df_processed['LNOTHNONDEP'].isna()
+                df_processed.loc[mask, 'LNOTHNONDEP'] = df_processed.loc[mask, col]
+        df_processed['LNOTHNONDEP'] = df_processed['LNOTHNONDEP'].fillna(0)
+
+        # LNCONAUTO: maps to LNAUTO
+        if 'LNAUTO' in df_processed.columns:
+            df_processed['LNCONAUTO'] = df_processed['LNAUTO'].fillna(0)
+        else:
+            df_processed['LNCONAUTO'] = 0.0
+
+        # LNCONCC: maps to LNCRCD
+        if 'LNCRCD' in df_processed.columns:
+            df_processed['LNCONCC'] = df_processed['LNCRCD'].fillna(0)
+        else:
+            df_processed['LNCONCC'] = 0.0
+
+        # LNCONOTHX: Derived as LNCON - LNAUTO - LNCRCD
+        lncon = df_processed['LNCON'].fillna(0) if 'LNCON' in df_processed.columns else 0
+        lnauto = df_processed['LNAUTO'].fillna(0) if 'LNAUTO' in df_processed.columns else 0
+        lncrcd = df_processed['LNCRCD'].fillna(0) if 'LNCRCD' in df_processed.columns else 0
+        df_processed['LNCONOTHX'] = (lncon - lnauto - lncrcd).clip(lower=0)
+
         # --- Helper: Compute Quarterly Flow from YTD ---
         def compute_quarterly_from_ytd(df_in, col_name):
             """
@@ -2471,11 +2531,11 @@ class BankMetricsProcessor:
         # [3.6] LIQUIDITY & BALANCE SHEET STRUCTURE (RESTORED)
         # ---------------------------------------------------------
         # Cash and liquid assets for liquidity analysis
-        df_processed['Cash_and_Balances'] = best_of(df_processed, ['RCFD0010', 'RCON0010']).fillna(0)
-        df_processed['Fed_Funds_Sold'] = best_of(df_processed, ['RCFD0081', 'RCON0081']).fillna(0)
-        df_processed['Securities_HTM'] = best_of(df_processed, ['RCFD1754', 'RCON1754']).fillna(0)
-        df_processed['Securities_AFS'] = best_of(df_processed, ['RCFD1773', 'RCON1773']).fillna(0)
-        df_processed['Trading_Assets'] = best_of(df_processed, ['RCFD3545', 'RCON3545']).fillna(0)
+        df_processed['Cash_and_Balances'] = best_of(df_processed, ['CHBAL', 'RCFD0010', 'RCON0010']).fillna(0)
+        df_processed['Fed_Funds_Sold'] = best_of(df_processed, ['CHBALNI', 'RCFD0081', 'RCON0081']).fillna(0)
+        df_processed['Securities_HTM'] = best_of(df_processed, ['HTM_Securities']).fillna(0)
+        df_processed['Securities_AFS'] = best_of(df_processed, ['AFS_Securities']).fillna(0)
+        df_processed['Trading_Assets'] = best_of(df_processed, ['TRD', 'RCFD3545', 'RCON3545']).fillna(0)
 
         # Liquid Assets = Cash + Fed Funds Sold + AFS Securities
         df_processed['Liquid_Assets'] = (
@@ -2493,20 +2553,20 @@ class BankMetricsProcessor:
         )
 
         # Total Assets for ratio
-        df_processed['Total_Assets_Raw'] = best_of(df_processed, ['RCFD2170', 'ASSET']).fillna(0)
-        df_processed['Total_Equity_Raw'] = best_of(df_processed, ['RCFD3210', 'EQ']).fillna(0)
-        df_processed['Total_Deposits_Raw'] = best_of(df_processed, ['RCFD2200', 'DEP']).fillna(0)
-        # Income Statement Raw Metrics
-        df_processed['Net_Income_Raw'] = best_of(df_processed, ['RIAD4340']).fillna(0)
-        df_processed['Total_Int_Income_Raw'] = best_of(df_processed, ['RIAD4107']).fillna(0)
-        df_processed['Total_Int_Expense_Raw'] = best_of(df_processed, ['RIAD4073']).fillna(0)
-        df_processed['Total_Nonint_Income_Raw'] = best_of(df_processed, ['RIAD4079']).fillna(0)
-        df_processed['Total_Nonint_Expense_Raw'] = best_of(df_processed, ['RIAD4093']).fillna(0)
-        df_processed['Int_Inc_Loans_Raw'] = best_of(df_processed, ['RIAD4010']).fillna(0)
+        df_processed['Total_Assets_Raw'] = best_of(df_processed, ['ASSET', 'RCFD2170']).fillna(0)
+        df_processed['Total_Equity_Raw'] = best_of(df_processed, ['EQ', 'RCFD3210']).fillna(0)
+        df_processed['Total_Deposits_Raw'] = best_of(df_processed, ['DEP', 'RCFD2200']).fillna(0)
+        # Income Statement Raw Metrics (prefer FDIC text aliases)
+        df_processed['Net_Income_Raw'] = best_of(df_processed, ['NETINC', 'RIAD4340']).fillna(0)
+        df_processed['Total_Int_Income_Raw'] = best_of(df_processed, ['INTINC', 'RIAD4107']).fillna(0)
+        df_processed['Total_Int_Expense_Raw'] = best_of(df_processed, ['INTEXP', 'RIAD4073']).fillna(0)
+        df_processed['Total_Nonint_Income_Raw'] = best_of(df_processed, ['NONII', 'RIAD4079']).fillna(0)
+        df_processed['Total_Nonint_Expense_Raw'] = best_of(df_processed, ['NONIX', 'RIAD4093']).fillna(0)
+        df_processed['Int_Inc_Loans_Raw'] = best_of(df_processed, ['ILNDOM', 'RIAD4010']).fillna(0)
         df_processed['Int_Exp_Deposits_Raw'] = best_of(df_processed, ['RIAD4115']).fillna(0)
 
         # Unused Commitments (credit pipeline)
-        df_processed['Unused_Commitments'] = best_of(df_processed, ['RCFD3423', 'RCON3423']).fillna(0)
+        df_processed['Unused_Commitments'] = best_of(df_processed, ['Unused_Commitments_Total']).fillna(0)
 
         # [3.5] NORMALIZATION LOGIC (Ex-Commercial/Ex-Consumer) - OPTIMIZED
         # ---------------------------------------------------------
@@ -2534,13 +2594,13 @@ class BankMetricsProcessor:
 
 
         # --- B. Calculate Exclusion NCOs (YTD) ---
-        ci_nco_direct = best_of(df_processed, ['RIAD4638']).fillna(0)
+        ci_nco_direct = best_of(df_processed, ['NTCI', 'RIAD4638']).fillna(0)
         ci_chargeoffs = best_of(df_processed, ['RIAD4608']).fillna(0)
         ci_recoveries = best_of(df_processed, ['RIAD4609']).fillna(0)
         ci_nco_calc = ci_chargeoffs - ci_recoveries
         norm_cols['Excl_CI_NCO_YTD'] = np.where(ci_nco_direct != 0, ci_nco_direct, ci_nco_calc)
 
-        adc_chargeoffs = best_of(df_processed, ['RIAD4658']).fillna(0)
+        adc_chargeoffs = best_of(df_processed, ['NTLS', 'RIAD4658']).fillna(0)
         adc_recoveries = best_of(df_processed, ['RIAD4659']).fillna(0)
         norm_cols['Excl_ADC_NCO_YTD'] = adc_chargeoffs - adc_recoveries
 
@@ -2561,9 +2621,9 @@ class BankMetricsProcessor:
         norm_cols['Excl_Ag_NCO_YTD'] = np.where(ag_nco_calc != 0, ag_nco_calc, ag_nco_fallback)
 
         # --- C. Calculate Exclusion Nonaccruals ---
-        norm_cols['Excl_CI_NA'] = best_of(df_processed, ['RCON1608', 'RCFD1608']).fillna(0)
+        norm_cols['Excl_CI_NA'] = best_of(df_processed, ['NACI', 'RCON1608', 'RCFD1608']).fillna(0)
         norm_cols['Excl_NDFI_NA'] = best_of(df_processed, ['RCONJ460', 'RCFDJ460']).fillna(0)
-        norm_cols['Excl_ADC_NA'] = best_of(df_processed, ['RCON3492', 'RCFD3492']).fillna(0)
+        norm_cols['Excl_ADC_NA'] = best_of(df_processed, ['NARECONS', 'RCON3492', 'RCFD3492']).fillna(0)
         norm_cols['Excl_CC_NA'] = best_of(df_processed, ['RCFDB575', 'RCONB575']).fillna(0)
         norm_cols['Excl_Auto_NA'] = best_of(df_processed, ['RCFDK213', 'RCONK213']).fillna(0)
 
@@ -2581,14 +2641,14 @@ class BankMetricsProcessor:
 
         # --- D. Calculate Exclusion Past Dues (P3 = 30-89 Days, P9 = 90+ Days) ---
         # 1. Domestic C&I
-        norm_cols['Excl_CI_P3'] = best_of(df_processed, ['RCON1606', 'RCFD1606']).fillna(0)
-        norm_cols['Excl_CI_P9'] = best_of(df_processed, ['RCON1607', 'RCFD1607']).fillna(0)
+        norm_cols['Excl_CI_P3'] = best_of(df_processed, ['P3CI', 'RCON1606', 'RCFD1606']).fillna(0)
+        norm_cols['Excl_CI_P9'] = best_of(df_processed, ['P9CI', 'RCON1607', 'RCFD1607']).fillna(0)
         # 2. NDFI
         norm_cols['Excl_NDFI_P3'] = best_of(df_processed, ['RCONJ458', 'RCFDJ458']).fillna(0)
         norm_cols['Excl_NDFI_P9'] = best_of(df_processed, ['RCONJ459', 'RCFDJ459']).fillna(0)
         # 3. ADC
-        norm_cols['Excl_ADC_P3'] = best_of(df_processed, ['RCON2759', 'RCFD2759']).fillna(0)
-        norm_cols['Excl_ADC_P9'] = best_of(df_processed, ['RCON2769', 'RCFD2769']).fillna(0)
+        norm_cols['Excl_ADC_P3'] = best_of(df_processed, ['P3RECONS', 'RCON2759', 'RCFD2759']).fillna(0)
+        norm_cols['Excl_ADC_P9'] = best_of(df_processed, ['P9RECONS', 'RCON2769', 'RCFD2769']).fillna(0)
         # 4. Credit Cards
         norm_cols['Excl_CC_P3'] = best_of(df_processed, ['P3CRCD', 'RCFDB572']).fillna(0)
         norm_cols['Excl_CC_P9'] = best_of(df_processed, ['P9CRCD', 'RCFDB573']).fillna(0)
@@ -2926,7 +2986,7 @@ class BankMetricsProcessor:
         # ==============================================================================
 
         # 1. Get Total Allowance
-        total_acl = best_of(df_processed, ['RCFD3123', 'RCON3123', 'RCFDJJ19']).fillna(0)
+        total_acl = best_of(df_processed, ['LNATRES', 'RCFD3123', 'RCON3123', 'RCFDJJ19']).fillna(0)
 
         # 2. Get Excluded Reserves
         res_adc = best_of(df_processed, ['RCFDJJ12', 'RCFDJJ12']).fillna(0)
@@ -5305,7 +5365,7 @@ class BankPerformanceDashboard:
         Analyzes FDIC data availability and returns a report of missing/empty series.
         """
         # Exclude calculated series from analysis
-        CALCULATED_FDIC_SERIES = ['Total_Capital', 'AOBS']
+        CALCULATED_FDIC_SERIES = ['Total_Capital', 'AOBS', 'LNOTHPCS', 'LNOTHNONDEP', 'LNCONAUTO', 'LNCONCC', 'LNCONOTHX']
         fields_to_analyze = [f for f in FDIC_FIELDS_TO_FETCH if f not in CALCULATED_FDIC_SERIES]
 
         if fdic_df.empty:
