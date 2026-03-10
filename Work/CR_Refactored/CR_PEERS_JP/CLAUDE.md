@@ -168,6 +168,13 @@ All charts must use this color palette consistently:
 
 Both standard and normalized credit-deterioration charts are generated.
 
+### FORMATTING RULES
+
+- **Diffs are Percentage-Point Deltas**: All "Diff vs Peer" columns MUST use simple subtraction (`v_subject - v_peer`), never relative percentage change (`(v_subject - v_peer) / v_peer`). Use `_fmt_percent_diff(diff, ref_value)` to format; it uses the reference value's scale to decide whether to multiply by 100.
+- **Dollar Amounts = $B**: FDIC data stores dollar amounts in thousands ($K). Use `_fmt_money_billions()` which converts: `v/1e6` → `$X.XB`, `v/1e3` → `$X.XM`. Never divide by `1e9` (that produces values 1000x too small).
+- **Multiplier metrics**: Metrics labeled `(x)` (e.g., CRE NPL Coverage) must format as `X.XXx`, not as `%`.
+- **Dead metric suppression**: If a metric is entirely 0/NaN across all displayed entities for the latest quarter, the row is automatically suppressed from HTML tables.
+
 ---
 
 ## 5. Common Errors & Troubleshooting
@@ -215,3 +222,33 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 **Symptom:** `FileNotFoundError: 8Q average sheet not found`
 
 **Fix:** Ensure `MSPBNA_CR_Normalized.py` completed successfully and the output Excel contains the `Averages_8Q*` sheet. Re-run Step 1 if needed.
+
+---
+
+## 6. Changelog / Recent Fixes
+
+### 2026-03-10 — Data Mapping, Math, and Formatting Bug Fixes
+
+1. **Duplicate Peer Composites (MSPBNA_CR_Normalized.py)**: Fixed `_create_peer_composite()` so normalized composites (90004/90005/90006) are mathematically distinct from standard composites (90001/90002/90003). Standard composites now NaN-out `Norm_*` columns; normalized composites NaN-out standard rate columns. Previously, both sets produced identical averages because they shared the same cert lists and averaged all numeric columns indiscriminately.
+
+2. **Diff Math — Percentage-Point Deltas (report_generator.py)**: Created `_fmt_percent_diff(diff, ref_value)` to fix inflated diff values (e.g., ROE 14.69% vs 13.94% showing +75.00% instead of +0.75%). The bug was in `_fmt_percent()` being used for both display and diffs — its `abs(v) < 1.0` heuristic incorrectly multiplied small ppt diffs by 100 when source values were in pct-point scale (>=1.0). Fixed in `generate_credit_metrics_email_table`, `generate_detailed_peer_table`, and `generate_segment_focus_table`.
+
+3. **Ratio Components Column Mapping (report_generator.py)**: Fixed ~12 phantom column names in `generate_ratio_components_table` that didn't match upstream DataFrame columns. Key fixes: `Nonaccrual_Total` → `Total_Nonaccrual`, `Risk_Adj_Gross_Loans` → computed inline, `Total_Past_Due` → computed from `TopHouse_PD30 + TopHouse_PD90`, `RIC_Resi_Balance` → `RIC_Resi_Cost`, `RIC_CRE_NCO` → `RIC_CRE_NCO_TTM`, `RIC_CRE_Delinq`/`RIC_Resi_Delinq` → computed from PD30+PD90, `RIC_Fund_Finance_Loan_Share` → `Fund_Finance_Composition`.
+
+4. **Unit Formatting ($B display) (report_generator.py)**: Fixed `_fmt_money_billions()` and inline `fmt_val()` functions. FDIC stores dollar amounts in $K (thousands), so dividing by `1e6` gives billions. The inline formatters were incorrectly dividing by `1e9` (producing values like `$0.3B` instead of `$254.7B`). Also fixed label mismatches (`$254.7M` → `$254.7B`).
+
+5. **Dead Metric Suppression (report_generator.py)**: Added filtering in all 4 HTML table generators (`generate_credit_metrics_email_table`, `generate_ratio_components_table`, `generate_segment_focus_table`, `generate_detailed_peer_table`) to skip metric rows where all displayed entity values are 0 or NaN. Prevents misleading `0.00%` rows for metrics like `Norm_Loan_Yield` and `Norm_Provision_Rate`.
+
+---
+
+## 7. To-Do / Known Issues
+
+### Upstream Data Gaps (MSPBNA_CR_Normalized.py)
+
+| Metric | Status | Root Cause |
+|---|---|---|
+| `Norm_Loan_Yield` | Flatlines at 0.00% | Computed as `Int_Inc_Loans_TTM / Norm_Gross_Loans`. The upstream `Int_Inc_Loans_TTM` column is likely not being populated because the FDIC API series for interest income on loans (`ILNLS`) may not be fetched, or the TTM rolling sum is failing silently. Check that `ILNLS` (or `Int_Inc_Loans_Raw`) is in the fetch list and that the TTM computation in `_calculate_ttm_metrics()` handles it. |
+| `Norm_Provision_Rate` | Flatlines at 0.00% | Computed as `Provision_Exp_TTM / Norm_Gross_Loans`. Same pattern — `Provision_Exp_TTM` is derived from `ELNATR` (Provision for Loan Losses). Verify that `ELNATR` is fetched and that the TTM rolling sum is correctly computed. |
+| `Norm_Loss_Adj_Yield` | Flatlines at 0.00% | Derived as `Norm_Loan_Yield - Norm_NCO_Rate`. Flatlines because `Norm_Loan_Yield` is zero. Will auto-resolve when `Norm_Loan_Yield` is fixed. |
+
+**Action for future agents**: Search `MSPBNA_CR_Normalized.py` for the FDIC field list (around line 120-230) and confirm `ILNLS` and `ELNATR` are included. Then trace the TTM computation path to ensure `Int_Inc_Loans_TTM` and `Provision_Exp_TTM` are populated before the normalization step uses them.

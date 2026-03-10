@@ -5212,6 +5212,11 @@ class BankPerformanceDashboard:
         """
         Creates composite 'dummy' banks for each defined Peer Group.
         These allows us to plot 'Core Peer Avg' lines on charts easily.
+
+        For normalized groups (use_normalized=True), only Norm_* rate columns
+        are averaged from peers; standard rate columns (TTM_NCO_Rate,
+        Nonaccrual_to_Gross_Loans_Rate, etc.) are set to NaN so the composite
+        is mathematically distinct from its standard counterpart.
         """
         logging.info("Generating historical composites for defined Peer Groups...")
 
@@ -5222,6 +5227,18 @@ class BankPerformanceDashboard:
 
         numeric_cols = df.select_dtypes(include=np.number).columns.drop('CERT', errors='ignore')
 
+        # Identify Norm_ rate columns vs standard rate columns
+        norm_rate_cols = [c for c in numeric_cols if c.startswith('Norm_')]
+        # Standard rate columns that have a Norm_ counterpart or are pure-standard rates
+        standard_rate_cols = [
+            c for c in numeric_cols
+            if not c.startswith('Norm_')
+            and any(kw in c for kw in [
+                '_Rate', '_Coverage', '_Composition', '_Share',
+                '_Pct', 'ROA', 'ROE', 'NIMY', 'EEFFR',
+            ])
+        ]
+
         for group_key, group_info in PEER_GROUPS.items():
             # Filter for peers in this group
             group_certs = group_info['certs']
@@ -5230,11 +5247,27 @@ class BankPerformanceDashboard:
             if peer_subset.empty:
                 continue
 
+            is_normalized = group_info.get('use_normalized', False)
+
             # Calculate average for every quarter
-            # We use a context manager to suppress grouping warnings
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
                 group_avg = peer_subset.groupby('REPDTE')[numeric_cols].mean().reset_index()
+
+            # For normalized composites: blank out standard rate columns so the
+            # composite is distinct from its standard counterpart (forces
+            # downstream consumers to use Norm_* columns).
+            if is_normalized:
+                for col in standard_rate_cols:
+                    if col in group_avg.columns:
+                        group_avg[col] = np.nan
+
+            # For standard composites: blank out Norm_ columns so there is no
+            # confusion about which metrics are authoritative.
+            else:
+                for col in norm_rate_cols:
+                    if col in group_avg.columns:
+                        group_avg[col] = np.nan
 
             # Assign Dummy Metadata
             dummy_cert = base_dummy_cert + group_info['display_order']
@@ -5243,7 +5276,7 @@ class BankPerformanceDashboard:
             group_avg['HQ_STATE'] = 'AVG'
 
             composites.append(group_avg)
-            logging.info(f"Created composite for {group_info['name']} (CERT {dummy_cert})")
+            logging.info(f"Created composite for {group_info['name']} (CERT {dummy_cert}, normalized={is_normalized})")
 
         if composites:
             df = pd.concat([df] + composites, ignore_index=True)
