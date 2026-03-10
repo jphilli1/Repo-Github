@@ -1923,6 +1923,9 @@ class FREDDataFetcher:
         if not series_ids:
              return pd.DataFrame(), pd.DataFrame(), [], pd.DataFrame()
 
+        # SAFEGUARD: Deduplicate incoming series_ids to prevent index collision errors
+        series_ids = list(dict.fromkeys(series_ids))
+
         async with aiohttp.ClientSession() as session:
             # Fetch both data and metadata concurrently
             data_tasks = [
@@ -5593,12 +5596,11 @@ class BankPerformanceDashboard:
         # Define calculated series that should NOT be fetched
         CALCULATED_SERIES = ['SOFR3MTB3M']
 
-        # Build list - EXCLUDING calculated series
-        # Build list - EXCLUDING calculated series
+        # Build list - EXCLUDING calculated series AND DEDUPLICATING
         series_ids_to_fetch = []
         for category_dict in FRED_SERIES_TO_FETCH.values():
             for sid in category_dict.keys():
-                if sid not in CALCULATED_SERIES:
+                if sid not in CALCULATED_SERIES and sid not in series_ids_to_fetch:
                     series_ids_to_fetch.append(sid)
 
         logger.info(f"Fetching {len(series_ids_to_fetch)} series (excluding {CALCULATED_SERIES})")
