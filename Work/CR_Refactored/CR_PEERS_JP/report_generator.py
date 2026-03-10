@@ -316,17 +316,23 @@ def _fmt_percent_auto(v: float) -> str:
 
 
 def _fmt_money_billions(v: float) -> str:
-    """Format a value (assumed already in thousands or raw) as $X.XB."""
+    """Format a value in FDIC $-thousands as a clean dollar string.
+
+    FDIC data stores dollar amounts in thousands ($K).
+    - 254706000 ($K) = $254.7 Billion → display as $254.7B
+    - 1500000 ($K) = $1.5 Billion → display as $1.5B
+    - 500000 ($K) = $500 Million → display as $500.0M
+    - 1500 ($K) = $1.5 Million → display as $1.5M
+    """
     if pd.isna(v):
         return "N/A"
     v = float(v)
-    if abs(v) >= 1e9:
-        return f"${v/1e9:,.1f}B"
-    if abs(v) >= 1e6:
+    av = abs(v)
+    if av >= 1e6:            # >= $1B (in $K units)
         return f"${v/1e6:,.1f}B"
-    if abs(v) >= 1e3:
+    if av >= 1e3:            # >= $1M (in $K units)
         return f"${v/1e3:,.1f}M"
-    return f"${v:,.0f}"
+    return f"${v:,.0f}K"
 
 def _fmt_money_billions_diff(v: float) -> str:
     """Format a diff value as +/-$X.XB."""
@@ -356,6 +362,27 @@ def _fmt_percent(v: float) -> str:
     if abs(v) < 1.0:
         v *= 100.0
     return f"{v:.2f}%"
+
+
+def _fmt_percent_diff(diff: float, ref_value: float = None) -> str:
+    """Format a percentage-point delta.
+
+    Uses ``ref_value`` (one of the original source values) to decide scale:
+    - If ref_value is in decimal form (abs < 1.0), multiply diff by 100.
+    - If ref_value is already in pct-point form (abs >= 1.0), display diff as-is.
+    This prevents 0.75 ppt deltas from being inflated to 75%.
+    """
+    if pd.isna(diff):
+        return "N/A"
+    diff = float(diff)
+    if ref_value is not None and not pd.isna(ref_value):
+        if abs(float(ref_value)) < 1.0:
+            diff *= 100.0
+    else:
+        # Fallback: if no ref_value, use the same heuristic as _fmt_percent
+        if abs(diff) < 1.0:
+            diff *= 100.0
+    return f"{diff:+.2f}%"
 
 def _fmt_call_report_date(d) -> str:
     """Format a report date for display in table headers."""
@@ -498,24 +525,46 @@ def generate_credit_metrics_email_table(
         v_core = core.get(code, np.nan) if core is not None else np.nan
         v_wealth = wealth.get(code, np.nan) if wealth is not None else np.nan
 
+        # TASK 5: Suppress flatlined/dead metrics — skip if ALL displayed
+        # values are 0, 0.0, or NaN (avoids misleading 0.00% rows).
+        all_vals = [v_idb, v_msbna, v_core, v_wealth]
+        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in all_vals):
+            continue
+
         d_msbna = v_idb - v_msbna if pd.notna(v_idb) and pd.notna(v_msbna) else np.nan
         d_core = v_idb - v_core if pd.notna(v_idb) and pd.notna(v_core) else np.nan
         d_wealth = v_idb - v_wealth if pd.notna(v_idb) and pd.notna(v_wealth) else np.nan
 
-        if fmt == 'B': f, fd = _fmt_money_billions, _fmt_money_billions_diff
-        elif fmt == 'x': f, fd = _fmt_multiple, _fmt_multiple_diff
-        else: f, fd = _fmt_percent, _fmt_percent
-
-        rows.append({
-            "Metric": disp,
-            "MSPBNA": f(v_idb),
-            "MSBNA": f(v_msbna),
-            "Core PB": f(v_core),
-            "MS+Wealth": f(v_wealth),
-            "Diff vs MSBNA": fd(d_msbna),
-            "Diff vs Core": fd(d_core),
-            "Diff vs MS+": fd(d_wealth)
-        })
+        if fmt == 'B':
+            f = _fmt_money_billions
+            rows.append({
+                "Metric": disp,
+                "MSPBNA": f(v_idb), "MSBNA": f(v_msbna),
+                "Core PB": f(v_core), "MS+Wealth": f(v_wealth),
+                "Diff vs MSBNA": _fmt_money_billions_diff(d_msbna),
+                "Diff vs Core": _fmt_money_billions_diff(d_core),
+                "Diff vs MS+": _fmt_money_billions_diff(d_wealth),
+            })
+        elif fmt == 'x':
+            f = _fmt_multiple
+            rows.append({
+                "Metric": disp,
+                "MSPBNA": f(v_idb), "MSBNA": f(v_msbna),
+                "Core PB": f(v_core), "MS+Wealth": f(v_wealth),
+                "Diff vs MSBNA": _fmt_multiple_diff(d_msbna),
+                "Diff vs Core": _fmt_multiple_diff(d_core),
+                "Diff vs MS+": _fmt_multiple_diff(d_wealth),
+            })
+        else:
+            f = _fmt_percent
+            rows.append({
+                "Metric": disp,
+                "MSPBNA": f(v_idb), "MSBNA": f(v_msbna),
+                "Core PB": f(v_core), "MS+Wealth": f(v_wealth),
+                "Diff vs MSBNA": _fmt_percent_diff(d_msbna, v_idb),
+                "Diff vs Core": _fmt_percent_diff(d_core, v_idb),
+                "Diff vs MS+": _fmt_percent_diff(d_wealth, v_idb),
+            })
 
     df = pd.DataFrame(rows)
     html = generate_html_email_table_dynamic(df, latest_date, table_type="summary")
@@ -765,6 +814,15 @@ def generate_detailed_peer_table(
     html += "<th>Diff Vs All Peers</th></tr></thead><tbody>"
 
     for disp, code, fmt in metrics:
+        # Suppress flatlined metrics: check if all certs have zero/NaN for this metric
+        _all_vals = [
+            latest_data[latest_data["CERT"] == c].iloc[0].get(code, np.nan)
+            if not latest_data[latest_data["CERT"] == c].empty else np.nan
+            for c in ordered_certs
+        ]
+        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in _all_vals):
+            continue
+
         html += f'<tr><td class="metric-name"><b>{disp}</b></td>'
 
         subj_val = np.nan
@@ -780,7 +838,7 @@ def generate_detailed_peer_table(
             def fmt_val(v, fmt_type):
                 if pd.isna(v): return "N/A"
                 if fmt_type == "x": return f"{v:.2f}x"
-                if fmt_type == "B": return f"${v/1e9:.1f}B"
+                if fmt_type == "B": return f"${v/1e6:,.1f}B"
                 return f"{v*100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
 
             cls = ""
@@ -789,20 +847,25 @@ def generate_detailed_peer_table(
 
             html += f"<td {cls}>{fmt_val(val, fmt)}</td>"
 
-        # Diff vs All Peers Logic
+        # Diff vs All Peers Logic (percentage-point delta, NOT relative %)
         diff = subj_val - avg_val if pd.notna(subj_val) and pd.notna(avg_val) else np.nan
         if pd.isna(diff):
             f_diff = "N/A"
             diff_cls = "neutral-trend"
         else:
-            if fmt == "%": f_diff = f"{diff*100:+.2f}%" if abs(diff) < 1.0 else f"{diff:+.2f}%"
+            # Use subj_val to determine scale: decimal (<1.0) vs pct-point (>=1.0)
+            if fmt == "%":
+                scale = 100.0 if pd.notna(subj_val) and abs(float(subj_val)) < 1.0 else 1.0
+                f_diff = f"{diff * scale:+.2f}%"
             elif fmt == "x": f_diff = f"{diff:+.2f}x"
-            else: f_diff = f"{diff/1e9:+.1f}B"
+            else: f_diff = f"{diff/1e6:+.1f}B"
 
             is_risk = any(k in disp for k in ['Nonaccrual', 'NCO', 'Delinq', 'Risk'])
             is_safe = any(k in disp for k in ['Coverage', 'Ratio', 'Equity', 'ROA', 'ROE', 'Yield', 'Margin'])
 
-            if abs(diff) < 0.001: diff_cls = "neutral-trend"
+            # Use scaled diff for threshold comparison
+            scaled_diff = abs(diff * scale) if fmt == "%" else abs(diff)
+            if scaled_diff < 0.01: diff_cls = "neutral-trend"
             elif is_risk: diff_cls = "bad-trend" if diff > 0 else "good-trend"
             elif is_safe: diff_cls = "good-trend" if diff > 0 else "bad-trend"
             else: diff_cls = "neutral-trend"
@@ -887,19 +950,46 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
     except IndexError:
         return None
 
+    # Pre-compute synthetic columns that don't exist in the upstream DataFrame
+    # but are needed for the ratio components numerator/denominator display.
+    def _synth(row):
+        """Add computed intermediates to a Series for display purposes."""
+        r = row.copy()
+        # Risk-Adj denominator (Gross Loans minus SBL)
+        gl = r.get('Gross_Loans', r.get('LNLS', np.nan))
+        sbl = r.get('SBL_Balance', 0) if pd.notna(r.get('SBL_Balance', np.nan)) else 0
+        r['_Risk_Adj_Gross_Loans'] = (gl - sbl) if pd.notna(gl) else np.nan
+        # Norm Risk-Adj denominator
+        ngl = r.get('Norm_Gross_Loans', np.nan)
+        r['_Norm_Risk_Adj_Gross_Loans'] = (ngl - sbl) if pd.notna(ngl) else np.nan
+        # Total Past Due (TopHouse PD30 + PD90)
+        pd30 = r.get('TopHouse_PD30', r.get('P3LNLS', 0))
+        pd90 = r.get('TopHouse_PD90', r.get('P9LNLS', 0))
+        pd30 = pd30 if pd.notna(pd30) else 0
+        pd90 = pd90 if pd.notna(pd90) else 0
+        r['_Total_Past_Due'] = pd30 + pd90
+        # CRE delinquency numerator
+        r['_RIC_CRE_Delinq'] = (r.get('RIC_CRE_PD30', 0) or 0) + (r.get('RIC_CRE_PD90', 0) or 0)
+        # Resi delinquency numerator
+        r['_RIC_Resi_Delinq'] = (r.get('RIC_Resi_PD30', 0) or 0) + (r.get('RIC_Resi_PD90', 0) or 0)
+        return r
+
+    subj = _synth(subj)
+    peer = _synth(peer)
+
     if is_normalized:
         title = "Ratio Components Analysis (Normalized)"
         metrics = [
-            ("Norm NCO Rate", "Total NCO", "Total_NCO", "Gross Loans", "Norm_Gross_Loans", "Norm_NCO_Rate"),
-            ("Norm Nonaccrual Rate", "Total Nonaccrual", "Nonaccrual_Total", "Gross Loans", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
-            ("Norm ACL Ratio", "ACL Balance", "Norm_ACL_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_ACL_Coverage"),
-            ("Norm Risk-Adj ACL", "ACL Balance", "Norm_ACL_Balance", "Gross Loans - SBL Balance", "Norm_Risk_Adj_Gross_Loans", "Norm_Risk_Adj_Allowance_Coverage"),
-            ("Norm Delinquency Rate", "PD30 + PD90", "Total_Past_Due", "Gross Loans", "Norm_Gross_Loans", "Norm_Delinquency_Rate"),
-            ("Norm SBL %", "SBL Balance", "SBL_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_SBL_Composition"),
-            ("Norm Resi %", "Resi Bal.", "RIC_Resi_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_Resi_Composition"),
-            ("Norm CRE % (Ex-ADC)", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Gross Loans", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
-            ("Norm CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
-            ("Norm Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "ACL Balance", "Norm_ACL_Balance", "Norm_Resi_ACL_Share"),
+            ("Norm NCO Rate", "Norm Total NCO", "Norm_Total_NCO", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_NCO_Rate"),
+            ("Norm Nonaccrual Rate", "Norm Total Nonaccrual", "Norm_Total_Nonaccrual", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
+            ("Norm ACL Ratio", "ACL Balance", "Norm_ACL_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_ACL_Coverage"),
+            ("Norm Risk-Adj ACL", "ACL Balance", "Norm_ACL_Balance", "Norm Loans - SBL", "_Norm_Risk_Adj_Gross_Loans", "Norm_Risk_Adj_Allowance_Coverage"),
+            ("Norm Delinquency Rate", "PD30 + PD90", "_Total_Past_Due", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Delinquency_Rate"),
+            ("Norm SBL %", "SBL Balance", "SBL_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_SBL_Composition"),
+            ("Norm Resi %", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Wealth_Resi_Composition"),
+            ("Norm CRE % (Ex-ADC)", "CRE Inv. Pure Bal.", "CRE_Investment_Pure_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
+            ("Norm CRE ACL Share", "CRE ACL", "RIC_CRE_ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
+            ("Norm Resi ACL Share", "Resi ACL", "RIC_Resi_ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm_Resi_ACL_Share"),
             ("Excluded % of Total", "Excluded Balance", "Excluded_Balance", "Gross Loans", "LNLS", "Norm_Exclusion_Pct")
         ]
         footnote = "<p><b>Normalized Metrics:</b> Exclude C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag loans.</p>"
@@ -907,26 +997,26 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
         title = "Ratio Components Analysis (Standard)"
         metrics = [
             ("NCO Rate (TTM)", "Total NCO TTM", "Total_NCO_TTM", "Gross Loans", "LNLS", "TTM_NCO_Rate"),
-            ("Nonaccrual Rate", "Total Nonaccrual", "Nonaccrual_Total", "Gross Loans", "LNLS", "Nonaccrual_to_Gross_Loans_Rate"),
+            ("Nonaccrual Rate", "Total Nonaccrual", "Total_Nonaccrual", "Gross Loans", "LNLS", "Nonaccrual_to_Gross_Loans_Rate"),
             ("Headline ACL Ratio", "Total ACL", "Total_ACL", "Gross Loans", "LNLS", "Allowance_to_Gross_Loans_Rate"),
-            ("Risk-Adj ACL Ratio", "Total ACL", "Total_ACL", "Gross Loans - SBL Balance", "Risk_Adj_Gross_Loans", "Risk_Adj_Allowance_Coverage"),
-            ("Delinquency Rate (30+)", "TopHouse PD30 + TopHouse PD90", "Total_Past_Due", "Gross Loans", "LNLS", "TTM_Past_Due_Rate"),
+            ("Risk-Adj ACL Ratio", "Total ACL", "Total_ACL", "Loans - SBL", "_Risk_Adj_Gross_Loans", "Risk_Adj_Allowance_Coverage"),
+            ("Delinquency Rate (30+)", "PD30 + PD90", "_Total_Past_Due", "Gross Loans", "LNLS", "TTM_Past_Due_Rate"),
             ("SBL % of Loans", "SBL Balance", "SBL_Balance", "Gross Loans", "LNLS", "SBL_Composition"),
-            ("Resi % of Loans", "Resi Bal.", "RIC_Resi_Balance", "Gross Loans", "LNLS", "RIC_Resi_Loan_Share"),
-            ("CRE % of Loans", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Gross Loans", "LNLS", "RIC_CRE_Loan_Share"),
-            ("Fund Finance %", "Fund Finance Balance", "Fund_Finance_Balance", "Gross Loans", "LNLS", "RIC_Fund_Finance_Loan_Share"),
+            ("Resi % of Loans", "Resi Cost Basis", "RIC_Resi_Cost", "Gross Loans", "LNLS", "RIC_Resi_Loan_Share"),
+            ("CRE % of Loans", "CRE Inv. Pure Bal.", "CRE_Investment_Pure_Balance", "Gross Loans", "LNLS", "RIC_CRE_Loan_Share"),
+            ("Fund Finance %", "Fund Finance Bal.", "Fund_Finance_Balance", "Gross Loans", "LNLS", "Fund_Finance_Composition"),
             ("CRE % of ACL", "CRE ACL", "RIC_CRE_ACL", "Total ACL", "Total_ACL", "RIC_CRE_ACL_Share"),
-            ("CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_ACL_Coverage"),
+            ("CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "CRE Cost Basis", "RIC_CRE_Cost", "RIC_CRE_ACL_Coverage"),
             ("CRE NPL Coverage", "CRE ACL", "RIC_CRE_ACL", "CRE Nonaccrual", "RIC_CRE_Nonaccrual", "RIC_CRE_Risk_Adj_Coverage"),
-            ("CRE Nonaccrual Rate", "CRE Nonaccrual", "RIC_CRE_Nonaccrual", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_Nonaccrual_Rate"),
-            ("CRE NCO Rate", "CRE NCO TTM", "RIC_CRE_NCO", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_NCO_Rate"),
-            ("CRE Delinquency Rate", "CRE PD30 + CRE PD90", "RIC_CRE_Delinq", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "RIC_CRE_Delinquency_Rate"),
+            ("CRE Nonaccrual Rate", "CRE Nonaccrual", "RIC_CRE_Nonaccrual", "CRE Cost Basis", "RIC_CRE_Cost", "RIC_CRE_Nonaccrual_Rate"),
+            ("CRE NCO Rate", "CRE NCO TTM", "RIC_CRE_NCO_TTM", "CRE Cost Basis", "RIC_CRE_Cost", "RIC_CRE_NCO_Rate"),
+            ("CRE Delinquency Rate", "CRE PD30 + PD90", "_RIC_CRE_Delinq", "CRE Cost Basis", "RIC_CRE_Cost", "RIC_CRE_Delinquency_Rate"),
             ("Resi % of ACL", "Resi ACL", "RIC_Resi_ACL", "Total ACL", "Total_ACL", "RIC_Resi_ACL_Share"),
-            ("Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_ACL_Coverage"),
+            ("Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "Resi Cost Basis", "RIC_Resi_Cost", "RIC_Resi_ACL_Coverage"),
             ("Resi NPL Coverage", "Resi ACL", "RIC_Resi_ACL", "Resi Nonaccrual", "RIC_Resi_Nonaccrual", "RIC_Resi_Risk_Adj_Coverage"),
-            ("Resi Nonaccrual Rate", "Resi Nonaccrual", "RIC_Resi_Nonaccrual", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_Nonaccrual_Rate"),
-            ("Resi NCO Rate", "Resi NCO TTM", "RIC_Resi_NCO", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_NCO_Rate"),
-            ("Resi Delinquency Rate", "Resi PD30 + Resi PD90", "RIC_Resi_Delinq", "Resi Bal.", "RIC_Resi_Balance", "RIC_Resi_Delinquency_Rate")
+            ("Resi Nonaccrual Rate", "Resi Nonaccrual", "RIC_Resi_Nonaccrual", "Resi Cost Basis", "RIC_Resi_Cost", "RIC_Resi_Nonaccrual_Rate"),
+            ("Resi NCO Rate", "Resi NCO TTM", "RIC_Resi_NCO_TTM", "Resi Cost Basis", "RIC_Resi_Cost", "RIC_Resi_NCO_Rate"),
+            ("Resi Delinquency Rate", "Resi PD30 + PD90", "_RIC_Resi_Delinq", "Resi Cost Basis", "RIC_Resi_Cost", "RIC_Resi_Delinquency_Rate")
         ]
         footnote = "<p>Standard metrics based on Call Report totals.</p>"
 
@@ -959,8 +1049,12 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
         v_rat = subj.get(rat_col, np.nan)
         p_rat = peer.get(rat_col, np.nan)
 
-        f_num = "N/A" if pd.isna(v_num) else (f"${abs(v_num)/1e6:,.1f}M" if abs(v_num) >= 1000 else "$0K")
-        f_den = "N/A" if pd.isna(v_den) else (f"${abs(v_den)/1e6:,.1f}M" if abs(v_den) >= 1000 else "$0K")
+        # Suppress flatlined metrics: skip if both ratios are zero/NaN
+        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in [v_rat, p_rat]):
+            continue
+
+        f_num = "N/A" if pd.isna(v_num) else _fmt_money_billions(v_num)
+        f_den = "N/A" if pd.isna(v_den) else _fmt_money_billions(v_den)
         f_rat = f"{v_rat*100:.2f}%" if pd.notna(v_rat) and abs(v_rat) < 1.0 else (f"{v_rat:.2f}%" if pd.notna(v_rat) else "N/A")
         f_prat = f"{p_rat*100:.2f}%" if pd.notna(p_rat) and abs(p_rat) < 1.0 else (f"{p_rat:.2f}%" if pd.notna(p_rat) else "N/A")
 
@@ -1047,12 +1141,21 @@ def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
 
     for code, disp, fmt, higher_is_better in metrics:
         vals = {k: row_data[k].get(code, np.nan) for k in certs}
-        diff = vals["MSPBNA"] - vals["All Peers"] if pd.notna(vals["MSPBNA"]) and pd.notna(vals["All Peers"]) else np.nan
+
+        # Suppress flatlined metrics: skip if all entities show zero/NaN
+        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in vals.values()):
+            continue
+
+        subj_raw = vals["MSPBNA"]
+        diff = subj_raw - vals["All Peers"] if pd.notna(subj_raw) and pd.notna(vals["All Peers"]) else np.nan
+
+        # Determine scale from the subject value: decimal (<1.0) vs pct-point (>=1.0)
+        pct_scale = 100.0 if fmt == "%" and pd.notna(subj_raw) and abs(float(subj_raw)) < 1.0 else 1.0
 
         def fmt_val(v, fmt_type):
             if pd.isna(v): return "N/A"
             if fmt_type == "x": return f"{v:.2f}x"
-            if fmt_type == "B": return f"${v/1e9:.1f}B"
+            if fmt_type == "B": return f"${v/1e6:.1f}B"
             return f"{v*100:.2f}%" if abs(v) < 1.0 else f"{v:.2f}%"
 
         f_vals = {k: fmt_val(v, fmt) for k, v in vals.items()}
@@ -1060,11 +1163,11 @@ def generate_segment_focus_table(proc_df_with_peers: pd.DataFrame,
         if pd.isna(diff):
             f_diff = "N/A"
         else:
-            if fmt == "%": f_diff = f"{diff*100:+.2f}%" if abs(diff) < 1.0 else f"{diff:+.2f}%"
+            if fmt == "%": f_diff = f"{diff * pct_scale:+.2f}%"
             elif fmt == "x": f_diff = f"{diff:+.2f}x"
-            else: f_diff = f"{diff/1e9:+.1f}B"
+            else: f_diff = f"{diff/1e6:+.1f}B"
 
-        if pd.isna(diff) or abs(diff) < 0.0001:
+        if pd.isna(diff) or abs(diff * pct_scale if fmt == "%" else diff) < 0.01:
             subj_cls, diff_cls = "mspbna-neutral", "neutral-trend"
         else:
             is_good = (diff > 0) if higher_is_better else (diff < 0)
