@@ -705,6 +705,385 @@ def generate_flexible_html_table(
 
 
 # ==================================================================================
+# DETAILED / LEGACY HTML TABLE GENERATORS
+# ==================================================================================
+
+_TABLE_CSS = """
+<style>
+body{font-family:Arial,sans-serif;margin:20px;background:#f5f5f5}
+.tbl-container{background:#fff;padding:24px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1);max-width:1300px;margin:0 auto}
+.tbl-container h2{text-align:center;color:#2c3e50;margin:0 0 4px}
+.tbl-container p.sub{text-align:center;color:#7f8c8d;font-size:13px;margin:0 0 18px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#34495e;color:#fff;padding:10px 8px;text-align:center;border:1px solid #2c3e50}
+td{padding:8px;text-align:center;border:1px solid #bdc3c7}
+tr:nth-child(even){background:#f8f9fa}
+tr:hover{background:#e3f2fd}
+.metric-name{text-align:left!important;font-weight:500;color:#2c3e50}
+.mspbna-value{background:#fff3cd;font-weight:600;color:#856404}
+.mspbna-row{background:#fff3cd;font-weight:600}
+.good-trend{color:#388e3c;font-weight:600}
+.bad-trend{color:#d32f2f;font-weight:600}
+.neutral{color:#5d4037}
+</style>
+"""
+
+
+def _safe_val(row, col, default=np.nan):
+    """Safely retrieve a value from a Series, returning default if missing."""
+    if col in row.index:
+        return row[col]
+    return default
+
+
+def _trend_class(diff_val) -> str:
+    """Return CSS class for a numeric diff: negative is good (green), positive is bad (red)."""
+    if pd.isna(diff_val):
+        return "neutral"
+    try:
+        v = float(diff_val)
+        if v < -0.005:
+            return "good-trend"
+        elif v > 0.005:
+            return "bad-trend"
+        return "neutral"
+    except (ValueError, TypeError):
+        return "neutral"
+
+
+def generate_detailed_peer_table(
+    df: pd.DataFrame,
+    subject_cert: int,
+    peer_certs: Optional[Dict[int, str]] = None,
+) -> Optional[str]:
+    """
+    Wide HTML table showing all individual banks + peer-group averages side-by-side.
+    Each row is a metric; columns are MSPBNA then each peer group.
+    """
+    if peer_certs is None:
+        peer_certs = {90001: "Core PB", 90002: "MSPBNA+Wealth", 90003: "All Peers"}
+
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date]
+
+    subj = latest[latest["CERT"] == subject_cert]
+    if subj.empty:
+        print("  Skipped detailed peer table: no subject bank data")
+        return None
+    subj = subj.iloc[0]
+
+    peer_rows = {}
+    for cert, name in peer_certs.items():
+        pr = latest[latest["CERT"] == cert]
+        if not pr.empty:
+            peer_rows[name] = pr.iloc[0]
+
+    if not peer_rows:
+        print("  Skipped detailed peer table: no peer data")
+        return None
+
+    metrics = {
+        "ASSET": ("Total Assets", True),
+        "LNLS": ("Gross Loans", True),
+        "TTM_NCO_Rate": ("TTM NCO Rate", False),
+        "NPL_to_Gross_Loans_Rate": ("NPL to Gross Loans", False),
+        "Allowance_to_Gross_Loans_Rate": ("ALLL / Gross Loans", False),
+        "TTM_Past_Due_Rate": ("TTM Past Due Rate", False),
+        "TTM_PD30_Rate": ("Past Due 30-90 Days", False),
+        "TTM_PD90_Rate": ("Past Due >90 Days", False),
+        "CRE_Concentration_Capital_Risk": ("CRE Concentration Risk", False),
+        "CI_to_Capital_Risk": ("C&I to Capital Risk", False),
+        "Norm_NCO_Rate": ("Norm NCO Rate", False),
+        "Norm_Nonaccrual_Rate": ("Norm Nonaccrual Rate", False),
+    }
+
+    col_headers = ["MSPBNA"] + list(peer_rows.keys())
+    diff_headers = [f"Diff vs {n}" for n in peer_rows.keys()]
+
+    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
+<div class="tbl-container">
+<h2>Detailed Peer Analysis</h2>
+<p class="sub">MSPBNA vs Peer Groups | {latest_date.strftime('%B %d, %Y')}</p>
+<table><thead><tr><th>Credit Metric</th>"""
+    for h in col_headers:
+        html += f"<th>{h}</th>"
+    for h in diff_headers:
+        html += f"<th>{h}</th>"
+    html += "</tr></thead><tbody>\n"
+
+    for code, (display, is_money) in metrics.items():
+        if code not in subj.index:
+            continue
+        sv = _safe_val(subj, code)
+        fmt_s = _fmt_money_millions(sv) if is_money else _fmt_percent_auto(sv)
+        html += f'<tr><td class="metric-name">{display}</td><td class="mspbna-value">{fmt_s}</td>'
+
+        diffs = []
+        for name, pr in peer_rows.items():
+            pv = _safe_val(pr, code)
+            fmt_p = _fmt_money_millions(pv) if is_money else _fmt_percent_auto(pv)
+            html += f"<td>{fmt_p}</td>"
+            d = (sv - pv) if (not pd.isna(sv) and not pd.isna(pv)) else np.nan
+            if is_money:
+                diffs.append(("neutral", _fmt_money_millions_with_sign(d)))
+            else:
+                dc = _trend_class(d)
+                diffs.append((dc, _fmt_percent_auto(d)))
+        for cls, val in diffs:
+            html += f'<td class="{cls}">{val}</td>'
+        html += "</tr>\n"
+
+    html += "</tbody></table></div></body></html>"
+    return html
+
+
+def generate_normalized_comparison_table(
+    df: pd.DataFrame,
+    subject_cert: int,
+) -> Optional[str]:
+    """
+    Side-by-side table comparing Standard vs Normalized metrics for the subject bank
+    and the All Peers composite.
+    """
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date]
+
+    subj = latest[latest["CERT"] == subject_cert]
+    if subj.empty:
+        print("  Skipped normalized comparison table: no subject bank data")
+        return None
+    subj = subj.iloc[0]
+
+    # All Peers standard (90003) and normalized (90006)
+    peer_std = latest[latest["CERT"] == 90003]
+    peer_norm = latest[latest["CERT"] == 90006]
+    peer_std = peer_std.iloc[0] if not peer_std.empty else None
+    peer_norm = peer_norm.iloc[0] if not peer_norm.empty else None
+
+    pairs = [
+        ("NCO Rate", "TTM_NCO_Rate", "Norm_NCO_Rate"),
+        ("Nonaccrual / NPL Rate", "NPL_to_Gross_Loans_Rate", "Norm_Nonaccrual_Rate"),
+        ("Past Due Rate", "TTM_Past_Due_Rate", "Norm_Past_Due_Rate"),
+        ("ALLL / Gross Loans", "Allowance_to_Gross_Loans_Rate", "Norm_Allowance_Rate"),
+    ]
+
+    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
+<div class="tbl-container">
+<h2>Standard vs Normalized Metrics</h2>
+<p class="sub">Side-by-Side Comparison | {latest_date.strftime('%B %d, %Y')}</p>
+<table><thead>
+<tr><th rowspan="2">Metric</th>
+<th colspan="2" style="background:#2980b9">MSPBNA</th>
+<th colspan="2" style="background:#27ae60">All Peers</th></tr>
+<tr><th>Standard</th><th>Normalized</th><th>Standard</th><th>Normalized</th></tr>
+</thead><tbody>\n"""
+
+    for display, std_col, norm_col in pairs:
+        sv_std = _safe_val(subj, std_col)
+        sv_norm = _safe_val(subj, norm_col)
+        pv_std = _safe_val(peer_std, std_col) if peer_std is not None else np.nan
+        pv_norm = _safe_val(peer_norm, norm_col) if peer_norm is not None else np.nan
+
+        # Skip row if neither standard nor normalized column exists in the data
+        if std_col not in subj.index and norm_col not in subj.index:
+            continue
+
+        html += f'<tr><td class="metric-name">{display}</td>'
+        html += f'<td class="mspbna-value">{_fmt_percent_auto(sv_std)}</td>'
+        html += f'<td class="mspbna-value">{_fmt_percent_auto(sv_norm)}</td>'
+        html += f"<td>{_fmt_percent_auto(pv_std)}</td>"
+        html += f"<td>{_fmt_percent_auto(pv_norm)}</td></tr>\n"
+
+    html += "</tbody></table></div></body></html>"
+    return html
+
+
+def generate_ratio_components_table(
+    df: pd.DataFrame,
+    subject_cert: int,
+    is_normalized: bool = False,
+    peer_cert: int = 90003,
+) -> Optional[str]:
+    """
+    Recreates the legacy 'Ratio Components' table showing numerator/denominator
+    breakdowns for key credit ratios.
+    """
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date]
+
+    subj = latest[latest["CERT"] == subject_cert]
+    peer = latest[latest["CERT"] == (90006 if is_normalized else peer_cert)]
+    if subj.empty:
+        print(f"  Skipped ratio components ({'Norm' if is_normalized else 'Std'}): no subject data")
+        return None
+    subj = subj.iloc[0]
+    peer = peer.iloc[0] if not peer.empty else None
+
+    if is_normalized:
+        ratios = [
+            ("Norm NCO Rate", "Norm_NCO_TTM", "Norm_Gross_Loans", "Norm_NCO_Rate"),
+            ("Norm Nonaccrual Rate", "Norm_Nonaccrual_Bal", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
+            ("Norm Allowance Rate", "Norm_ALLL", "Norm_Gross_Loans", "Norm_Allowance_Rate"),
+            ("Norm Past Due Rate", "Norm_PastDue_TTM", "Norm_Gross_Loans", "Norm_Past_Due_Rate"),
+        ]
+    else:
+        ratios = [
+            ("TTM NCO Rate", "NTLNLS_TTM", "LNLS", "TTM_NCO_Rate"),
+            ("NPL to Gross Loans", "NPL_Total", "LNLS", "NPL_to_Gross_Loans_Rate"),
+            ("ALLL / Gross Loans", "ALLL", "LNLS", "Allowance_to_Gross_Loans_Rate"),
+            ("TTM Past Due Rate", "PastDue_TTM", "LNLS", "TTM_Past_Due_Rate"),
+            ("Resi NCO Rate", "RIC_Resi_NCO_TTM", "RIC_Resi_Bal", "RIC_Resi_NCO_Rate"),
+            ("CRE NCO Rate", "RIC_CRE_NCO_TTM", "RIC_CRE_Bal", "RIC_CRE_NCO_Rate"),
+            ("C&I NCO Rate", "RIC_Comm_NCO_TTM", "RIC_Comm_Bal", "RIC_Comm_NCO_Rate"),
+        ]
+
+    label = "Normalized" if is_normalized else "Standard"
+    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
+<div class="tbl-container">
+<h2>Ratio Components — {label}</h2>
+<p class="sub">Numerator / Denominator Breakdown | {latest_date.strftime('%B %d, %Y')}</p>
+<table><thead><tr>
+<th>Ratio Name</th><th>Formula (Num)</th><th>Value (Num)</th>
+<th>Formula (Denom)</th><th>Value (Denom)</th>
+<th>Subject Ratio</th><th>Peer Ratio</th>
+</tr></thead><tbody>\n"""
+
+    for rname, num_col, den_col, ratio_col in ratios:
+        # Skip entirely if neither numerator nor ratio column exists
+        if num_col not in subj.index and ratio_col not in subj.index:
+            continue
+
+        sv_num = _safe_val(subj, num_col)
+        sv_den = _safe_val(subj, den_col)
+        sv_ratio = _safe_val(subj, ratio_col)
+        pv_ratio = _safe_val(peer, ratio_col) if peer is not None else np.nan
+
+        fmt_num = _fmt_money_millions(sv_num) if not pd.isna(sv_num) else "N/A"
+        fmt_den = _fmt_money_millions(sv_den) if not pd.isna(sv_den) else "N/A"
+
+        html += f'<tr><td class="metric-name">{rname}</td>'
+        html += f"<td>{num_col}</td><td>{fmt_num}</td>"
+        html += f"<td>{den_col}</td><td>{fmt_den}</td>"
+        html += f'<td class="mspbna-value">{_fmt_percent_auto(sv_ratio)}</td>'
+        html += f"<td>{_fmt_percent_auto(pv_ratio)}</td></tr>\n"
+
+    html += "</tbody></table></div></body></html>"
+    return html
+
+
+def generate_segment_focus_table(
+    df: pd.DataFrame,
+    subject_cert: int,
+    segment_name: str,
+    msbna_cert: Optional[int] = None,
+) -> Optional[str]:
+    """
+    Recreates the legacy 'Segment Focus' table (e.g., CRE Segment, Resi Segment).
+    Shows only metrics relevant to the given segment, with columns for
+    MSPBNA, MSBNA (optional), Core PB, and All Peers, plus a Trend column.
+    """
+    segment_metrics = {
+        "CRE": {
+            "RIC_CRE_Nonaccrual_Rate": "CRE Nonaccrual Rate",
+            "RIC_CRE_NCO_Rate": "CRE NCO Rate",
+            "RIC_CRE_PastDue_Rate": "CRE Past Due Rate",
+            "RIC_CRE_ACL_Share": "CRE Share of ACL",
+            "RIC_CRE_Loan_Share": "CRE Share of Loans",
+            "CRE_Concentration_Capital_Risk": "CRE Concentration Risk",
+            "MSPBNA_CRE_Growth_TTM": "CRE Growth TTM",
+            "MSPBNA_CRE_Growth_36M": "CRE Growth 36M",
+            "RIC_CRE_Years_of_Reserves": "CRE Years of Reserves",
+        },
+        "Resi": {
+            "RIC_Resi_Nonaccrual_Rate": "Resi Nonaccrual Rate",
+            "RIC_Resi_NCO_Rate": "Resi NCO Rate",
+            "RIC_Resi_PastDue_Rate": "Resi Past Due Rate",
+            "RIC_Resi_ACL_Share": "Resi Share of ACL",
+            "RIC_Resi_Loan_Share": "Resi Share of Loans",
+            "RIC_Resi_Years_of_Reserves": "Resi Years of Reserves",
+        },
+    }
+
+    metrics = segment_metrics.get(segment_name, {})
+    if not metrics:
+        print(f"  Skipped segment table: unknown segment '{segment_name}'")
+        return None
+
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date]
+
+    subj = latest[latest["CERT"] == subject_cert]
+    if subj.empty:
+        print(f"  Skipped {segment_name} segment table: no subject data")
+        return None
+    subj = subj.iloc[0]
+
+    # Check if there's a prior quarter for trend calc
+    dates_sorted = sorted(df["REPDTE"].dropna().unique())
+    prior_date = dates_sorted[-2] if len(dates_sorted) >= 2 else None
+    subj_prior = None
+    if prior_date is not None:
+        sp = df[(df["CERT"] == subject_cert) & (df["REPDTE"] == prior_date)]
+        if not sp.empty:
+            subj_prior = sp.iloc[0]
+
+    # Load MSBNA cert from env if not passed
+    if msbna_cert is None:
+        msbna_cert = int(os.getenv("MSBNA_CERT", "0"))
+
+    entity_map = {"MSPBNA": subject_cert}
+    if msbna_cert and msbna_cert != subject_cert:
+        entity_map["MSBNA"] = msbna_cert
+    entity_map["Core PB"] = 90001
+    entity_map["All Peers"] = 90003
+
+    entity_rows = {}
+    for name, cert in entity_map.items():
+        r = latest[latest["CERT"] == cert]
+        if not r.empty:
+            entity_rows[name] = r.iloc[0]
+
+    # Filter to metrics actually present in data
+    available_metrics = {k: v for k, v in metrics.items() if k in subj.index}
+    if not available_metrics:
+        print(f"  Skipped {segment_name} segment table: no matching columns in data")
+        return None
+
+    col_names = list(entity_rows.keys())
+    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
+<div class="tbl-container">
+<h2>{segment_name} Segment Focus</h2>
+<p class="sub">Segment-Level Credit Metrics | {latest_date.strftime('%B %d, %Y')}</p>
+<table><thead><tr><th>Metric</th>"""
+    for cn in col_names:
+        html += f"<th>{cn}</th>"
+    html += "<th>Trend (QoQ)</th></tr></thead><tbody>\n"
+
+    for code, display in available_metrics.items():
+        html += f'<tr><td class="metric-name">{display}</td>'
+        for cn in col_names:
+            er = entity_rows.get(cn)
+            v = _safe_val(er, code) if er is not None else np.nan
+            cls = "mspbna-value" if cn == "MSPBNA" else ""
+            html += f'<td class="{cls}">{_fmt_percent_auto(v)}</td>'
+
+        # Trend: compare subject current vs prior quarter
+        curr_v = _safe_val(subj, code)
+        prev_v = _safe_val(subj_prior, code) if subj_prior is not None else np.nan
+        if not pd.isna(curr_v) and not pd.isna(prev_v):
+            diff = float(curr_v) - float(prev_v)
+            tcls = _trend_class(diff)
+            arrow = "+" if diff > 0 else ""
+            html += f'<td class="{tcls}">{arrow}{diff:.2f}%</td>'
+        else:
+            html += '<td class="neutral">N/A</td>'
+        html += "</tr>\n"
+
+    html += "</tbody></table></div></body></html>"
+    return html
+
+
+# ==================================================================================
 # MAIN REPORT GENERATION FUNCTION
 # ==================================================================================
 
@@ -1105,6 +1484,69 @@ def generate_reports(
             print(f"  FRED macro table saved: {fred_path}")
         except Exception as e:
             print(f"  Skipped FRED table: {e}")
+
+        # ------------------------------------------------------------------
+        # DETAILED / LEGACY HTML TABLES -> tables_dir
+        # ------------------------------------------------------------------
+        print("\n" + "-" * 60)
+        print("GENERATING DETAILED HTML TABLES")
+        print("-" * 60)
+
+        # 1. Detailed Peer Analysis (Wide)
+        detail_html = generate_detailed_peer_table(proc_df_with_peers, subject_bank_cert)
+        if detail_html:
+            dp = tables_dir / f"{base}_detailed_peer_table_{stamp}.html"
+            with open(dp, "w", encoding="utf-8") as f:
+                f.write(detail_html)
+            print(f"  Detailed peer table saved: {dp}")
+
+        # 2. Normalized Comparison (Side-by-side)
+        normcmp_html = generate_normalized_comparison_table(proc_df_with_peers, subject_bank_cert)
+        if normcmp_html:
+            nc = tables_dir / f"{base}_normalized_comparison_{stamp}.html"
+            with open(nc, "w", encoding="utf-8") as f:
+                f.write(normcmp_html)
+            print(f"  Normalized comparison table saved: {nc}")
+
+        # 3. Ratio Components (Standard)
+        rc_std_html = generate_ratio_components_table(
+            proc_df_with_peers, subject_bank_cert, is_normalized=False
+        )
+        if rc_std_html:
+            rcs = tables_dir / f"{base}_ratio_components_standard_{stamp}.html"
+            with open(rcs, "w", encoding="utf-8") as f:
+                f.write(rc_std_html)
+            print(f"  Ratio components (standard) saved: {rcs}")
+
+        # 4. Ratio Components (Normalized)
+        rc_norm_html = generate_ratio_components_table(
+            proc_df_with_peers, subject_bank_cert, is_normalized=True
+        )
+        if rc_norm_html:
+            rcn = tables_dir / f"{base}_ratio_components_normalized_{stamp}.html"
+            with open(rcn, "w", encoding="utf-8") as f:
+                f.write(rc_norm_html)
+            print(f"  Ratio components (normalized) saved: {rcn}")
+
+        # 5. CRE Segment Focus
+        cre_html = generate_segment_focus_table(
+            proc_df_with_peers, subject_bank_cert, segment_name="CRE"
+        )
+        if cre_html:
+            crp = tables_dir / f"{base}_segment_CRE_{stamp}.html"
+            with open(crp, "w", encoding="utf-8") as f:
+                f.write(cre_html)
+            print(f"  CRE segment table saved: {crp}")
+
+        # 6. Resi Segment Focus
+        resi_html = generate_segment_focus_table(
+            proc_df_with_peers, subject_bank_cert, segment_name="Resi"
+        )
+        if resi_html:
+            rsp = tables_dir / f"{base}_segment_Resi_{stamp}.html"
+            with open(rsp, "w", encoding="utf-8") as f:
+                f.write(resi_html)
+            print(f"  Resi segment table saved: {rsp}")
 
         # ------------------------------------------------------------------
         # SEGMENT-LEVEL CHARTS -> charts_dir
