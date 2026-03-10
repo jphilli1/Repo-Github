@@ -34,6 +34,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def is_zip_enrichment_enabled() -> bool:
+    """Check whether Case-Shiller ZIP enrichment is enabled via env flag."""
+    val = os.getenv("ENABLE_CASE_SHILLER_ZIP_ENRICHMENT", "true").strip().lower()
+    return val in {"1", "true", "yes", "y"}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CASE-SHILLER METRO → CBSA / CBSA-DIV MAPPING TABLE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -653,6 +659,19 @@ def build_case_shiller_zip_sheets(
     If the HUD token is missing or fetches fail, returns dict with empty DataFrames
     and logs appropriate warnings.
     """
+    # --- ENV TOGGLE CHECK ---
+    if not is_zip_enrichment_enabled():
+        logger.info("Case-Shiller ZIP enrichment disabled by env flag.")
+        metro_map_df = build_case_shiller_metro_map()
+        audit_df = metro_map_df.copy()
+        audit_df["included_in_zip_output"] = False
+        audit_df["comments"] = audit_df["comments"].astype(str) + " | SKIPPED: disabled by env flag"
+        return {
+            "CaseShiller_Zip_Coverage": pd.DataFrame(),
+            "CaseShiller_Zip_Summary": pd.DataFrame(),
+            "CaseShiller_Metro_Map_Audit": audit_df,
+        }
+
     tok = token or _get_hud_token()
 
     # Config from env
@@ -764,15 +783,12 @@ if __name__ == "__main__":
                 df.to_excel(writer, sheet_name=name[:31], index=False)
     print(f"\nWritten to: {out_path}")
 
-import os
-import logging
-from typing import Dict, List, Optional, Tuple
 
-import pandas as pd
+# ═══════════════════════════════════════════════════════════════════════════
+# BACKWARD-COMPATIBLE HELPERS (ZIP-prefix based metro lookup)
+# ═══════════════════════════════════════════════════════════════════════════
 
-logger = logging.getLogger(__name__)
-
-# The 20 Case-Shiller regional metros
+# The 20 Case-Shiller regional metros with ZIP-prefix mapping
 CASE_SHILLER_METROS = {
     "Atlanta": {"prefix": ["300", "301", "302", "303"]},
     "Boston": {"prefix": ["020", "021", "022", "023", "024"]},
@@ -797,12 +813,6 @@ CASE_SHILLER_METROS = {
 }
 
 
-def is_zip_enrichment_enabled() -> bool:
-    """Check whether Case-Shiller ZIP enrichment is enabled via env flag."""
-    val = os.getenv("ENABLE_CASE_SHILLER_ZIP_ENRICHMENT", "true").strip().lower()
-    return val in {"1", "true", "yes", "y"}
-
-
 def map_zip_to_metro(zip_code: str) -> Optional[str]:
     """Map a 5-character ZIP code to a Case-Shiller metro name, or None."""
     if not zip_code or len(str(zip_code)) < 3:
@@ -812,85 +822,4 @@ def map_zip_to_metro(zip_code: str) -> Optional[str]:
         if prefix in info["prefix"]:
             return metro
     return None
-
-
-def build_case_shiller_zip_sheets(
-    zip_df: Optional[pd.DataFrame] = None,
-    fred_cs_df: Optional[pd.DataFrame] = None,
-) -> Dict[str, pd.DataFrame]:
-    """Build Case-Shiller ZIP enrichment sheets.
-
-    Parameters
-    ----------
-    zip_df : DataFrame with at minimum a 'ZIP' column (5-char strings)
-    fred_cs_df : DataFrame of Case-Shiller FRED time-series (optional)
-
-    Returns
-    -------
-    Dict of sheet_name -> DataFrame. Empty dict if disabled or no data.
-    """
-    result: Dict[str, pd.DataFrame] = {}
-    audit_comments = []
-
-    if not is_zip_enrichment_enabled():
-        audit_comments.append("SKIPPED: disabled by env flag ENABLE_CASE_SHILLER_ZIP_ENRICHMENT")
-        logger.info("Case-Shiller ZIP enrichment disabled by env flag.")
-        # Return empty audit sheet noting skip
-        result["CaseShiller_Metro_Map_Audit"] = pd.DataFrame(
-            [{"status": "SKIPPED", "reason": "disabled by env flag"}]
-        )
-        return result
-
-    if zip_df is None or zip_df.empty:
-        logger.info("No ZIP data provided for Case-Shiller enrichment.")
-        return result
-
-    # Ensure ZIP is 5-character string
-    zip_df = zip_df.copy()
-    zip_df['ZIP'] = zip_df['ZIP'].astype(str).str.zfill(5)
-
-    # Map ZIPs to metros
-    zip_df['CS_Metro'] = zip_df['ZIP'].apply(map_zip_to_metro)
-
-    # Coverage: which ZIPs mapped, which didn't
-    mapped = zip_df[zip_df['CS_Metro'].notna()]
-    unmapped = zip_df[zip_df['CS_Metro'].isna()]
-
-    coverage_rows = []
-    for metro in sorted(CASE_SHILLER_METROS.keys()):
-        metro_zips = mapped[mapped['CS_Metro'] == metro]
-        coverage_rows.append({
-            'Metro': metro,
-            'ZIP_Count': len(metro_zips),
-            'ZIPs': ', '.join(sorted(metro_zips['ZIP'].unique())) if not metro_zips.empty else '',
-        })
-
-    result["CaseShiller_Zip_Coverage"] = pd.DataFrame(coverage_rows)
-
-    # Summary
-    summary = pd.DataFrame([{
-        'total_zips': len(zip_df),
-        'mapped_zips': len(mapped),
-        'unmapped_zips': len(unmapped),
-        'zip_count': len(mapped['ZIP'].unique()),
-        'metros_covered': mapped['CS_Metro'].nunique(),
-        'metros_total': len(CASE_SHILLER_METROS),
-    }])
-    result["CaseShiller_Zip_Summary"] = summary
-
-    # Audit
-    audit_rows = []
-    for metro, info in sorted(CASE_SHILLER_METROS.items()):
-        audit_rows.append({
-            'metro': metro,
-            'prefix_count': len(info['prefix']),
-            'prefixes': ', '.join(info['prefix']),
-        })
-    result["CaseShiller_Metro_Map_Audit"] = pd.DataFrame(audit_rows)
-
-    logger.info(
-        "Case-Shiller ZIP enrichment: %d/%d ZIPs mapped to %d metros.",
-        len(mapped), len(zip_df), mapped['CS_Metro'].nunique()
-    )
-    return result
 

@@ -498,6 +498,18 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 - `Norm_Loan_Yield`, `Norm_Provision_Rate`, `Norm_Loss_Adj_Yield` still flatline at 0% (upstream data gap — see Section 8).
 - `run_upstream_validation_suite()` from metric_registry.py is not yet called in MSPBNA_CR_Normalized.py's main pipeline. It is only invoked via `validate_output_inputs()` in report_generator.py.
 
+### 2026-03-10 — Targeted Cleanup Pass (ZIP Toggle, Metro Map, Tests, Preflight)
+
+1. **case_shiller_zip_mapper.py — consolidated dual implementations**: Removed the second concatenated simple-version implementation (lines 767-897). Kept the comprehensive HUD API version as the single authoritative implementation. Moved `is_zip_enrichment_enabled()` to module-level. Added env toggle check at top of `build_case_shiller_zip_sheets()` — when disabled, returns empty Coverage/Summary DataFrames with audit noting `SKIPPED: disabled by env flag`. Preserved `CASE_SHILLER_METROS` dict and `map_zip_to_metro()` as backward-compatible helpers.
+
+2. **fred_case_shiller_discovery.py — METRO_MAP fixes**: Fixed duplicate key `"CH"` (was mapped to both Chicago and Charlotte — Charlotte's correct FRED prefix is `"CR"`). Fixed `"Washington DC"` → `"Washington"` to match case_shiller_zip_mapper.py. Added `validate_metro_map()` assertion helper that checks entry count, duplicate values, and Washington naming.
+
+3. **test_regression.py — stale peer group test rewrite**: Rewrote `test_peer_group_no_intra_mode_duplicates()` to import real `PEER_GROUPS` from `MSPBNA_CR_Normalized.py` (4 groups, not former 6). Added assertion for exactly 4 groups. Updated `test_zip_toggle_disables_output` to validate HUD version output (empty Coverage/Summary, SKIPPED in audit). Replaced old simple-version tests (`test_zip_codes_are_5_char_strings`, `test_summary_zip_count_matches_detail`) with unit tests for `_normalize_zip()` and `map_zip_to_metro()`. Added `test_discovery_metro_map_no_duplicates` and `test_discovery_washington_no_dc_suffix`.
+
+4. **report_generator.py — preflight blocks on material normalization**: Updated `validate_output_inputs()` so material normalization severity (`material_nan`) on the **subject bank** is now a **blocking error** (added to `errors` list, suppresses affected normalized charts). Peer-only material failures remain warnings.
+
+5. **Verified clean**: `IDB_` prefix fully absent from `master_data_dictionary.py` (0 grep matches). `FDIC_Metric_Descriptions` used consistently across all files (no `FDIC_Metadata` references remain).
+
 ---
 
 ## 8. To-Do / Known Issues

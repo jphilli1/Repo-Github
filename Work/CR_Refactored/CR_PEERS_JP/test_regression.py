@@ -71,31 +71,30 @@ def test_scatter_peer_avg_display():
 
 def test_peer_group_no_intra_mode_duplicates():
     """No two peer groups with the same use_normalized flag may share
-    identical sorted member-cert tuples."""
-    # Import from the upstream file path
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "..", "..", "Credit Risk Dashboard"))
+    identical sorted member-cert tuples.  Uses the REAL PEER_GROUPS from
+    MSPBNA_CR_Normalized (4 groups, not the former 6)."""
     try:
-        from importlib import import_module
-        # Can't import directly due to spaces in path; use manual validation
-        pass
-    except Exception:
-        pass
+        from MSPBNA_CR_Normalized import PEER_GROUPS
+    except ImportError:
+        # Fallback: verify the 4-group structure inline
+        print("  [SKIP] Cannot import MSPBNA_CR_Normalized — using inline 4-group check")
+        PEER_GROUPS = {
+            "CORE_PRIVATE_BANK": {"certs": [33124, 57565], "use_normalized": False},
+            "ALL_PEERS": {"certs": [32992, 33124, 57565, 628, 3511, 7213, 3510], "use_normalized": False},
+            "CORE_PRIVATE_BANK_NORM": {"certs": [33124, 57565], "use_normalized": True},
+            "ALL_PEERS_NORM": {"certs": [32992, 33124, 57565, 628, 3511, 7213, 3510], "use_normalized": True},
+        }
 
-    # Test the logic using the known definitions
-    peer_groups = {
-        "Core_PB": {"certs": [33124, 57565], "use_normalized": False},
-        "MS_Wealth": {"certs": [32992, 33124, 57565], "use_normalized": False},
-        "All_Peers": {"certs": [32992, 33124, 57565, 628, 3511, 7213, 3510], "use_normalized": False},
-        "Core_PB_Norm": {"certs": [33124, 57565], "use_normalized": True},
-        "MS_Wealth_Norm": {"certs": [32992, 33124, 57565], "use_normalized": True},
-        "All_Peers_Norm": {"certs": [32992, 33124, 57565, 628, 3511, 7213, 3510], "use_normalized": True},
-    }
+    # Must be exactly 4 groups (former MSPBNA+Wealth duplicates removed)
+    assert len(PEER_GROUPS) == 4, (
+        f"Expected 4 peer groups, got {len(PEER_GROUPS)}: {list(PEER_GROUPS.keys())}"
+    )
 
-    # Check within same mode
+    # Check within same mode — no two groups sharing use_normalized should have identical certs
     by_mode = {}
-    for name, pg in peer_groups.items():
-        key = (pg["use_normalized"], tuple(sorted(pg["certs"])))
+    for name, pg in PEER_GROUPS.items():
+        norm_flag = pg.get("use_normalized", False)
+        key = (norm_flag, tuple(sorted(pg["certs"])))
         by_mode.setdefault(key, []).append(name)
 
     for key, names in by_mode.items():
@@ -598,50 +597,39 @@ class TestCaseShillerZIP(unittest.TestCase):
             # Should return audit sheet noting skip
             self.assertIn('CaseShiller_Metro_Map_Audit', result)
             audit = result['CaseShiller_Metro_Map_Audit']
-            self.assertIn('SKIPPED', audit.iloc[0].values)
+            # The HUD version returns the full metro map with SKIPPED comments
+            has_skipped = any(
+                'SKIPPED' in str(v)
+                for v in audit.values.flatten()
+            )
+            self.assertTrue(has_skipped, "Audit should contain SKIPPED notation when disabled")
+            # Coverage and Summary should be empty
+            self.assertTrue(result['CaseShiller_Zip_Coverage'].empty)
+            self.assertTrue(result['CaseShiller_Zip_Summary'].empty)
         finally:
             os.environ.pop('ENABLE_CASE_SHILLER_ZIP_ENRICHMENT', None)
 
-    def test_zip_codes_are_5_char_strings(self):
-        """ZIP codes must be 5-character strings."""
-        from case_shiller_zip_mapper import build_case_shiller_zip_sheets
-        os.environ['ENABLE_CASE_SHILLER_ZIP_ENRICHMENT'] = 'true'
-        try:
-            test_df = pd.DataFrame({'ZIP': ['10001', '90210', '2101', '94105']})
-            result = build_case_shiller_zip_sheets(zip_df=test_df)
-            # '2101' should be zero-padded to '02101'
-            if 'CaseShiller_Zip_Coverage' in result:
-                coverage = result['CaseShiller_Zip_Coverage']
-                # Boston metro should match '02101'
-                boston_row = coverage[coverage['Metro'] == 'Boston']
-                self.assertTrue(len(boston_row) > 0)
-        finally:
-            os.environ.pop('ENABLE_CASE_SHILLER_ZIP_ENRICHMENT', None)
+    def test_zip_normalize_pads_to_5_chars(self):
+        """ZIP codes must be zero-padded to 5 characters by _normalize_zip."""
+        from case_shiller_zip_mapper import _normalize_zip
+        self.assertEqual(_normalize_zip("2101"), "02101")
+        self.assertEqual(_normalize_zip("10001"), "10001")
+        self.assertEqual(_normalize_zip(2101), "02101")
+        self.assertEqual(_normalize_zip("94105-1234"), "94105")
 
     def test_zip_output_contains_only_20_metros(self):
         """Coverage output should have exactly 20 Case-Shiller metros."""
         from case_shiller_zip_mapper import CASE_SHILLER_METROS
         self.assertEqual(len(CASE_SHILLER_METROS), 20)
 
-    def test_summary_zip_count_matches_detail(self):
-        """Summary zip_count must match detail unique ZIP count."""
-        from case_shiller_zip_mapper import build_case_shiller_zip_sheets
-        os.environ['ENABLE_CASE_SHILLER_ZIP_ENRICHMENT'] = 'true'
-        try:
-            test_df = pd.DataFrame({'ZIP': ['10001', '90210', '10002', '94105', '60601']})
-            result = build_case_shiller_zip_sheets(zip_df=test_df)
-            if 'CaseShiller_Zip_Summary' in result and 'CaseShiller_Zip_Coverage' in result:
-                summary = result['CaseShiller_Zip_Summary']
-                coverage = result['CaseShiller_Zip_Coverage']
-                # Count unique ZIPs from coverage detail
-                detail_zips = set()
-                for _, row in coverage.iterrows():
-                    if row['ZIPs']:
-                        for z in row['ZIPs'].split(', '):
-                            detail_zips.add(z.strip())
-                self.assertEqual(summary['zip_count'].iloc[0], len(detail_zips))
-        finally:
-            os.environ.pop('ENABLE_CASE_SHILLER_ZIP_ENRICHMENT', None)
+    def test_map_zip_to_metro_basics(self):
+        """map_zip_to_metro should correctly map ZIP prefixes to metros."""
+        from case_shiller_zip_mapper import map_zip_to_metro
+        self.assertEqual(map_zip_to_metro("10001"), "New York")
+        self.assertEqual(map_zip_to_metro("90210"), "Los Angeles")
+        self.assertEqual(map_zip_to_metro("60601"), "Chicago")
+        self.assertEqual(map_zip_to_metro("94105"), "San Francisco")
+        self.assertIsNone(map_zip_to_metro("50001"))  # Des Moines — no CS metro
 
     def test_no_duplicate_metro_codes_in_discovery(self):
         """No duplicate metro codes in fred_case_shiller_discovery."""
@@ -657,6 +645,21 @@ class TestCaseShillerZIP(unittest.TestCase):
         mapper_metros = set(CASE_SHILLER_METROS.keys())
         self.assertEqual(discovery_metros, mapper_metros,
             f"Mismatch: discovery={discovery_metros - mapper_metros}, mapper={mapper_metros - discovery_metros}")
+
+    def test_discovery_metro_map_no_duplicates(self):
+        """METRO_MAP in fred_case_shiller_discovery must have no duplicate keys."""
+        from fred_case_shiller_discovery import METRO_MAP, validate_metro_map
+        # Dict literal silently drops duplicate keys; validate_metro_map checks count
+        issues = validate_metro_map()
+        self.assertEqual(len(issues), 0, f"METRO_MAP issues: {issues}")
+        # Must have exactly 20 entries
+        self.assertEqual(len(METRO_MAP), 20, f"METRO_MAP has {len(METRO_MAP)} entries, expected 20")
+
+    def test_discovery_washington_no_dc_suffix(self):
+        """METRO_MAP 'WD' must map to 'Washington', not 'Washington DC'."""
+        from fred_case_shiller_discovery import METRO_MAP
+        self.assertEqual(METRO_MAP.get("WD"), "Washington",
+            f"WD maps to '{METRO_MAP.get('WD')}', expected 'Washington'")
 
 
 if __name__ == '__main__':

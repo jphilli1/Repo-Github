@@ -45,12 +45,14 @@ TIERED_HPI_RELEASE_ID = 345173         # S&P Cotality Case-Shiller HPI by Tiered
 # Sales-pair counts are part of the standard release (199159)
 
 # Metro abbreviation → full name
+# NOTE: "CR" is Charlotte's FRED prefix (e.g., CRXRNSA); "CH" is Chicago's (e.g., CHXRNSA).
+# "WD" uses "Washington" (not "Washington DC") to match case_shiller_zip_mapper.py.
 METRO_MAP = {
-    "AX": "Atlanta", "BX": "Boston", "CH": "Chicago", "CL": "Cleveland",
-    "DA": "Dallas", "DN": "Denver", "DT": "Detroit", "LV": "Las Vegas",
-    "LX": "Los Angeles", "MI": "Miami", "MN": "Minneapolis", "NY": "New York",
-    "PH": "Phoenix", "PO": "Portland", "SD": "San Diego", "SF": "San Francisco",
-    "SE": "Seattle", "TA": "Tampa", "WD": "Washington DC", "CH": "Charlotte",
+    "AX": "Atlanta", "BX": "Boston", "CR": "Charlotte", "CH": "Chicago",
+    "CL": "Cleveland", "DA": "Dallas", "DN": "Denver", "DT": "Detroit",
+    "LV": "Las Vegas", "LX": "Los Angeles", "MI": "Miami", "MN": "Minneapolis",
+    "NY": "New York", "PH": "Phoenix", "PO": "Portland", "SD": "San Diego",
+    "SF": "San Francisco", "SE": "Seattle", "TA": "Tampa", "WD": "Washington",
 }
 
 # Wealth-market metros that get priority 1-2 for tiered indexes
@@ -310,6 +312,33 @@ if __name__ == "__main__":
         print(df.groupby("seasonal_adjustment").size())
         print(f"\nBy priority:")
         print(df.groupby("priority").size())
+
+
+def validate_metro_map() -> List[str]:
+    """Validate METRO_MAP for duplicate keys and naming consistency.
+
+    Returns a list of issue strings (empty if all OK).
+    """
+    issues: List[str] = []
+
+    # Check all 20 metros are present
+    expected_count = 20
+    if len(METRO_MAP) != expected_count:
+        issues.append(f"METRO_MAP has {len(METRO_MAP)} entries, expected {expected_count}")
+
+    # Check no duplicate values (metro names)
+    seen_names: Dict[str, str] = {}
+    for code, name in METRO_MAP.items():
+        if name in seen_names.values():
+            dup_code = [k for k, v in seen_names.items() if v == name][0]
+            issues.append(f"Duplicate metro name '{name}': codes '{dup_code}' and '{code}'")
+        seen_names[code] = name
+
+    # Washington must NOT have "DC" suffix (must match mapper)
+    if "WD" in METRO_MAP and "DC" in METRO_MAP["WD"]:
+        issues.append(f"WD maps to '{METRO_MAP['WD']}' — should be 'Washington' (no DC suffix)")
+
+    return issues
 
 
 # ===========================================================================
