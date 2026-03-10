@@ -133,26 +133,26 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
         "long": "Other Consumer loans (Credit Cards, Unsecured, Other Revolving) "
                 "as a % of Total Loans.",
     },
-    "IDB_CI_Composition": {
+    "CI_Composition": {
         "short": "C&I Comp.",
         "long": "Commercial & Industrial (including Owner-Occupied CRE) loans "
                 "as a percentage of total gross loans.",
     },
-    "IDB_CRE_Composition": {
+    "CRE_Composition": {
         "short": "CRE Comp.",
         "long": "Commercial Real Estate (Construction, Multifamily, Farmland, "
                 "Income-Producing) loans as a percentage of total gross loans.",
     },
-    "IDB_Consumer_Composition": {
+    "Consumer_Composition": {
         "short": "Consumer Comp.",
         "long": "Consumer loans as a percentage of total gross loans.",
     },
-    "IDB_Resi_Composition": {
+    "Resi_Composition": {
         "short": "Residential Comp.",
         "long": "Residential Real Estate (including 1-4 Family Investor) loans "
                 "as a percentage of total gross loans.",
     },
-    "IDB_Other_Composition": {
+    "Other_Composition": {
         "short": "Other Comp.",
         "long": "Other loans and leases as a percentage of total gross loans.",
     },
@@ -290,53 +290,53 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
         "short": "Cons. Other Growth",
         "long": "TTM growth rate of Other Consumer Loans.",
     },
-    "IDB_CRE_Growth_TTM": {
+    "CRE_Growth_TTM": {
         "short": "TTM CRE Growth",
         "long": "Trailing 12-Month (YoY) growth rate of CRE portfolio.",
     },
-    "IDB_CRE_Growth_36M": {
+    "CRE_Growth_36M": {
         "short": "36M CRE Growth",
         "long": "36-Month (3-Year) growth rate of CRE portfolio.",
     },
 
     # --- TTM PD Rates (Granular) ---
-    "IDB_CI_TTM_PD30_Rate": {
+    "CI_TTM_PD30_Rate": {
         "short": "TTM C&I PD 30-89 Rate",
         "long": "TTM avg C&I loans 30-89 days past due as a % of TTM avg C&I loans.",
     },
-    "IDB_CI_TTM_PD90_Rate": {
+    "CI_TTM_PD90_Rate": {
         "short": "TTM C&I PD 90+ Rate",
         "long": "TTM avg C&I loans 90+ days past due as a % of TTM avg C&I loans.",
     },
-    "IDB_CRE_TTM_PD30_Rate": {
+    "CRE_TTM_PD30_Rate": {
         "short": "TTM CRE PD 30-89 Rate",
         "long": "TTM avg CRE loans 30-89 days past due as a % of TTM avg CRE loans.",
     },
-    "IDB_CRE_TTM_PD90_Rate": {
+    "CRE_TTM_PD90_Rate": {
         "short": "TTM CRE PD 90+ Rate",
         "long": "TTM avg CRE loans 90+ days past due as a % of TTM avg CRE loans.",
     },
-    "IDB_Consumer_TTM_PD30_Rate": {
+    "Consumer_TTM_PD30_Rate": {
         "short": "TTM Consumer PD 30-89 Rate",
         "long": "TTM avg Consumer loans 30-89 days past due.",
     },
-    "IDB_Consumer_TTM_PD90_Rate": {
+    "Consumer_TTM_PD90_Rate": {
         "short": "TTM Consumer PD 90+ Rate",
         "long": "TTM avg Consumer loans 90+ days past due.",
     },
-    "IDB_Resi_TTM_PD30_Rate": {
+    "Resi_TTM_PD30_Rate": {
         "short": "TTM Resi. PD 30-89 Rate",
         "long": "TTM avg Residential loans 30-89 days past due.",
     },
-    "IDB_Resi_TTM_PD90_Rate": {
+    "Resi_TTM_PD90_Rate": {
         "short": "TTM Resi. PD 90+ Rate",
         "long": "TTM avg Residential loans 90+ days past due.",
     },
-    "IDB_Other_TTM_PD30_Rate": {
+    "Other_TTM_PD30_Rate": {
         "short": "TTM Other PD 30-89 Rate",
         "long": "TTM avg Other loans 30-89 days past due.",
     },
-    "IDB_Other_TTM_PD90_Rate": {
+    "Other_TTM_PD90_Rate": {
         "short": "TTM Other PD 90+ Rate",
         "long": "TTM avg Other loans 90+ days past due.",
     },

@@ -6,7 +6,7 @@ This repository is an **automated Credit Risk Performance reporting engine** for
 
 1. **Fetches** raw call-report data from the FDIC API and macroeconomic time-series from the FRED API.
 2. **Processes** the data into standard and normalized credit-quality metrics, computes peer-group composites, and builds rolling 8-quarter averages.
-3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (FDIC_Data, Averages_8Q, FRED_Data, FRED_Descriptions, FDIC_Metric_Descriptions).
+3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (FDIC_Data, Averages_8Q, FRED_Data, FRED_Descriptions, FDIC_Metric_Descriptions, Normalization_Diagnostics, Peer_Group_Definitions, and optional Case-Shiller ZIP sheets).
 4. **Generates reports**: PNG credit-deterioration charts, PNG scatter plots, and HTML comparison tables — all routed to structured subdirectories under `output/Peers/`.
 
 The two core scripts are:
@@ -76,7 +76,7 @@ FDIC API + FRED API
         ▼
 MSPBNA_CR_Normalized.py
         │
-        ▼fsdsdfa asdf 
+        ▼
 output/Bank_Performance_Dashboard_YYYYMMDD_HHMMSS.xlsx
         │
         ▼
@@ -108,7 +108,7 @@ report_generator.py
 | `FRED_CaseShiller_Selected` | Curated Case-Shiller subset for dashboard |
 | `FRED_Expansion_Registry` | Full metadata registry audit sheet |
 | `Normalization_Diagnostics` | Over-exclusion flags, residuals, severity per CERT/quarter |
-| `Peer_Group_Definitions` | All 6 peer group definitions with member CERTs and metadata |
+| `Peer_Group_Definitions` | 4 peer group definitions with member CERTs and metadata |
 | `Resi_Normalized_Audit` | Residential metric values, mapping/label status, latest quarter |
 | `CaseShiller_Zip_Coverage` | One row per (Case-Shiller region, ZIP code) with HUD crosswalk ratios |
 | `CaseShiller_Zip_Summary` | One row per metro with aggregate ZIP counts and mapping metadata |
@@ -161,16 +161,18 @@ These are **non-negotiable** for any agent editing this codebase:
 
 ### PEER GROUPINGS
 
-HTML tables must always reflect **3 peer columns** per table type:
+There are **4 peer groups** (2 standard + 2 normalized). Composite CERTs are assigned via `base_dummy_cert + display_order`:
 
-| Table Type | Peer 1 | Peer 2 | Peer 3 |
-|---|---|---|---|
-| **Standard** | 90001 — Core PB | 90002 — MSPBNA+Wealth | 90003 — All Peers |
-| **Normalized** | 90004 — Core PB Norm | 90005 — MSPBNA+Wealth Norm | 90006 — All Peers Norm |
+| Table Type | Peer 1 | Peer 2 |
+|---|---|---|
+| **Standard** | 90001 — Core PB | 90003 — All Peers |
+| **Normalized** | 90004 — Core PB Norm | 90006 — All Peers Norm |
 
-**Cross-mode duplication by design**: 90001/90004, 90002/90005, and 90003/90006 share identical member CERTs. The distinction is `use_normalized`: standard composites NaN-out `Norm_*` columns; normalized composites NaN-out standard rate columns. Hard validation (`validate_peer_group_uniqueness()`) ensures no two groups within the SAME `use_normalized` mode share identical cert lists.
+The former MSPBNA+Wealth groups (90002/90005) were removed as duplicate cert membership. `validate_peer_group_uniqueness()` enforces that no two groups sharing the same `use_normalized` flag may have identical sorted cert lists.
 
-**Peer_Group_Definitions sheet**: A new Excel sheet documents all 6 peer group definitions with member CERTs, use cases, and display order.
+**Cross-mode duplication by design**: 90001/90004 and 90003/90006 share identical member CERTs. The distinction is `use_normalized`: standard composites NaN-out `Norm_*` columns; normalized composites NaN-out standard rate columns. Hard validation (`validate_peer_group_uniqueness()`) ensures no two groups within the SAME `use_normalized` mode share identical cert lists.
+
+**Peer_Group_Definitions sheet**: A new Excel sheet documents all 4 peer group definitions with member CERTs, use cases, and display order.
 
 ### MS COMBINED ENTITY
 
@@ -269,6 +271,7 @@ Norm_PD90              = TopHouse_PD90     - Excluded_PD90
 - Use `list(dict.fromkeys(series_ids))` to preserve order while removing duplicates.
 - The guard must exist both at construction time (when building `series_ids_to_fetch`) and at the entry point of `fetch_all_series_async()`.
 
+<<<<<<< HEAD
 ### Always Update CLAUDE.md
 
 - Architecture changes, new conventions, and non-trivial pipeline modifications **must** be documented in this file.
@@ -278,6 +281,8 @@ Norm_PD90              = TopHouse_PD90     - Excluded_PD90
 =======
 >>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 
+=======
+>>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 ---
 
 ## 5. Common Errors & Troubleshooting
@@ -328,7 +333,34 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 
 ---
 
-## 6. Changelog / Recent Fixes
+## 6. Normalization Conventions
+
+### Top-Down Normalization with Over-Exclusion Detection
+
+Normalized metrics use `calc_normalized_residual(total, excluded, label, tolerance_pct=0.05)` which returns:
+- `final_value`: residual (total - excluded), with minor over-exclusions (<=5%) clipped to 0 and material ones set to NaN
+- `severity`: one of `ok`, `minor_clip`, `material_nan`
+- 15 diagnostics columns are written to the `Normalization_Diagnostics` sheet
+
+### Normalized Ratio Components
+
+`generate_ratio_components_table(is_normalized=True)` uses:
+- **Delinquency numerator**: `_Norm_Total_Past_Due` (synthesized as `Norm_PD30 + Norm_PD90`)
+- **ACL numerator**: `Norm_ACL_Balance` (not `Total_ACL`)
+- **Risk-adjusted denominator**: `Norm_Risk_Adj_Gross_Loans` (= `Norm_Gross_Loans - SBL_Balance`)
+- **Resi ACL Coverage**: `RIC_Resi_ACL / Wealth_Resi_Balance`
+
+### Case-Shiller ZIP Enrichment
+
+Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` env var (default `true`). When disabled, `build_case_shiller_zip_sheets()` returns a single audit row with status `SKIPPED`. Maps 5-digit ZIP codes to 20 regional Case-Shiller metros.
+
+### IDB Label Convention
+
+Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` prefix. All former `IDB_*` keys have been renamed (e.g., `IDB_CRE_Growth_TTM` → `CRE_Growth_TTM`). User-facing labels, CSS classes, and HTML headers must reference **MSPBNA**, never **IDB**.
+
+---
+
+## 7. Changelog / Recent Fixes
 
 ### 2026-03-10 — Data Mapping, Math, and Formatting Bug Fixes
 
@@ -434,9 +466,16 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 4. **Retained segment metrics**: `Wealth_Resi_TTM_NCO_Rate`, `Wealth_Resi_NA_Rate`, `Wealth_Resi_Delinquency_Rate` remain as segment-level rates for HTML tables.
 5. **CLAUDE.md**: Added "Normalization Methodology" convention mandating top-down-only approach.
 
+### 2026-03-10 — Production-Safety Fix Pass
+
+1. **Metadata sheet contract**: Renamed `FDIC_Metadata` kwarg to `FDIC_Metric_Descriptions` in `write_excel_output()` so workbook sheet name matches what `report_generator.py` reads.
+2. **IDB label cleanup**: Removed `IDB_` prefix from all 17 keys in `master_data_dictionary.py` (`LOCAL_DERIVED_METRICS`) and updated 2 references in `MSPBNA_CR_Normalized.py`.
+3. **Peer group docs**: Updated CLAUDE.md to reflect 4 groups (not 6); documented removal of MSPBNA+Wealth duplicates.
+4. **Normalization conventions**: Added Section 6 documenting `_Norm_Total_Past_Due`, `Norm_ACL_Balance`, `Norm_Risk_Adj_Gross_Loans`, IDB label ban, and Case-Shiller toggle.
+
 ---
 
-## 7. To-Do / Known Issues
+## 8. To-Do / Known Issues
 
 ### Upstream Data Gaps (MSPBNA_CR_Normalized.py)
 
@@ -450,7 +489,7 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 
 ---
 
-## 8. Metric Registry & Validation Architecture
+## 9. Metric Registry & Validation Architecture
 
 ### Overview
 
@@ -522,7 +561,7 @@ The normalization pipeline no longer uses silent `.clip(lower=0)`. Instead:
 
 ---
 
-## 9. FRED Expansion Layer — Registry-Driven Macro / Market Context
+## 10. FRED Expansion Layer — Registry-Driven Macro / Market Context
 
 ### Architecture
 
@@ -629,7 +668,7 @@ The ingestion engine validates:
 
 ---
 
-## 10. HUD USPS ZIP Crosswalk — Case-Shiller Metro Enrichment
+## 11. HUD USPS ZIP Crosswalk — Case-Shiller Metro Enrichment
 
 ### Overview
 
