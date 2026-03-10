@@ -71,7 +71,12 @@ output/Bank_Performance_Dashboard_YYYYMMDD_HHMMSS.xlsx
         ▼
 report_generator.py
         │
-        ├──► output/Peers/charts/   (Normalized credit deterioration chart PNGs)
+        ├──► output/Peers/charts/   (Standard + Normalized deterioration charts,
+        │                           Portfolio Mix, Segment Attribution,
+        │                           Reserve Allocation, Migration Ladder,
+        │                           Years-of-Reserves, Growth vs Deterioration,
+        │                           Risk-Adjusted Return, Concentration vs Capital,
+        │                           Liquidity Overlay, Macro Overlay PNGs)
         ├──► output/Peers/scatter/  (Standard + Normalized scatter plot PNGs)
         └──► output/Peers/tables/   (Standard + Normalized HTML tables, FRED macro table)
 ```
@@ -89,10 +94,24 @@ report_generator.py
 ### Output File Naming
 
 All output files include the source Excel stem and a datestamp:
+- `{stem}_standard_credit_chart_YYYYMMDD.png`
 - `{stem}_normalized_credit_chart_YYYYMMDD.png`
+- `{stem}_portfolio_mix_YYYYMMDD.png`
+- `{stem}_problem_asset_attribution_YYYYMMDD.png`
+- `{stem}_reserve_risk_allocation_YYYYMMDD.png`
+- `{stem}_migration_ladder_YYYYMMDD.png`
 - `{stem}_scatter_nco_vs_npl_YYYYMMDD.png`
+- `{stem}_scatter_pd_vs_npl_YYYYMMDD.png`
+- `{stem}_scatter_norm_nco_vs_nonaccrual_YYYYMMDD.png`
 - `{stem}_standard_table_YYYYMMDD.html`
 - `{stem}_normalized_table_YYYYMMDD.html`
+- `{stem}_fred_table_YYYYMMDD.html`
+- `{stem}_years_of_reserves_YYYYMMDD.png`
+- `{stem}_growth_vs_deterioration_YYYYMMDD.png`
+- `{stem}_risk_adjusted_return_YYYYMMDD.png`
+- `{stem}_concentration_vs_capital_YYYYMMDD.png`
+- `{stem}_liquidity_overlay_YYYYMMDD.png`
+- `{stem}_macro_overlay_YYYYMMDD.png`
 
 ---
 
@@ -142,11 +161,12 @@ All charts must use this color palette consistently:
 - Use `mspbna-row` and `mspbna-value` (not `idb-row` / `idb-value`).
 - All user-facing labels, HTML headers, and filenames must reference **MSPBNA**, never **IDB**.
 
-### NORMALIZED CHART METRICS
+### CHART METRICS
 
-- Bar metric: `Norm_NCO_Rate`
-- Line metric: `Norm_Nonaccrual_Rate` (fallback: `Norm_NPL_to_Gross_Loans_Rate`)
-- Standard charts are **not generated** — only normalized charts are produced.
+**Standard chart:** Bar = `TTM_NCO_Rate`, Line = `NPL_to_Gross_Loans_Rate`
+**Normalized chart:** Bar = `Norm_NCO_Rate`, Line = `Norm_Nonaccrual_Rate` (fallback: `Norm_NPL_to_Gross_Loans_Rate`)
+
+Both standard and normalized credit-deterioration charts are generated.
 
 ---
 
