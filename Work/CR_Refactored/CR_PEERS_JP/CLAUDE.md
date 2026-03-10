@@ -226,6 +226,24 @@ Both standard and normalized credit-deterioration charts are generated.
 
 **Coverage vs Share rule**: If the denominator is a loan balance, the metric is "coverage." If the denominator is total ACL, it is "share." Never label a share metric as coverage or vice versa.
 
+### NORMALIZATION METHODOLOGY
+
+**Normalized totals (e.g., `Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_Gross_Loans`, `Norm_PD30`, `Norm_PD90`) MUST always be calculated top-down:**
+
+```
+Norm_Total_NCO         = Total_NCO_TTM     - Excluded_NCO_TTM
+Norm_Total_Nonaccrual  = Total_Nonaccrual  - Excluded_Nonaccrual
+Norm_Gross_Loans       = Gross_Loans       - Excluded_Balance
+Norm_PD30              = TopHouse_PD30     - Excluded_PD30
+Norm_PD90              = TopHouse_PD90     - Excluded_PD90
+```
+
+**Never reconstruct normalized totals bottom-up** (e.g., `wealth_resi_nco_pure + sum_cols(...)`). Bottom-up reconstruction risks accidentally excluding core series like SBL or unmapped RESI lines.
+
+**All Residential Real Estate series must be unconditionally retained in normalized figures.** The exclusion set covers only: C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag, and Owner-Occupied CRE. Residential (1-4 Family + HELOC) and SBL are NEVER excluded.
+
+**Wealth Resi segment metrics** (`Wealth_Resi_TTM_NCO_Rate`, `Wealth_Resi_NA_Rate`, `Wealth_Resi_Delinquency_Rate`) are segment-level rates for HTML tables only — they do NOT feed into normalized totals.
+
 ### FORMATTING RULES
 
 - **Diffs are Percentage-Point Deltas**: All "Diff vs Peer" columns MUST use simple subtraction (`v_subject - v_peer`), never relative percentage change (`(v_subject - v_peer) / v_peer`). Use `_fmt_percent_diff(diff, ref_value)` to format; it uses the reference value's scale to decide whether to multiply by 100.
@@ -365,6 +383,17 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 7. Added 4 regression tests for resi naming, coverage/share, and canonical references
 
 **New Excel sheet:** `Resi_Normalized_Audit`
+
+### 2026-03-10 — Resi Series Expansion + Top-Down Normalization Fix
+
+**Root cause**: A "OVERRIDE: Normalized Performance (Wealth Segments Only)" block was reconstructing `Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_PD30`, and `Norm_PD90` bottom-up from `wealth_resi_nco_pure + sum_cols(...)`. This accidentally excluded SBL and any unmapped RESI lines from normalized totals.
+
+**Fixes applied:**
+1. **Expanded residential balance definitions**: `compute_wealth_resi_bal()` and `resi_sum` (for `RIC_Resi_Cost`) now include First Liens (1797) + Junior Liens (5367) + HELOC/Open-End (5368, 1799) with `best_of()` fallback. Both definitions are now consistent.
+2. **Deleted bottom-up override**: Removed the 4 bottom-up assignments (`Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_PD30`, `Norm_PD90`) from the override block.
+3. **Restored top-down math**: `Norm_Total_NCO` and `Norm_Total_Nonaccrual` remain computed top-down via diagnostics-first logic. Added top-down `Norm_PD30 = TopHouse_PD30 - Excluded_PD30` and `Norm_PD90 = TopHouse_PD90 - Excluded_PD90`. Persisted `Excluded_PD30`/`Excluded_PD90` columns for this purpose.
+4. **Retained segment metrics**: `Wealth_Resi_TTM_NCO_Rate`, `Wealth_Resi_NA_Rate`, `Wealth_Resi_Delinquency_Rate` remain as segment-level rates for HTML tables.
+5. **CLAUDE.md**: Added "Normalization Methodology" convention mandating top-down-only approach.
 
 ---
 
