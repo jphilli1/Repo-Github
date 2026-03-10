@@ -2606,25 +2606,47 @@ class BankMetricsProcessor:
         ci_nco_calc = ci_chargeoffs - ci_recoveries
         norm_cols['Excl_CI_NCO_YTD'] = np.where(ci_nco_direct != 0, ci_nco_direct, ci_nco_calc)
 
+        # ADC NCO: NTLS/RIAD4658 (charge-offs) - RIAD4659 (recoveries)
+        # BALANCE-GATED: If Excl_ADC_Balance is zero, force NCO to zero.
         adc_chargeoffs = best_of(df_processed, ['NTLS', 'RIAD4658']).fillna(0)
         adc_recoveries = best_of(df_processed, ['RIAD4659']).fillna(0)
-        norm_cols['Excl_ADC_NCO_YTD'] = adc_chargeoffs - adc_recoveries
+        adc_nco_raw = adc_chargeoffs - adc_recoveries
+        adc_bal = norm_cols['Excl_ADC_Balance']
+        norm_cols['Excl_ADC_NCO_YTD'] = np.where(adc_bal > 0, adc_nco_raw, 0.0)
+        norm_cols['_ADC_NCO_Gated'] = np.where((adc_bal == 0) & (adc_nco_raw != 0), True, False)
 
         cc_chargeoffs = best_of(df_processed, ['RIADB514']).fillna(0)
         cc_recoveries = best_of(df_processed, ['RIADB515']).fillna(0)
         norm_cols['Excl_CC_NCO_YTD'] = cc_chargeoffs - cc_recoveries
 
+        # Auto NCO: RIADK205 (charge-offs) - RIADK206 (recoveries)
+        # BALANCE-GATED: If Excl_Auto_Balance is zero, force NCO to zero.
+        # RIADK205/K206 may contain broader consumer NCO data that does not
+        # align to the auto loan balance category when the bank has no auto exposure.
         auto_chargeoffs = best_of(df_processed, ['RIADK205']).fillna(0)
         auto_recoveries = best_of(df_processed, ['RIADK206']).fillna(0)
-        norm_cols['Excl_Auto_NCO_YTD'] = auto_chargeoffs - auto_recoveries
+        auto_nco_raw = auto_chargeoffs - auto_recoveries
+        auto_bal = norm_cols['Excl_Auto_Balance']
+        norm_cols['Excl_Auto_NCO_YTD'] = np.where(auto_bal > 0, auto_nco_raw, 0.0)
+        norm_cols['_Auto_NCO_Gated'] = np.where((auto_bal == 0) & (auto_nco_raw != 0), True, False)
 
         norm_cols['Excl_NDFI_NCO_YTD'] = 0.0
 
+        # Ag NCO: RIAD4635 (charge-offs) - RIAD4645 (recoveries), fallback NTAG
+        # BALANCE-GATED: If Excl_Ag_Balance is zero, force NCO to zero.
+        # RIAD4635/4645 are "Loans to finance agricultural production" charge-offs/recoveries.
+        # NTAG is the FDIC text alias for total ag net charge-offs. Both map to
+        # Schedule RI-B Part I/II items 7 which can capture reclassified charge-offs
+        # from unrelated categories. When a bank has zero ag loan balance, any nonzero
+        # ag NCO from these fields is almost certainly a misclassification signal.
         ag_chargeoffs = best_of(df_processed, ['RIAD4635']).fillna(0)
         ag_recoveries = best_of(df_processed, ['RIAD4645']).fillna(0)
         ag_nco_calc = ag_chargeoffs - ag_recoveries
         ag_nco_fallback = best_of(df_processed, ['NTAG']).fillna(0)
-        norm_cols['Excl_Ag_NCO_YTD'] = np.where(ag_nco_calc != 0, ag_nco_calc, ag_nco_fallback)
+        ag_nco_raw = np.where(ag_nco_calc != 0, ag_nco_calc, ag_nco_fallback)
+        ag_bal = norm_cols['Excl_Ag_Balance']
+        norm_cols['Excl_Ag_NCO_YTD'] = np.where(ag_bal > 0, ag_nco_raw, 0.0)
+        norm_cols['_Ag_NCO_Gated'] = np.where((ag_bal == 0) & (ag_nco_raw != 0), True, False)
 
         # --- C. Calculate Exclusion Nonaccruals ---
         norm_cols['Excl_CI_NA'] = best_of(df_processed, ['NACI', 'RCON1608', 'RCFD1608']).fillna(0)
@@ -2637,8 +2659,12 @@ class BankMetricsProcessor:
         ag_na_fallback = best_of(df_processed, ['NAAG']).fillna(0)
         norm_cols['Excl_Ag_NA'] = np.where(ag_na_direct != 0, ag_na_direct, ag_na_fallback)
 
-        # [FIX] Map OO CRE Risk Metrics for Exclusion
-        norm_cols['Excl_OO_CRE_NCO_YTD'] = best_of(df_processed, ['NTRENROW']).fillna(0)
+        # OO CRE NCO: NTRENROW
+        # BALANCE-GATED: If Excl_OO_CRE_Balance is zero, force NCO to zero.
+        oo_cre_nco_raw = best_of(df_processed, ['NTRENROW']).fillna(0)
+        oo_cre_bal = norm_cols['Excl_OO_CRE_Balance']
+        norm_cols['Excl_OO_CRE_NCO_YTD'] = np.where(oo_cre_bal > 0, oo_cre_nco_raw, 0.0)
+        norm_cols['_OO_CRE_NCO_Gated'] = np.where((oo_cre_bal == 0) & (oo_cre_nco_raw != 0), True, False)
         norm_cols['Excl_OO_CRE_NA'] = best_of(df_processed, ['NARENROW']).fillna(0)
         norm_cols['Excl_OO_CRE_P3'] = best_of(df_processed, ['P3RENROW']).fillna(0)
         norm_cols['Excl_OO_CRE_P9'] = best_of(df_processed, ['P9RENROW']).fillna(0)
@@ -5931,6 +5957,89 @@ class BankPerformanceDashboard:
         # --- Validate peer group uniqueness ---
         validate_peer_group_uniqueness(PEER_GROUPS)
 
+        # --- Exclusion Component Audit Sheet ---
+        excl_audit_cols = [
+            'CERT', 'NAME', 'REPDTE',
+            'Excl_CI_Balance', 'Excl_CI_NCO_YTD',
+            'Excl_ADC_Balance', 'Excl_ADC_NCO_YTD',
+            'Excl_CreditCard_Balance', 'Excl_CC_NCO_YTD',
+            'Excl_Auto_Balance', 'Excl_Auto_NCO_YTD',
+            'Excl_Ag_Balance', 'Excl_Ag_NCO_YTD',
+            'Excl_OO_CRE_Balance', 'Excl_OO_CRE_NCO_YTD',
+            '_Auto_NCO_Gated', '_Ag_NCO_Gated', '_ADC_NCO_Gated', '_OO_CRE_NCO_Gated',
+        ]
+        avail_excl = [c for c in excl_audit_cols if c in proc_df_with_peers.columns]
+        excl_audit_df = proc_df_with_peers[avail_excl].copy() if avail_excl else pd.DataFrame()
+        if not excl_audit_df.empty:
+            # Flag: any category has zero balance but nonzero NCO (before gating)
+            gate_cols = [c for c in ['_Auto_NCO_Gated', '_Ag_NCO_Gated', '_ADC_NCO_Gated', '_OO_CRE_NCO_Gated'] if c in excl_audit_df.columns]
+            if gate_cols:
+                excl_audit_df['category_balance_zero_but_nco_nonzero_flag'] = excl_audit_df[gate_cols].any(axis=1)
+            else:
+                excl_audit_df['category_balance_zero_but_nco_nonzero_flag'] = False
+            # Dominant exclusion category
+            nco_cat_cols = {
+                'Excl_CI_NCO_YTD': 'CI',
+                'Excl_ADC_NCO_YTD': 'ADC',
+                'Excl_CC_NCO_YTD': 'CreditCard',
+                'Excl_Auto_NCO_YTD': 'Auto',
+                'Excl_Ag_NCO_YTD': 'Ag',
+                'Excl_OO_CRE_NCO_YTD': 'OO_CRE',
+            }
+            avail_nco_cats = {k: v for k, v in nco_cat_cols.items() if k in excl_audit_df.columns}
+            if avail_nco_cats:
+                nco_df = excl_audit_df[list(avail_nco_cats.keys())].abs()
+                nco_total = nco_df.sum(axis=1).replace(0, np.nan)
+                excl_audit_df['dominant_exclusion_category'] = nco_df.idxmax(axis=1).map(avail_nco_cats)
+                excl_audit_df['dominant_exclusion_share'] = nco_df.max(axis=1) / nco_total
+
+        # --- Composite Coverage Audit Sheet ---
+        # For normalized composites, calculate per-metric coverage
+        _CRITICAL_NORM_METRICS = [
+            'Norm_NCO_Rate', 'Norm_Nonaccrual_Rate', 'Norm_ACL_Coverage',
+            'Norm_Risk_Adj_Allowance_Coverage', 'Norm_Gross_Loans',
+        ]
+        _MIN_COVERAGE_PCT = 0.50  # 50% minimum contributor share
+        coverage_audit_rows = []
+        norm_composite_certs = {90004, 90006}
+        for group_key, group_info in PEER_GROUPS.items():
+            if not group_info.get('use_normalized', False):
+                continue
+            group_certs = group_info['certs']
+            dummy_cert = 90000 + group_info['display_order']
+            for repdte in proc_df_with_peers['REPDTE'].unique():
+                peer_data = proc_df_with_peers[
+                    (proc_df_with_peers['CERT'].isin(group_certs)) &
+                    (proc_df_with_peers['REPDTE'] == repdte)
+                ]
+                total_constituents = len(group_certs)
+                for metric in _CRITICAL_NORM_METRICS:
+                    if metric not in proc_df_with_peers.columns:
+                        continue
+                    non_nan_count = peer_data[metric].notna().sum() if not peer_data.empty else 0
+                    contributor_pct = non_nan_count / total_constituents if total_constituents > 0 else 0
+                    low_coverage = contributor_pct < _MIN_COVERAGE_PCT
+                    coverage_audit_rows.append({
+                        'CERT': dummy_cert,
+                        'NAME': group_info['name'],
+                        'REPDTE': repdte,
+                        'metric_code': metric,
+                        'contributor_count': non_nan_count,
+                        'total_constituents': total_constituents,
+                        'contributor_pct': round(contributor_pct, 3),
+                        'coverage_flag': 'LOW_COVERAGE' if low_coverage else 'OK',
+                    })
+                    # If coverage is below threshold, NaN-out the composite metric
+                    if low_coverage:
+                        mask = (
+                            (proc_df_with_peers['CERT'] == dummy_cert) &
+                            (proc_df_with_peers['REPDTE'] == repdte)
+                        )
+                        if mask.any():
+                            proc_df_with_peers.loc[mask, metric] = np.nan
+
+        composite_coverage_df = pd.DataFrame(coverage_audit_rows) if coverage_audit_rows else pd.DataFrame()
+
         # --- Case-Shiller ZIP Enrichment (standalone sheets) ---
         cs_zip_sheets = build_case_shiller_zip_sheets()  # No ZIP data wired yet; produces audit/skip sheet
         cs_kwargs = {}
@@ -5953,6 +6062,8 @@ class BankPerformanceDashboard:
             Data_Validation_Report=validation_df,
             Normalization_Diagnostics=norm_diagnostics_df,
             Peer_Group_Definitions=peer_defs_df,
+            Exclusion_Component_Audit=excl_audit_df,
+            Composite_Coverage_Audit=composite_coverage_df,
             **cs_kwargs,
         )
 

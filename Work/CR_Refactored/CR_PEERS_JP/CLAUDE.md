@@ -6,7 +6,7 @@ This repository is an **automated Credit Risk Performance reporting engine** for
 
 1. **Fetches** raw call-report data from the FDIC API and macroeconomic time-series from the FRED API.
 2. **Processes** the data into standard and normalized credit-quality metrics, computes peer-group composites, and builds rolling 8-quarter averages.
-3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (FDIC_Data, Averages_8Q, FRED_Data, FRED_Descriptions, FDIC_Metric_Descriptions, Normalization_Diagnostics, Peer_Group_Definitions, and optional Case-Shiller ZIP sheets).
+3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (FDIC_Data, Averages_8Q, FRED_Data, FRED_Descriptions, FDIC_Metric_Descriptions, Normalization_Diagnostics, Peer_Group_Definitions, Exclusion_Component_Audit, Composite_Coverage_Audit, and optional Case-Shiller ZIP sheets).
 4. **Generates reports**: PNG credit-deterioration charts, PNG scatter plots, and HTML comparison tables — all routed to structured subdirectories under `output/Peers/`.
 
 The two core scripts are:
@@ -110,6 +110,8 @@ report_generator.py
 | `Normalization_Diagnostics` | Over-exclusion flags, residuals, severity per CERT/quarter |
 | `Peer_Group_Definitions` | 4 peer group definitions with member CERTs and metadata |
 | `Resi_Normalized_Audit` | Residential metric values, mapping/label status, latest quarter |
+| `Exclusion_Component_Audit` | Per-bank/quarter excluded category balances, NCO, balance-gating flags, dominant category |
+| `Composite_Coverage_Audit` | Per-group/metric contributor counts, coverage %, NaN-out decisions for normalized composites |
 | `CaseShiller_Zip_Coverage` | One row per (Case-Shiller region, ZIP code) with HUD crosswalk ratios |
 | `CaseShiller_Zip_Summary` | One row per metro with aggregate ZIP counts and mapping metadata |
 | `CaseShiller_Metro_Map_Audit` | 20-entry metro → CBSA/CBSA-Div mapping table with judgment call notes |
@@ -363,6 +365,26 @@ Normalized metrics use `calc_normalized_residual(total, excluded, label, toleran
 - **Risk-adjusted denominator**: `Norm_Risk_Adj_Gross_Loans` (= `Norm_Gross_Loans - SBL_Balance`)
 - **Resi ACL Coverage**: `RIC_Resi_ACL / Wealth_Resi_Balance`
 
+### Balance-Gating for Excluded NCO Categories
+
+Four excluded NCO categories (Auto, Ag, ADC, OO CRE) are balance-gated: if the excluded balance for a category is zero, the excluded NCO is forced to zero regardless of MDRM field values. This prevents misclassification propagation (e.g., MSPBNA showing $27K Auto NCO with zero Auto balance). Each gating decision produces a `_*_NCO_Gated` flag column. The `Exclusion_Component_Audit` sheet documents per-bank/quarter gating decisions, dominant exclusion categories, and flags where balance is zero but NCO was nonzero.
+
+| Category | Balance Column | NCO Column | Flag Column |
+|---|---|---|---|
+| Auto | `Excl_Auto_Balance` | `Excl_Auto_NCO_YTD` | `_Auto_NCO_Gated` |
+| Ag | `Excl_Ag_Balance` | `Excl_Ag_NCO_YTD` | `_Ag_NCO_Gated` |
+| ADC | `Excl_ADC_Balance` | `Excl_ADC_NCO_YTD` | `_ADC_NCO_Gated` |
+| OO CRE | `Excl_OO_CRE_Balance` | `Excl_OO_CRE_NCO_YTD` | `_OO_CRE_NCO_Gated` |
+
+### Normalized Composite Minimum Coverage
+
+Normalized composites (90004/90006) must have ≥50% non-NaN contributor share per critical metric, otherwise the composite metric is NaN'd out. This prevents misleading composites when only 2 of 8 banks have usable normalized data. The `Composite_Coverage_Audit` sheet documents per-group/metric contributor counts, coverage percentages, and NaN-out decisions.
+
+**Critical normalized metrics for coverage checks:**
+- `Norm_NCO_Rate`, `Norm_Nonaccrual_Rate`, `Norm_ACL_Coverage`, `Norm_Risk_Adj_Allowance_Coverage`, `Norm_Gross_Loans`
+
+**Important**: Normalized NCO is NOT fully solved — many G-SIBs still produce `material_nan` severity because their excluded categories exceed totals by >5%. The composite coverage threshold mitigates misleading averages but does not fix the upstream data quality issue.
+
 ### Case-Shiller ZIP Enrichment
 
 Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` env var (default `true`). When disabled, `build_case_shiller_zip_sheets()` returns a single audit row with status `SKIPPED`. Maps 5-digit ZIP codes to 20 regional Case-Shiller metros.
@@ -374,6 +396,27 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-10 — Balance-Gating, Composite Coverage, Preflight Scoping
+
+**Root causes from workbook review:**
+- Excluded NCO over-exclusion: MSPBNA 2024-12-31 showed Total_NCO_TTM=27K but Excluded_NCO_TTM=54K. Root cause: Auto/Ag NCO MDRM fields (RIADK205/K206, RIAD4635/4645) were nonzero despite zero excluded balances for those categories.
+- Normalized composites misleading: Only 2 of 8 banks had non-NaN normalized NCO, yet composites showed usable averages.
+- Preflight over-blocking: Historical material_nan rows caused blocking even when the latest plotted period was clean.
+- Stale load_config defaults: 19977 instead of production CERTs 34221/32992.
+
+**Fixes applied:**
+1. **Balance-gating for excluded NCO (MSPBNA_CR_Normalized.py)**: Added balance-gating for 4 excluded NCO categories (Auto, Ag, ADC, OO CRE). If excluded balance is zero, force excluded NCO to zero and set `_*_NCO_Gated` flag. Added `Exclusion_Component_Audit` sheet with per-bank/quarter gating decisions, dominant exclusion categories, and zero-balance/nonzero-NCO flags.
+
+2. **Normalized composite minimum coverage (MSPBNA_CR_Normalized.py)**: Added 50% minimum contributor coverage threshold for normalized composites (90004/90006). Metrics below threshold are NaN'd out. Added `Composite_Coverage_Audit` sheet documenting per-group/metric contributor counts, coverage %, and NaN-out decisions. Critical metrics: `Norm_NCO_Rate`, `Norm_Nonaccrual_Rate`, `Norm_ACL_Coverage`, `Norm_Risk_Adj_Allowance_Coverage`, `Norm_Gross_Loans`.
+
+3. **Preflight period-scoping (report_generator.py)**: Severity checks now determine `latest_repdte` and only block on material failures at the latest plotted period. Historical material_nan failures become informational warnings.
+
+4. **load_config defaults fixed (report_generator.py)**: Changed defaults from 19977 to `MSPBNA_CERT=34221`, `MSBNA_CERT=32992`.
+
+5. **Regression tests (test_regression.py)**: Added 7 function-based tests + 7 unittest classes covering balance-gating (Ag, Auto, ADC, OO CRE), composite coverage (below/above/at threshold), preflight period-scoping (blocks at latest, ignores historical), load_config defaults, and audit sheet inclusion.
+
+**New Excel sheets:** `Exclusion_Component_Audit`, `Composite_Coverage_Audit`
 
 ### 2026-03-10 — Data Mapping, Math, and Formatting Bug Fixes
 
@@ -613,12 +656,14 @@ The normalization pipeline no longer uses silent `.clip(lower=0)`. Instead:
 `validate_output_inputs()` in `report_generator.py` runs before any chart/table generation:
 1. Checks subject bank CERT exists in data
 2. Flags all-NaN or all-zero normalized metrics
-3. **Blocks** on material over-exclusion severity for subject bank AND plotted peer-average composites (90004, 90006)
+3. **Blocks** on material over-exclusion severity for subject bank AND plotted peer-average composites (90004, 90006) — **scoped to latest plotted period only**. Historical material failures are logged as informational warnings but do NOT block.
 4. **Blocks** if required composite CERTs are missing from data:
    - Standard: 90003 (All Peers), 90001 (Core PB)
    - Normalized: 90006 (All Peers Norm), 90004 (Core PB Norm)
 5. Validates real peers exist for scatter plots
 6. Runs semantic validation if metric_registry is available
+
+**Period scoping**: The preflight determines `latest_repdte = proc_df["REPDTE"].max()` and only evaluates blocking severity checks against that single period. This prevents historical data-quality issues (which may have been present before balance-gating or upstream fixes) from blocking current-period report generation.
 
 Suppressed charts use readable artifact names: `normalized_credit_chart`, `normalized_scatter_nco_vs_nonaccrual`, `standard_scatter_nco_vs_npl`, `standard_scatter_pd_vs_npl`.
 
