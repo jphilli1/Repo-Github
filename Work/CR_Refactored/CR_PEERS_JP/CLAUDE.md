@@ -207,6 +207,7 @@ All charts must use this color palette consistently:
 
 Both standard and normalized credit-deterioration charts are generated.
 
+<<<<<<< HEAD
 ### TABLE COLUMN ORDERING
 
 - HTML tables comparing individual peers **must** always place the Subject Bank (MSPBNA) and MSBNA on the extreme left, followed by individual peers, followed by the peer average.
@@ -264,6 +265,18 @@ Norm_PD90              = TopHouse_PD90     - Excluded_PD90
 - **Dollar Amounts = $B**: FDIC data stores dollar amounts in thousands ($K). Use `_fmt_money_billions()` which converts: `v/1e6` → `$X.XB`, `v/1e3` → `$X.XM`. Never divide by `1e9` (that produces values 1000x too small).
 - **Multiplier metrics**: Metrics labeled `(x)` (e.g., CRE NPL Coverage) must format as `X.XXx`, not as `%`.
 - **Dead metric suppression**: If a metric is entirely 0/NaN across all displayed entities for the latest quarter, the row is automatically suppressed from HTML tables.
+=======
+### FRED Deduplication
+
+- `series_ids` must always be deduplicated before async fetching to prevent `ValueError: cannot reindex on an axis with duplicate labels`.
+- Use `list(dict.fromkeys(series_ids))` to preserve order while removing duplicates.
+- The guard must exist both at construction time (when building `series_ids_to_fetch`) and at the entry point of `fetch_all_series_async()`.
+
+### Always Update CLAUDE.md
+
+- Architecture changes, new conventions, and non-trivial pipeline modifications **must** be documented in this file.
+- If you add a new coding convention, env variable, output sheet, or data-flow step, update the relevant section of `CLAUDE.md` before considering the task complete.
+>>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 
 ---
 
