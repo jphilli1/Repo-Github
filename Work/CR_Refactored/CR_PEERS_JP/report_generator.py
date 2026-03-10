@@ -1411,6 +1411,305 @@ def build_fred_macro_table(xlsx_path: str, short_names: list[str]) -> tuple[str,
     return "\n".join(html), out
 
 
+# ==================================================================================
+# FRED EXPANSION — FIRST-WAVE CHART FUNCTIONS
+# ==================================================================================
+
+def _fred_chart_style(ax, title: str, ylabel: str = ""):
+    """Apply consistent economist-style formatting to FRED overlay charts."""
+    ax.set_title(title, fontsize=14, fontweight="bold", color="#2B2B2B", pad=12)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=11)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(axis="y", alpha=0.3, linewidth=0.5)
+    ax.legend(fontsize=9, framealpha=0.7)
+
+
+def plot_sbl_backdrop(
+    fred_df: pd.DataFrame,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """
+    SBL Backdrop: Large-bank securities-in-bank-credit vs
+    broker-dealer margin-loan proxy.
+    """
+    sbc_col = next((c for c in ["SBCLCBM027SBOG", "INVEST"] if c in fred_df.columns), None)
+    bd_col = next((c for c in ["BOGZ1FU663067005A", "BOGZ1FU664004005Q"] if c in fred_df.columns), None)
+    if not sbc_col:
+        return None
+
+    fig, ax1 = plt.subplots(figsize=(14, 6))
+    ax1.plot(fred_df.index, fred_df[sbc_col], color="#4C78A8", linewidth=2,
+             label="Large-Bank Securities in Bank Credit")
+    ax1.set_ylabel("Bil. of $", color="#4C78A8", fontsize=11)
+    ax1.tick_params(axis="y", labelcolor="#4C78A8")
+
+    if bd_col:
+        ax2 = ax1.twinx()
+        ax2.plot(fred_df.index, fred_df[bd_col], color="#F7A81B", linewidth=1.5,
+                 alpha=0.8, label="Broker-Dealer Margin Proxy")
+        ax2.set_ylabel("Mil. of $", color="#F7A81B", fontsize=11)
+        ax2.tick_params(axis="y", labelcolor="#F7A81B")
+        ax2.spines["top"].set_visible(False)
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc="upper left")
+
+    _fred_chart_style(ax1, "SBL Market Backdrop: Securities Inventory vs Broker-Dealer Leverage")
+
+    # Regime shading
+    if "REGIME__SBL_Deleveraging" in fred_df.columns:
+        regime = fred_df["REGIME__SBL_Deleveraging"].reindex(fred_df.index).fillna(0)
+        ax1.fill_between(fred_df.index, ax1.get_ylim()[0], ax1.get_ylim()[1],
+                         where=regime > 0, alpha=0.08, color="red", label="_regime")
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=True)
+        plt.close(fig)
+    return fig
+
+
+def plot_jumbo_conditions(
+    fred_df: pd.DataFrame,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """
+    Jumbo Mortgage Conditions: rate + demand + tightening standards.
+    """
+    rate_col = "OBMMIJUMBO30YF" if "OBMMIJUMBO30YF" in fred_df.columns else None
+    dem_col = next((c for c in ["SUBLPDHMDJLGNQ", "SUBLPDHMDJNQ"] if c in fred_df.columns), None)
+    std_col = next((c for c in ["SUBLPDHMSKLGNQ", "SUBLPDHMSKNQ"] if c in fred_df.columns), None)
+    if not any([rate_col, dem_col, std_col]):
+        return None
+
+    fig, axes = plt.subplots(1 if not dem_col and not std_col else 2, 1,
+                             figsize=(14, 8 if dem_col or std_col else 5),
+                             sharex=True)
+    if not isinstance(axes, np.ndarray):
+        axes = [axes]
+
+    # Panel 1: Jumbo rate (+ conforming for spread context)
+    ax = axes[0]
+    if rate_col:
+        ax.plot(fred_df.index, fred_df[rate_col], color="#d32f2f", linewidth=2,
+                label="30Y Jumbo Rate")
+    if "MORTGAGE30US" in fred_df.columns:
+        ax.plot(fred_df.index, fred_df["MORTGAGE30US"], color="#4C78A8",
+                linewidth=1.5, alpha=0.7, label="30Y Conforming Rate")
+    if "SPREAD__Jumbo_vs_Conforming" in fred_df.columns:
+        ax_sp = ax.twinx()
+        ax_sp.fill_between(fred_df.index,
+                           fred_df["SPREAD__Jumbo_vs_Conforming"].fillna(0),
+                           alpha=0.15, color="#F7A81B", label="Jumbo Spread")
+        ax_sp.set_ylabel("Spread (ppt)", fontsize=9, color="#F7A81B")
+        ax_sp.spines["top"].set_visible(False)
+    _fred_chart_style(ax, "Jumbo Mortgage Rate & Spread", "%")
+
+    # Panel 2: SLOOS demand + standards
+    if len(axes) > 1 and (dem_col or std_col):
+        ax2 = axes[1]
+        if dem_col:
+            ax2.plot(fred_df.index, fred_df[dem_col].ffill(), color="#388e3c",
+                     linewidth=2, label="Jumbo Demand (SLOOS)")
+        if std_col:
+            ax2.plot(fred_df.index, fred_df[std_col].ffill(), color="#d32f2f",
+                     linewidth=2, label="Jumbo Standards (SLOOS)")
+        ax2.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        _fred_chart_style(ax2, "Jumbo Credit Appetite (SLOOS)", "Net % of Banks")
+
+        if "REGIME__Jumbo_Tightening" in fred_df.columns:
+            regime = fred_df["REGIME__Jumbo_Tightening"].reindex(fred_df.index).fillna(0)
+            ax2.fill_between(fred_df.index, ax2.get_ylim()[0], ax2.get_ylim()[1],
+                             where=regime > 0, alpha=0.08, color="red")
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=True)
+        plt.close(fig)
+    return fig
+
+
+def plot_resi_credit_cycle(
+    fred_df: pd.DataFrame,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """
+    Residential Credit Cycle: top-100-bank delinquency / charge-off
+    vs large-bank residential balance growth.
+    """
+    dq_col = "DRSFRMT100S" if "DRSFRMT100S" in fred_df.columns else None
+    co_col = "CORSFRMT100S" if "CORSFRMT100S" in fred_df.columns else None
+    growth_col = next((c for c in ["H8B1221NLGCQG", "RRELCBM027SBOG__pct_chg_yoy"]
+                       if c in fred_df.columns), None)
+    if not dq_col:
+        return None
+
+    fig, ax1 = plt.subplots(figsize=(14, 6))
+
+    # Delinquency / charge-off on left axis
+    if dq_col:
+        ax1.plot(fred_df.index, fred_df[dq_col], color="#d32f2f", linewidth=2,
+                 label="Resi Delinquency (Top 100)")
+    if co_col:
+        ax1.plot(fred_df.index, fred_df[co_col], color="#ff7043", linewidth=1.5,
+                 alpha=0.8, label="Resi Charge-Off (Top 100)")
+    ax1.set_ylabel("Rate (%)", color="#d32f2f", fontsize=11)
+
+    # Growth on right axis
+    if growth_col:
+        ax2 = ax1.twinx()
+        ax2.plot(fred_df.index, fred_df[growth_col], color="#4C78A8", linewidth=1.5,
+                 label="Large-Bank Resi Growth")
+        ax2.set_ylabel("Growth (%)", color="#4C78A8", fontsize=11)
+        ax2.tick_params(axis="y", labelcolor="#4C78A8")
+        ax2.spines["top"].set_visible(False)
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc="upper left")
+
+    _fred_chart_style(ax1, "Residential Credit Cycle: Delinquency vs Balance Growth")
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=True)
+        plt.close(fig)
+    return fig
+
+
+def plot_cre_cycle(
+    fred_df: pd.DataFrame,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """
+    CRE Cycle: large-bank CRE growth vs standards vs delinquency / charge-off.
+    Three-panel layout: balances, standards/demand, credit quality.
+    """
+    growth_col = next((c for c in ["H8B3219NLGCMG", "CRELCBM027NBOG__pct_chg_yoy"]
+                       if c in fred_df.columns), None)
+    std_col = next((c for c in ["SUBLPDRCSNLGNQ", "SUBLPDRCSN"] if c in fred_df.columns), None)
+    dem_col = next((c for c in ["SUBLPDRCDNLGNQ", "SUBLPDRCDN"] if c in fred_df.columns), None)
+    dq_col = "DRCRELEXFT100S" if "DRCRELEXFT100S" in fred_df.columns else None
+    co_col = "CORCREXFT100S" if "CORCREXFT100S" in fred_df.columns else None
+    price_col = "COMREPUSQ159N" if "COMREPUSQ159N" in fred_df.columns else None
+
+    panels = sum([bool(growth_col), bool(std_col or dem_col), bool(dq_col or co_col)])
+    if panels == 0:
+        return None
+
+    fig, axes = plt.subplots(max(panels, 1), 1, figsize=(14, 4 * max(panels, 1)),
+                             sharex=True, squeeze=False)
+    axes = axes.flatten()
+    panel_idx = 0
+
+    # Panel 1: CRE growth
+    if growth_col:
+        ax = axes[panel_idx]
+        ax.plot(fred_df.index, fred_df[growth_col].ffill(), color="#4C78A8",
+                linewidth=2, label="CRE Loan Growth (Large Banks)")
+        ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        _fred_chart_style(ax, "CRE Loan Growth", "Annualized %")
+        panel_idx += 1
+
+    # Panel 2: Standards vs demand
+    if std_col or dem_col:
+        ax = axes[panel_idx]
+        if std_col:
+            ax.plot(fred_df.index, fred_df[std_col].ffill(), color="#d32f2f",
+                    linewidth=2, label="CRE Standards (Tightening)")
+        if dem_col:
+            ax.plot(fred_df.index, fred_df[dem_col].ffill(), color="#388e3c",
+                    linewidth=2, label="CRE Demand")
+        ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        _fred_chart_style(ax, "CRE SLOOS: Standards vs Demand", "Net % of Banks")
+        if "REGIME__CRE_Tightening" in fred_df.columns:
+            regime = fred_df["REGIME__CRE_Tightening"].reindex(fred_df.index).fillna(0)
+            ax.fill_between(fred_df.index, ax.get_ylim()[0], ax.get_ylim()[1],
+                            where=regime > 0, alpha=0.08, color="red")
+        panel_idx += 1
+
+    # Panel 3: Delinquency / charge-off / CRE prices
+    if dq_col or co_col:
+        ax = axes[panel_idx]
+        if dq_col:
+            ax.plot(fred_df.index, fred_df[dq_col], color="#d32f2f",
+                    linewidth=2, label="CRE Delinquency (Top 100)")
+        if co_col:
+            ax.plot(fred_df.index, fred_df[co_col], color="#ff7043",
+                    linewidth=1.5, alpha=0.8, label="CRE Charge-Off (Top 100)")
+        if price_col:
+            ax2 = ax.twinx()
+            ax2.plot(fred_df.index, fred_df[price_col], color="#9C6FB6",
+                     linewidth=1.5, alpha=0.7, label="CRE Price YoY %")
+            ax2.set_ylabel("YoY %", color="#9C6FB6", fontsize=9)
+            ax2.spines["top"].set_visible(False)
+        _fred_chart_style(ax, "CRE Credit Quality & Collateral Value", "Rate (%)")
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=True)
+        plt.close(fig)
+    return fig
+
+
+def plot_cs_collateral_panel(
+    fred_df: pd.DataFrame,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """
+    Private-Bank Collateral Panel: high-tier Case-Shiller metros vs
+    national / 20-city composite + metro sales-pair counts.
+    """
+    # High-tier metros
+    ht_cols = [c for c in ["NYXRHTSA", "LXXRHTSA", "SFXRHTSA", "MIXRHTSA", "WDXRHTSA"]
+               if c in fred_df.columns]
+    nat_col = "CSUSHPISA" if "CSUSHPISA" in fred_df.columns else None
+    comp_col = "SPCS20RSA" if "SPCS20RSA" in fred_df.columns else None
+    spc_col = next((c for c in ["SPCS20RPSNSA", "SPCS10RPSNSA"] if c in fred_df.columns), None)
+
+    if not nat_col and not ht_cols:
+        return None
+
+    fig, axes = plt.subplots(2 if spc_col else 1, 1,
+                             figsize=(14, 9 if spc_col else 5),
+                             sharex=True)
+    if not isinstance(axes, np.ndarray):
+        axes = [axes]
+
+    # Panel 1: HPI levels (YoY changes)
+    ax = axes[0]
+    colors = ["#d32f2f", "#4C78A8", "#388e3c", "#F7A81B", "#9C6FB6"]
+    metro_names = {"NYXRHTSA": "NYC High", "LXXRHTSA": "LA High", "SFXRHTSA": "SF High",
+                   "MIXRHTSA": "Miami High", "WDXRHTSA": "DC High"}
+
+    for i, col in enumerate(ht_cols[:5]):
+        yoy = fred_df[col].pct_change(12) * 100
+        ax.plot(fred_df.index, yoy, color=colors[i % len(colors)],
+                linewidth=1.5, label=metro_names.get(col, col))
+
+    if nat_col:
+        nat_yoy = fred_df[nat_col].pct_change(12) * 100
+        ax.plot(fred_df.index, nat_yoy, color="black", linewidth=2.5,
+                linestyle="--", label="National", alpha=0.7)
+
+    ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    _fred_chart_style(ax, "Case-Shiller: High-Tier Metros vs National (YoY %)", "YoY %")
+
+    # Panel 2: Sales-pair counts
+    if spc_col and len(axes) > 1:
+        ax2 = axes[1]
+        ax2.bar(fred_df.index, fred_df[spc_col].fillna(0),
+                width=25, color="#4C78A8", alpha=0.6, label="Sales Pair Count")
+        _fred_chart_style(ax2, "Market Liquidity: Sales Pair Counts", "Count")
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=True)
+        plt.close(fig)
+    return fig
+
+
 # ---------- MAIN: drop-in replacement ----------
 def generate_reports(
     # data window & figure sizing
@@ -1806,6 +2105,74 @@ def generate_reports(
         fig = plot_macro_overlay(proc_df_with_peers, subject_bank_cert, excel_file, save_path=macro_path)
         if fig:
             print(f"  Macro overlay chart saved: {macro_path}")
+
+        # ------------------------------------------------------------------
+        # FRED EXPANSION CHARTS -> charts_dir
+        # ------------------------------------------------------------------
+        print("\n" + "-" * 60)
+        print("GENERATING FRED EXPANSION CHARTS")
+        print("-" * 60)
+
+        try:
+            # Try to load FRED expansion sheets from the Excel file
+            fred_expansion_df = None
+            with pd.ExcelFile(excel_file) as xls:
+                for sheet_cand in ["FRED_SBL_Backdrop", "FRED_Residential_Jumbo",
+                                   "FRED_CRE", "FRED_CaseShiller_Selected"]:
+                    if sheet_cand in xls.sheet_names:
+                        _df = pd.read_excel(xls, sheet_name=sheet_cand)
+                        if "DATE" in _df.columns:
+                            _df["DATE"] = pd.to_datetime(_df["DATE"])
+                            _df = _df.set_index("DATE")
+                        if fred_expansion_df is None:
+                            fred_expansion_df = _df
+                        else:
+                            fred_expansion_df = fred_expansion_df.join(_df, how="outer")
+
+            if fred_expansion_df is not None and not fred_expansion_df.empty:
+                # 1. SBL Backdrop
+                fig = plot_sbl_backdrop(
+                    fred_expansion_df,
+                    save_path=str(charts_dir / f"{base}_sbl_backdrop_{stamp}.png"),
+                )
+                if fig:
+                    print(f"  SBL backdrop chart saved")
+
+                # 2. Jumbo Conditions
+                fig = plot_jumbo_conditions(
+                    fred_expansion_df,
+                    save_path=str(charts_dir / f"{base}_jumbo_conditions_{stamp}.png"),
+                )
+                if fig:
+                    print(f"  Jumbo conditions chart saved")
+
+                # 3. Residential Credit Cycle
+                fig = plot_resi_credit_cycle(
+                    fred_expansion_df,
+                    save_path=str(charts_dir / f"{base}_resi_credit_cycle_{stamp}.png"),
+                )
+                if fig:
+                    print(f"  Resi credit cycle chart saved")
+
+                # 4. CRE Cycle
+                fig = plot_cre_cycle(
+                    fred_expansion_df,
+                    save_path=str(charts_dir / f"{base}_cre_cycle_{stamp}.png"),
+                )
+                if fig:
+                    print(f"  CRE cycle chart saved")
+
+                # 5. Case-Shiller Collateral Panel
+                fig = plot_cs_collateral_panel(
+                    fred_expansion_df,
+                    save_path=str(charts_dir / f"{base}_cs_collateral_panel_{stamp}.png"),
+                )
+                if fig:
+                    print(f"  Case-Shiller collateral panel saved")
+            else:
+                print("  No FRED expansion sheets found — run fred_ingestion_engine.py first")
+        except Exception as e:
+            print(f"  Skipped FRED expansion charts: {e}")
 
         # ------------------------------------------------------------------
         # SUMMARY
