@@ -548,7 +548,26 @@ def test_workbook_includes_audit_sheets():
     assert "Composite_Coverage_Audit=composite_coverage_df" in source, (
         "write_excel_output call missing Composite_Coverage_Audit kwarg"
     )
+    # Case-Shiller ZIP sheets must be unpacked via **cs_kwargs
+    assert "**cs_kwargs" in source, (
+        "write_excel_output call missing **cs_kwargs for Case-Shiller ZIP sheets"
+    )
     print("  [PASS] test_workbook_includes_audit_sheets")
+
+
+def test_case_shiller_zip_sheets_resilient():
+    """Case-Shiller ZIP enrichment must be wrapped in try/except to prevent pipeline crash."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "build_case_shiller_zip_sheets()" in source, (
+        "build_case_shiller_zip_sheets() call missing from pipeline"
+    )
+    # Must be wrapped in try/except for resilience
+    assert "Case-Shiller ZIP enrichment failed (non-fatal)" in source, (
+        "Case-Shiller ZIP enrichment not wrapped in try/except for resilience"
+    )
+    print("  [PASS] test_case_shiller_zip_sheets_resilient")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -597,6 +616,7 @@ def run_all_tests():
         test_preflight_does_not_block_historical_material,
         test_load_config_defaults,
         test_workbook_includes_audit_sheets,
+        test_case_shiller_zip_sheets_resilient,
     ]
 
     passed = 0
@@ -1123,6 +1143,36 @@ class TestWorkbookAuditSheets(unittest.TestCase):
         with open(src_path, "r") as f:
             source = f.read()
         self.assertIn("Composite_Coverage_Audit=composite_coverage_df", source)
+
+    def test_cs_kwargs_in_write_call(self):
+        """write_excel_output must unpack **cs_kwargs for Case-Shiller ZIP sheets."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("**cs_kwargs", source)
+
+
+class TestCaseShillerZIPPersistence(unittest.TestCase):
+    """Tests for Case-Shiller ZIP sheet persistence in workbook output."""
+
+    def test_zip_enrichment_is_resilient(self):
+        """Case-Shiller ZIP enrichment must be wrapped in try/except."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("Case-Shiller ZIP enrichment failed (non-fatal)", source)
+
+    def test_disabled_enrichment_produces_audit(self):
+        """When enrichment is disabled, audit sheet should still be non-empty."""
+        os.environ['ENABLE_CASE_SHILLER_ZIP_ENRICHMENT'] = 'false'
+        try:
+            from case_shiller_zip_mapper import build_case_shiller_zip_sheets
+            result = build_case_shiller_zip_sheets()
+            audit = result.get('CaseShiller_Metro_Map_Audit')
+            self.assertIsNotNone(audit, "Audit sheet should always be returned")
+            self.assertFalse(audit.empty, "Audit sheet should not be empty even when disabled")
+        finally:
+            os.environ.pop('ENABLE_CASE_SHILLER_ZIP_ENRICHMENT', None)
 
 
 if __name__ == '__main__':

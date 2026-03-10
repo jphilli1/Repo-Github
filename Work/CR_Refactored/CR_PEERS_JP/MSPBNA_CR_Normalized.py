@@ -6041,11 +6041,21 @@ class BankPerformanceDashboard:
         composite_coverage_df = pd.DataFrame(coverage_audit_rows) if coverage_audit_rows else pd.DataFrame()
 
         # --- Case-Shiller ZIP Enrichment (standalone sheets) ---
-        cs_zip_sheets = build_case_shiller_zip_sheets()  # No ZIP data wired yet; produces audit/skip sheet
+        # Produces up to 3 sheets: CaseShiller_Zip_Coverage, CaseShiller_Zip_Summary,
+        # CaseShiller_Metro_Map_Audit. Wrapped in try/except so HUD API failures
+        # do not crash the pipeline.
         cs_kwargs = {}
-        for sheet_name, sheet_df in cs_zip_sheets.items():
-            if isinstance(sheet_df, pd.DataFrame) and not sheet_df.empty:
-                cs_kwargs[sheet_name] = sheet_df
+        try:
+            cs_zip_sheets = build_case_shiller_zip_sheets()
+            for sheet_name, sheet_df in cs_zip_sheets.items():
+                if isinstance(sheet_df, pd.DataFrame) and not sheet_df.empty:
+                    cs_kwargs[sheet_name] = sheet_df
+            if cs_kwargs:
+                logging.info(f"Case-Shiller ZIP sheets to write: {list(cs_kwargs.keys())}")
+            else:
+                logging.warning("Case-Shiller ZIP enrichment produced no non-empty sheets")
+        except Exception as e:
+            logging.warning(f"Case-Shiller ZIP enrichment failed (non-fatal): {e}")
 
         self.output_gen.write_excel_output(
             file_path=fname,
