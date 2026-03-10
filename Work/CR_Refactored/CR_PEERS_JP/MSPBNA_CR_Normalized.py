@@ -49,6 +49,11 @@ try:
 except ImportError:
     pass
 
+
+token = os.getenv("HUD_USER_TOKEN")
+print("HUD_USER_TOKEN found:", bool(token))
+print("Length:", len(token) if token else 0)
+print("Prefix:", token[:6] + "..." if token else None)
 _mspbna_raw = os.getenv("MSPBNA_CERT")
 _msbna_raw = os.getenv("MSBNA_CERT")
 if not _mspbna_raw or not _msbna_raw:

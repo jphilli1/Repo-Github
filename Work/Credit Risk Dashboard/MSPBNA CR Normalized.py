@@ -27,6 +27,17 @@ from scipy import stats
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as tqdm_asyncio
 
+# Metric registry — formal derived-metric specs and validation engine
+try:
+    from metric_registry import (
+        run_upstream_validation_suite,
+        DERIVED_METRIC_SPECS,
+        REPORT_CONSUMER_MAP,
+    )
+    _HAS_METRIC_REGISTRY = True
+except ImportError:
+    _HAS_METRIC_REGISTRY = False
+
 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -940,6 +951,46 @@ def get_all_peer_certs():
     for group in PEER_GROUPS.values():
         all_certs.update(group['certs'])
     return list(all_certs)
+
+
+def validate_peer_group_uniqueness() -> list:
+    """Hard validation: no two peer groups with the SAME use_normalized flag
+    may share an identical sorted member-cert tuple."""
+    issues = []
+    by_mode = {}  # (use_normalized, tuple(sorted certs)) -> list of group names
+    for pg_type, pg_def in PEER_GROUPS.items():
+        key = (pg_def.get("use_normalized", False), tuple(sorted(pg_def["certs"])))
+        by_mode.setdefault(key, []).append(pg_type.value if hasattr(pg_type, 'value') else str(pg_type))
+    for key, names in by_mode.items():
+        if len(names) > 1:
+            issues.append(
+                f"DUPLICATE: Groups {names} share identical certs {key[1]} "
+                f"with use_normalized={key[0]}"
+            )
+    return issues
+
+
+def build_peer_group_definitions_df() -> 'pd.DataFrame':
+    """Build a DataFrame documenting all peer group definitions for the Excel output."""
+    import pandas as pd
+    rows = []
+    for pg_type, pg_def in PEER_GROUPS.items():
+        cert_id = {
+            "Core_Private_Bank": 90001, "MS_Family_Plus": 90002, "All_Peers": 90003,
+            "Core_Private_Bank_Norm": 90004, "MS_Family_Plus_Norm": 90005, "All_Peers_Norm": 90006,
+        }.get(pg_type.value if hasattr(pg_type, 'value') else str(pg_type), 0)
+        rows.append({
+            "Composite_CERT": cert_id,
+            "Group_Type": pg_type.value if hasattr(pg_type, 'value') else str(pg_type),
+            "Short_Name": pg_def.get("short_name", ""),
+            "Description": pg_def.get("description", ""),
+            "Member_CERTs": str(sorted(pg_def["certs"])),
+            "Member_Count": len(pg_def["certs"]),
+            "Use_Normalized": pg_def.get("use_normalized", False),
+            "Use_Case": pg_def.get("use_case", ""),
+            "Display_Order": pg_def.get("display_order", 0),
+        })
+    return pd.DataFrame(rows)
 # MSPBNA V6 SEGMENTATION (Adapted for V5 Structure)
 # NOTE: SBL and Fund Finance NCOs are not separately reported in Call Reports.
 # They are lumped into 'NTOTH' (All Other). They are left empty [] here to
@@ -2764,12 +2815,11 @@ class BankMetricsProcessor:
         df_processed['RIC_CRE_PD90']       = resolve_cre_metric(df_processed, 'P9')
 
         # C. Residential (Standard View Balance = Wealth Resi Definition)
-        # Fix: do NOT rely on JJ-series here (can be missing/0 for some banks like MSBNA).
-        # Use the same numerator logic as the normalized wealth resi balance:
-        # First Liens (1797) + Jr Liens (5367) + HELOC (1799)
-        resi_first = best_of(df_processed, ['RCON1797', 'RCFD1797']).fillna(0)
-        resi_jr    = best_of(df_processed, ['RCON5367', 'RCFD5367']).fillna(0)
-        heloc      = best_of(df_processed, ['RCON1799', 'RCFD1799']).fillna(0)
+        # Capture ALL residential segments: First Liens + Junior Liens + HELOC/Open-End
+        resi_first = best_of(df_processed, ['RCFD1797', 'RCON1797']).fillna(0)
+        resi_jr    = best_of(df_processed, ['RCFD5367', 'RCON5367']).fillna(0)
+        # Open-end: try RC-C (5368) first, then alternative schedule (1799)
+        heloc      = best_of(df_processed, ['RCFD5368', 'RCON5368', 'RCFD1799', 'RCON1799']).fillna(0)
 
         # Calculate strict sum (Granular)
         resi_sum = resi_first + resi_jr + heloc
@@ -3148,6 +3198,10 @@ class BankMetricsProcessor:
                          norm_cols['Excl_Auto_P9'] + norm_cols['Excl_Ag_P9'] +
                          norm_cols['Excl_OO_CRE_P9'])
 
+        # Persist excluded PD totals for top-down Norm_PD30/PD90 calculation
+        norm_cols['Excluded_PD30'] = excluded_pd30
+        norm_cols['Excluded_PD90'] = excluded_pd90
+
         # --- [CRITICAL STEP] MERGE BATCH 1 ---
         df_norm_batch = pd.DataFrame(norm_cols, index=df_processed.index)
         df_processed = pd.concat([df_processed, df_norm_batch], axis=1)
@@ -3188,23 +3242,64 @@ class BankMetricsProcessor:
 
 
 
-        df_processed['Norm_Total_NCO'] = (df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']).clip(lower=0)
+        # --- Diagnostics-first normalization (no silent .clip(lower=0)) ---
+        # Raw residuals: can be negative if exclusions > totals (over-exclusion)
+        _nco_residual = df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']
+        df_processed['_Norm_NCO_Residual'] = _nco_residual
 
-        # FIX: ensure Total_Nonaccrual exists before using it
         total_na = (
             df_processed['Total_Nonaccrual']
             if 'Total_Nonaccrual' in df_processed.columns
             else pd.Series(0.0, index=df_processed.index)
         )
-        # [#3] Define total_na immediately before using it (prevents NameError)
-        total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
+        _na_residual = total_na - df_processed.get('Excluded_Nonaccrual', 0.0)
+        df_processed['_Norm_NA_Residual'] = _na_residual
 
-        df_processed['Norm_Total_Nonaccrual'] = (
-            (total_na - df_processed.get('Excluded_Nonaccrual', 0.0))
-            .clip(lower=0)
+        # Over-exclusion flags (True = exclusion exceeds total)
+        df_processed['_Flag_NCO_OverExclusion'] = (_nco_residual < 0).astype(int)
+        df_processed['_Flag_NA_OverExclusion'] = (_na_residual < 0).astype(int)
+
+        # Over-exclusion percentage (how far negative as % of total)
+        df_processed['_NCO_OverExclusion_Pct'] = np.where(
+            df_processed['Total_NCO_TTM'].abs() > 0,
+            (_nco_residual / df_processed['Total_NCO_TTM'].replace(0, np.nan)) * 100,
+            np.nan
+        )
+        df_processed['_NA_OverExclusion_Pct'] = np.where(
+            total_na.abs() > 0,
+            (_na_residual / total_na.replace(0, np.nan)) * 100,
+            np.nan
+        )
+
+        # Tolerance-aware clipping: minor negatives (<5% of total) -> 0, material -> NaN
+        OVEREXCL_TOLERANCE = -0.05  # 5% tolerance threshold
+        df_processed['Norm_Total_NCO'] = np.where(
+            _nco_residual >= 0, _nco_residual,
+            np.where(
+                (_nco_residual / df_processed['Total_NCO_TTM'].replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan  # Minor negative -> 0, material -> NaN
+            )
+        )
+        df_processed['Norm_Total_Nonaccrual'] = np.where(
+            _na_residual >= 0, _na_residual,
+            np.where(
+                (_na_residual / total_na.replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+
+        # Severity: 'ok', 'minor_clip', 'material_nan'
+        df_processed['_Norm_NCO_Severity'] = np.where(
+            _nco_residual >= 0, 'ok',
+            np.where(df_processed['Norm_Total_NCO'].notna(), 'minor_clip', 'material_nan')
+        )
+        df_processed['_Norm_NA_Severity'] = np.where(
+            _na_residual >= 0, 'ok',
+            np.where(df_processed['Norm_Total_Nonaccrual'].notna(), 'minor_clip', 'material_nan')
         )
         # =========================================================
-        # OVERRIDE: Normalized Performance (Wealth Segments Only)
+        # WEALTH RESI SEGMENT METRICS (for HTML tables, NOT for
+        # normalized totals — normalized totals are TOP-DOWN only)
         # =========================================================
 
         # 1. Define Wealth Resi Balance
@@ -3215,36 +3310,49 @@ class BankMetricsProcessor:
             )
         wealth_resi_bal = df_processed['Wealth_Resi_Balance']
 
-        # 2. Calculate PURE Wealth Resi Numerators (Excluding CRE)
+        # 2. Calculate PURE Wealth Resi Numerators (for segment-level rates)
         wealth_resi_nco_pure = sum_cols(df_processed, ['NTRERES', 'NTRELOC']).clip(lower=0)
         wealth_resi_na_pure  = sum_cols(df_processed, ['NARERES', 'NARELOC']).clip(lower=0)
         wealth_resi_pd30_pure = sum_cols(df_processed, ['P3RERES', 'P3RELOC']).clip(lower=0)
         wealth_resi_pd90_pure = sum_cols(df_processed, ['P9RERES', 'P9RELOC']).clip(lower=0)
 
-        # 3. Calculate Rates for HTML Report
+        # 3. Calculate Segment Rates for HTML Report
         df_processed['Wealth_Resi_TTM_NCO_Rate'] = safe_div(wealth_resi_nco_pure, wealth_resi_bal)
         df_processed['Wealth_Resi_NA_Rate'] = safe_div(wealth_resi_na_pure, wealth_resi_bal)
-
-        # Total Delinquency (30-89 + 90+)
         df_processed['Wealth_Resi_Delinquency_Rate'] = safe_div(
             wealth_resi_pd30_pure + wealth_resi_pd90_pure,
             wealth_resi_bal
         )
 
-        # 4. Normalized Master Metrics (Resi Pure + Inv CRE)
-        # Reconstruct total normalized metrics by adding Investment CRE back in
-        df_processed['Norm_Total_NCO'] = wealth_resi_nco_pure + sum_cols(df_processed, ['NTREMULT', 'NTRENROT'])
-
-        # Define total_na immediately before using it
-        total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
-
-        df_processed['Norm_Total_Nonaccrual'] = wealth_resi_na_pure + sum_cols(df_processed, ['NAREMULT', 'NARENROT'])
-        df_processed['Norm_PD30'] = wealth_resi_pd30_pure + sum_cols(df_processed, ['P3REMULT', 'P3RENROT'])
-        df_processed['Norm_PD90'] = wealth_resi_pd90_pure + sum_cols(df_processed, ['P9REMULT', 'P9RENROT'])
+        # 4. TOP-DOWN Norm_PD30 / Norm_PD90 (Total - Excluded)
+        # Norm_Total_NCO and Norm_Total_Nonaccrual are already set top-down above.
+        # Norm_PD30 and Norm_PD90 need the same top-down approach.
+        _excl_pd30 = df_processed.get('Excluded_PD30', 0.0)
+        _excl_pd90 = df_processed.get('Excluded_PD90', 0.0)
+        df_processed['Norm_PD30'] = (df_processed['TopHouse_PD30'] - _excl_pd30).clip(lower=0)
+        df_processed['Norm_PD90'] = (df_processed['TopHouse_PD90'] - _excl_pd90).clip(lower=0)
 
         #(D) Wealth-only denominator ---
         # --- G. Calculate Normalized Master Metrics (COMPONENTS ONLY) ---
-        df_processed['Norm_Gross_Loans'] = (df_processed['Gross_Loans'] - df_processed['Excluded_Balance']).clip(lower=0)
+        _loans_residual = df_processed['Gross_Loans'] - df_processed['Excluded_Balance']
+        df_processed['_Norm_Loans_Residual'] = _loans_residual
+        df_processed['_Flag_Loans_OverExclusion'] = (_loans_residual < 0).astype(int)
+        df_processed['_Loans_OverExclusion_Pct'] = np.where(
+            df_processed['Gross_Loans'].abs() > 0,
+            (_loans_residual / df_processed['Gross_Loans'].replace(0, np.nan)) * 100,
+            np.nan
+        )
+        df_processed['Norm_Gross_Loans'] = np.where(
+            _loans_residual >= 0, _loans_residual,
+            np.where(
+                (_loans_residual / df_processed['Gross_Loans'].replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+        df_processed['_Norm_Loans_Severity'] = np.where(
+            _loans_residual >= 0, 'ok',
+            np.where(df_processed['Norm_Gross_Loans'].notna(), 'minor_clip', 'material_nan')
+        )
 
         # [#4] Ensure Total_NCO_TTM is truly TTM of quarterly NCO derived from YTD
         if 'Total_NCO_TTM' not in df_processed.columns:
@@ -3260,11 +3368,37 @@ class BankMetricsProcessor:
             if 'Total_NCO_TTM' not in df_processed.columns:
                 df_processed['Total_NCO_TTM'] = 0.0
 
-        df_processed['Norm_Total_NCO'] = (df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']).clip(lower=0)
+        # Diagnostics-first normalization (second pass, same tolerance logic)
+        _nco_res2 = df_processed['Total_NCO_TTM'] - df_processed['Excluded_NCO_TTM']
+        df_processed['_Norm_NCO_Residual'] = _nco_res2
+        df_processed['_Flag_NCO_OverExclusion'] = (_nco_res2 < 0).astype(int)
+        df_processed['Norm_Total_NCO'] = np.where(
+            _nco_res2 >= 0, _nco_res2,
+            np.where(
+                (_nco_res2 / df_processed['Total_NCO_TTM'].replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+        df_processed['_Norm_NCO_Severity'] = np.where(
+            _nco_res2 >= 0, 'ok',
+            np.where(df_processed['Norm_Total_NCO'].notna(), 'minor_clip', 'material_nan')
+        )
 
-        # [#3] Define total_na immediately before using it
         total_na = df_processed['Total_Nonaccrual'] if 'Total_Nonaccrual' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
-        df_processed['Norm_Total_Nonaccrual'] = (total_na - df_processed['Excluded_Nonaccrual']).clip(lower=0)
+        _na_res2 = total_na - df_processed['Excluded_Nonaccrual']
+        df_processed['_Norm_NA_Residual'] = _na_res2
+        df_processed['_Flag_NA_OverExclusion'] = (_na_res2 < 0).astype(int)
+        df_processed['Norm_Total_Nonaccrual'] = np.where(
+            _na_res2 >= 0, _na_res2,
+            np.where(
+                (_na_res2 / total_na.replace(0, np.nan)) >= OVEREXCL_TOLERANCE,
+                0.0, np.nan
+            )
+        )
+        df_processed['_Norm_NA_Severity'] = np.where(
+            _na_res2 >= 0, 'ok',
+            np.where(df_processed['Norm_Total_Nonaccrual'].notna(), 'minor_clip', 'material_nan')
+        )
         # NOTE: Rates (Norm_Delinquency_Rate, etc.) are calculated in Section 4 using safe_div.
 
         # ---------------------------------------------------------
@@ -3416,14 +3550,15 @@ class BankMetricsProcessor:
         use_components = resi_components.ne(0)
         def compute_wealth_resi_bal(df):
             # Try RC-C components first (if present and non-trivial)
-            rcc_cols = ['RCFD1797','RCON1797','RCFD5367','RCON5367','RCFD5368','RCON5368']
-            have_any = any(c in df.columns for c in rcc_cols)
+            # First Liens (1797) + Junior Liens (5367) + HELOC/Open-End (5368, 1799)
+            rcc_first = best_of(df, ['RCFD1797', 'RCON1797']).fillna(0)
+            rcc_jr    = best_of(df, ['RCFD5367', 'RCON5367']).fillna(0)
+            rcc_heloc = best_of(df, ['RCFD5368', 'RCON5368', 'RCFD1799', 'RCON1799']).fillna(0)
+            rcc = rcc_first + rcc_jr + rcc_heloc
 
-            if have_any:
-                rcc = df.reindex(columns=rcc_cols, fill_value=0).fillna(0).sum(axis=1)
-                # If RC-C is effectively all zeros, fallback
-                if (rcc.abs().sum() > 0):
-                    return rcc.clip(lower=0)
+            # If RC-C is effectively all zeros, fallback
+            if (rcc.abs().sum() > 0):
+                return rcc.clip(lower=0)
 
             # Fallback: FDIC balance proxies (your “known good” definition)
             return (
@@ -3458,7 +3593,7 @@ class BankMetricsProcessor:
         new_cols['Norm_CRE_ACL_Share'] = safe_div(df_processed['RIC_CRE_ACL'], norm_acl_balance)
         new_cols['Norm_Resi_ACL_Share'] = safe_div(df_processed['RIC_Resi_ACL'], norm_acl_balance)
 
-        new_cols['Norm_RESI_ACL_Coverage'] = safe_div(df_processed['RIC_Resi_ACL'], wealth_resi_bal)
+        new_cols['Norm_Resi_ACL_Coverage'] = safe_div(df_processed['RIC_Resi_ACL'], wealth_resi_bal)
         new_cols['Norm_CRE_ACL_Coverage']  = safe_div(df_processed['RIC_CRE_ACL'], df_processed['CRE_Investment_Pure_Balance'])
         new_cols['Norm_Comm_ACL_Coverage'] = safe_div(df_processed['RIC_Comm_ACL'], df_processed['SBL_Balance'])
 
@@ -4854,7 +4989,7 @@ class ExcelOutputGenerator:
                     logging.info(f"Sheet '{sheet_name}' contains {n_rows} rows and {n_cols} cols.")
                     if n_rows > 1048576:
                         logging.error(f"Sheet '{sheet_name}' too large ({n_rows} rows).")
-                    write_index = sheet_name in ["Latest_Peer_Snapshot", "Averages_8Q_All_Metrics", "Data_Validation_Report"]
+                    write_index = sheet_name in ["Latest_Peer_Snapshot", "Averages_8Q_All_Metrics", "Data_Validation_Report", "Metric_Validation_Audit"]
                     df.to_excel(writer, sheet_name=sheet_name, index=write_index)
             logging.info("All data written, starting styling...")
             self._style_metric_descriptions_sheet(writer)
@@ -5212,6 +5347,11 @@ class BankPerformanceDashboard:
         """
         Creates composite 'dummy' banks for each defined Peer Group.
         These allows us to plot 'Core Peer Avg' lines on charts easily.
+
+        For normalized groups (use_normalized=True), only Norm_* rate columns
+        are averaged from peers; standard rate columns (TTM_NCO_Rate,
+        Nonaccrual_to_Gross_Loans_Rate, etc.) are set to NaN so the composite
+        is mathematically distinct from its standard counterpart.
         """
         logging.info("Generating historical composites for defined Peer Groups...")
 
@@ -5222,6 +5362,18 @@ class BankPerformanceDashboard:
 
         numeric_cols = df.select_dtypes(include=np.number).columns.drop('CERT', errors='ignore')
 
+        # Identify Norm_ rate columns vs standard rate columns
+        norm_rate_cols = [c for c in numeric_cols if c.startswith('Norm_')]
+        # Standard rate columns that have a Norm_ counterpart or are pure-standard rates
+        standard_rate_cols = [
+            c for c in numeric_cols
+            if not c.startswith('Norm_')
+            and any(kw in c for kw in [
+                '_Rate', '_Coverage', '_Composition', '_Share',
+                '_Pct', 'ROA', 'ROE', 'NIMY', 'EEFFR',
+            ])
+        ]
+
         for group_key, group_info in PEER_GROUPS.items():
             # Filter for peers in this group
             group_certs = group_info['certs']
@@ -5230,11 +5382,27 @@ class BankPerformanceDashboard:
             if peer_subset.empty:
                 continue
 
+            is_normalized = group_info.get('use_normalized', False)
+
             # Calculate average for every quarter
-            # We use a context manager to suppress grouping warnings
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
                 group_avg = peer_subset.groupby('REPDTE')[numeric_cols].mean().reset_index()
+
+            # For normalized composites: blank out standard rate columns so the
+            # composite is distinct from its standard counterpart (forces
+            # downstream consumers to use Norm_* columns).
+            if is_normalized:
+                for col in standard_rate_cols:
+                    if col in group_avg.columns:
+                        group_avg[col] = np.nan
+
+            # For standard composites: blank out Norm_ columns so there is no
+            # confusion about which metrics are authoritative.
+            else:
+                for col in norm_rate_cols:
+                    if col in group_avg.columns:
+                        group_avg[col] = np.nan
 
             # Assign Dummy Metadata
             dummy_cert = base_dummy_cert + group_info['display_order']
@@ -5243,7 +5411,7 @@ class BankPerformanceDashboard:
             group_avg['HQ_STATE'] = 'AVG'
 
             composites.append(group_avg)
-            logging.info(f"Created composite for {group_info['name']} (CERT {dummy_cert})")
+            logging.info(f"Created composite for {group_info['name']} (CERT {dummy_cert}, normalized={is_normalized})")
 
         if composites:
             df = pd.concat([df] + composites, ignore_index=True)
@@ -5459,6 +5627,22 @@ class BankPerformanceDashboard:
         powerbi_macro_df = enhanced_analyzer.generate_powerbi_output(processed_data)
 
 
+        # ── Metric Registry Validation ──────────────────────────────────────
+        # Run the formal derived-metric validation suite before writing output.
+        # Results go to a separate audit sheet in the Excel file.
+        metric_validation_df = pd.DataFrame()
+        if _HAS_METRIC_REGISTRY:
+            try:
+                logging.info("Running metric registry validation suite...")
+                metric_validation_df = run_upstream_validation_suite(proc_df_with_peers)
+                n_fail = (~metric_validation_df["Validation_Pass"]).sum() if not metric_validation_df.empty else 0
+                logging.info(f"Metric validation complete: {len(metric_validation_df)} checks, {n_fail} failures.")
+            except Exception as e:
+                logging.warning(f"Metric validation suite failed (non-fatal): {e}")
+                metric_validation_df = pd.DataFrame()
+        else:
+            logging.info("metric_registry not found — skipping derived-metric validation.")
+
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"{self.config.output_dir}/Bank_Performance_Dashboard_{ts}.xlsx"
         peer_comp_df = self._optimize_df_dtypes(peer_comp_df)
@@ -5474,9 +5658,9 @@ class BankPerformanceDashboard:
             # --- Normalized ACL Metrics ---
             {"MetricCode":"Norm_ACL_Balance",                 "Display":"Normalized ACL Balance",       "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":2, "Basis":"level"},
             {"MetricCode":"Norm_Risk_Adj_Allowance_Coverage", "Display":"Norm: Risk-Adj Coverage (Ex-SBL)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_RESI_ACL_Coverage",           "Display":"Resi Reserve % of Norm ACL",   "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE Reserve % of Norm ACL",    "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_Comm_ACL_Coverage",           "Display":"C&I Reserve % of Norm Loans",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_Resi_ACL_Coverage",            "Display":"Resi ACL / Wealth Resi Balance",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE ACL / CRE Investment Balance",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_Comm_ACL_Coverage",           "Display":"Comm ACL / SBL Balance",       "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_Investment_Composition", "Display":"Norm: CRE Invest. % (Ex-ADC)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_OO_Composition",         "Display":"Norm: CRE Owner-Occ %",        "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"ASSET", "Display":"Assets",                      "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":0, "Basis":"level"},
@@ -5557,6 +5741,60 @@ class BankPerformanceDashboard:
         ])
         # === END FDIC-META ===
 
+        # Augment FDIC_Metadata with dependency & consumer info from metric registry
+        if _HAS_METRIC_REGISTRY:
+            dep_col = []
+            consumer_col = []
+            for _, row in fdic_meta_df.iterrows():
+                mc = row.get("MetricCode", "")
+                spec = DERIVED_METRIC_SPECS.get(mc)
+                dep_col.append(", ".join(spec.dependencies) if spec else "")
+                consumer_col.append(", ".join(spec.consumers) if spec else "")
+            fdic_meta_df["Direct_Dependencies"] = dep_col
+            fdic_meta_df["Downstream_Report_Consumers"] = consumer_col
+
+        # --- Build Normalization Diagnostics sheet ---
+        diag_cols = [c for c in proc_df_with_peers.columns if c.startswith('_Norm_') or c.startswith('_Flag_') or c.endswith('_OverExclusion_Pct') or c.endswith('_Severity')]
+        if diag_cols:
+            norm_diag_df = proc_df_with_peers[['CERT', 'REPDTE'] + diag_cols].copy()
+            # Only include rows with at least one flag or non-ok severity
+            flag_cols = [c for c in diag_cols if c.startswith('_Flag_')]
+            if flag_cols:
+                norm_diag_df = norm_diag_df[norm_diag_df[flag_cols].sum(axis=1) > 0]
+        else:
+            norm_diag_df = pd.DataFrame()
+
+        # --- Build Resi Normalized Audit sheet ---
+        resi_audit_cols = [
+            'CERT', 'REPDTE', 'NAME',
+            'Wealth_Resi_Balance',
+            'Wealth_Resi_TTM_NCO_Rate', 'Wealth_Resi_NA_Rate', 'Wealth_Resi_Delinquency_Rate',
+            'Norm_Wealth_Resi_Composition', 'Wealth_Resi_Composition',
+            'Norm_Resi_ACL_Share', 'Norm_Resi_ACL_Coverage',
+        ]
+        available_resi_cols = [c for c in resi_audit_cols if c in proc_df_with_peers.columns]
+        if available_resi_cols:
+            resi_audit_df = proc_df_with_peers[available_resi_cols].copy()
+            # Only latest quarter
+            if 'REPDTE' in resi_audit_df.columns:
+                latest_q = resi_audit_df['REPDTE'].max()
+                resi_audit_df = resi_audit_df[resi_audit_df['REPDTE'] == latest_q]
+            # Add mapping/label status
+            resi_audit_df['_mapping_status'] = 'ok'
+            resi_audit_df['_label_status'] = 'ok'
+            # Flag if Norm_Wealth_Resi_Composition exists but Norm_Resi_Composition also present (collision)
+            if 'Norm_Resi_Composition' in proc_df_with_peers.columns:
+                resi_audit_df['_mapping_status'] = 'COLLISION: both Norm_Resi_Composition and Norm_Wealth_Resi_Composition exist'
+            resi_audit_df['_impacted_outputs'] = 'detailed_peer_table, segment_focus_resi, ratio_components_normalized'
+        else:
+            resi_audit_df = pd.DataFrame()
+
+        # --- Peer Group Definitions sheet + validation ---
+        peer_group_defs_df = build_peer_group_definitions_df()
+        pg_issues = validate_peer_group_uniqueness()
+        if pg_issues:
+            for issue in pg_issues:
+                logging.warning(f"PEER GROUP VALIDATION: {issue}")
 
         self.output_gen.write_excel_output(
             file_path=fname,
@@ -5565,13 +5803,17 @@ class BankPerformanceDashboard:
             Latest_Peer_Snapshot=snapshot_df,
             Averages_8Q_All_Metrics=avg_8q_all_metrics_df,
             FDIC_Metric_Descriptions=self.output_gen.fdic_desc_df,
-            FDIC_Metadata=fdic_meta_df,                     # <<— NEW SHEET
+            FDIC_Metadata=fdic_meta_df,
             Macro_Analysis=powerbi_macro_df,
             FDIC_Data=proc_df_with_peers,
             FRED_Data=fred_df.reset_index(),
             FRED_Metadata=fred_metadata_df,
             FRED_Descriptions=fred_desc_df,
             Data_Validation_Report=validation_df,
+            Metric_Validation_Audit=metric_validation_df,
+            Normalization_Diagnostics=norm_diag_df,
+            Peer_Group_Definitions=peer_group_defs_df,
+            Resi_Normalized_Audit=resi_audit_df,
         )
 
 
