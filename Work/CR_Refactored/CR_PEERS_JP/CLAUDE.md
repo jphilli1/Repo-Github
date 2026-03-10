@@ -142,15 +142,9 @@ All output files include the source Excel stem and a datestamp:
 
 These are **non-negotiable** for any agent editing this codebase:
 
-<<<<<<< HEAD
 ### ALWAYS UPDATE CLAUDE.md
 
 - Whenever you make architectural changes, add new charts, or change data pipelines, you **must** update this `CLAUDE.md` file to review restrictions, track to-do items, identify potential gaps, and inform future coding agents.
-=======
-### FDIC API Variables & FFIEC Waterfall
-
-- Always prefer FDIC top-level text aliases (e.g., `ASSET`, `NTCI`) over raw MDRM codes (`RCFD...`, `RIAD...`). When raw codes are necessary, you **MUST** fetch both the `RCFD` (Consolidated) and `RCON` (Domestic) codes. You must then coalesce them (`RCFD.fillna(RCON)`) to ensure apples-to-apples comparisons between international G-SIBs (FFIEC 031) and domestic-only banks (FFIEC 041/051). Never force internationally active banks to strictly use `RCON`, as this strips out their foreign office balances. Synthetic local variables must never be included in the raw API fetch request.
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 
 ### NO HARDCODING
 
@@ -207,63 +201,16 @@ All charts must use this color palette consistently:
 
 Both standard and normalized credit-deterioration charts are generated.
 
-### TABLE COLUMN ORDERING
+### FRED Deduplication
 
-- HTML tables comparing individual peers **must** always place the Subject Bank (MSPBNA) and MSBNA on the extreme left, followed by individual peers, followed by the peer average.
+- `series_ids` must always be deduplicated before async fetching to prevent `ValueError: cannot reindex on an axis with duplicate labels`.
+- Use `list(dict.fromkeys(series_ids))` to preserve order while removing duplicates.
+- The guard must exist both at construction time (when building `series_ids_to_fetch`) and at the entry point of `fetch_all_series_async()`.
 
-### TABLE COMPLETENESS
+### Always Update CLAUDE.md
 
-- Segment Focus tables must never truncate metrics. Both standard and normalized variants must explicitly map all 15 core segment series.
-
-### TABLE DUPLICATION
-
-- The Detailed Peer Analysis, Core PB Analysis, CRE Segment, and Resi Segment tables **must** ALWAYS output both a Standard and a Normalized version.
-
-### NORMALIZED RESIDENTIAL METRIC NAMING
-
-**Canonical names** — only these are valid column references:
-
-| Metric | Column Name | Numerator | Denominator | Type |
-|---|---|---|---|---|
-| Resi % of Norm Loans | `Norm_Wealth_Resi_Composition` | `Wealth_Resi_Balance` | `Norm_Gross_Loans` | composition |
-| Resi ACL Share | `Norm_Resi_ACL_Share` | `RIC_Resi_ACL` | `Norm_ACL_Balance` | share |
-| Resi ACL Coverage | `Norm_Resi_ACL_Coverage` | `RIC_Resi_ACL` | `Wealth_Resi_Balance` | coverage |
-| Resi NCO Rate | `Wealth_Resi_TTM_NCO_Rate` | `wealth_resi_nco_pure` | `Wealth_Resi_Balance` | rate |
-| Resi Nonaccrual Rate | `Wealth_Resi_NA_Rate` | `wealth_resi_na_pure` | `Wealth_Resi_Balance` | rate |
-| Resi Delinquency Rate | `Wealth_Resi_Delinquency_Rate` | PD30+PD90 pure | `Wealth_Resi_Balance` | rate |
-
-**Deprecated / phantom names** — must NEVER appear in code:
-- `Norm_Resi_Composition` — use `Norm_Wealth_Resi_Composition` instead
-- `Norm_RESI_ACL_Coverage` — use `Norm_Resi_ACL_Coverage` (consistent casing)
-- `RIC_Resi_Balance` — use `RIC_Resi_Cost` (RI-C cost basis column)
-- `RIC_CRE_Balance` — use `RIC_CRE_Cost` (RI-C cost basis column)
-
-**Coverage vs Share rule**: If the denominator is a loan balance, the metric is "coverage." If the denominator is total ACL, it is "share." Never label a share metric as coverage or vice versa.
-
-### NORMALIZATION METHODOLOGY
-
-**Normalized totals (e.g., `Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_Gross_Loans`, `Norm_PD30`, `Norm_PD90`) MUST always be calculated top-down:**
-
-```
-Norm_Total_NCO         = Total_NCO_TTM     - Excluded_NCO_TTM
-Norm_Total_Nonaccrual  = Total_Nonaccrual  - Excluded_Nonaccrual
-Norm_Gross_Loans       = Gross_Loans       - Excluded_Balance
-Norm_PD30              = TopHouse_PD30     - Excluded_PD30
-Norm_PD90              = TopHouse_PD90     - Excluded_PD90
-```
-
-**Never reconstruct normalized totals bottom-up** (e.g., `wealth_resi_nco_pure + sum_cols(...)`). Bottom-up reconstruction risks accidentally excluding core series like SBL or unmapped RESI lines.
-
-**All Residential Real Estate series must be unconditionally retained in normalized figures.** The exclusion set covers only: C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag, and Owner-Occupied CRE. Residential (1-4 Family + HELOC) and SBL are NEVER excluded.
-
-**Wealth Resi segment metrics** (`Wealth_Resi_TTM_NCO_Rate`, `Wealth_Resi_NA_Rate`, `Wealth_Resi_Delinquency_Rate`) are segment-level rates for HTML tables only — they do NOT feed into normalized totals.
-
-### FORMATTING RULES
-
-- **Diffs are Percentage-Point Deltas**: All "Diff vs Peer" columns MUST use simple subtraction (`v_subject - v_peer`), never relative percentage change (`(v_subject - v_peer) / v_peer`). Use `_fmt_percent_diff(diff, ref_value)` to format; it uses the reference value's scale to decide whether to multiply by 100.
-- **Dollar Amounts = $B**: FDIC data stores dollar amounts in thousands ($K). Use `_fmt_money_billions()` which converts: `v/1e6` → `$X.XB`, `v/1e3` → `$X.XM`. Never divide by `1e9` (that produces values 1000x too small).
-- **Multiplier metrics**: Metrics labeled `(x)` (e.g., CRE NPL Coverage) must format as `X.XXx`, not as `%`.
-- **Dead metric suppression**: If a metric is entirely 0/NaN across all displayed entities for the latest quarter, the row is automatically suppressed from HTML tables.
+- Architecture changes, new conventions, and non-trivial pipeline modifications **must** be documented in this file.
+- If you add a new coding convention, env variable, output sheet, or data-flow step, update the relevant section of `CLAUDE.md` before considering the task complete.
 
 ---
 
