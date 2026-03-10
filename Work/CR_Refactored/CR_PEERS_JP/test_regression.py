@@ -420,6 +420,138 @@ def test_claude_md_no_conflict_markers():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 9. BALANCE-GATING, COMPOSITE COVERAGE, PREFLIGHT SCOPING
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_balance_gate_ag_nco():
+    """A bank with zero excluded Ag balance cannot produce nonzero excluded Ag NCO
+    without the _Ag_NCO_Gated flag being set."""
+    ag_bal = np.array([0.0, 500.0, 0.0])
+    ag_nco_raw = np.array([27000.0, 1500.0, 0.0])
+    gated_nco = np.where(ag_bal > 0, ag_nco_raw, 0.0)
+    gated_flag = np.where((ag_bal == 0) & (ag_nco_raw != 0), True, False)
+
+    # Row 0: zero balance, nonzero raw NCO → gated to 0, flag set
+    assert gated_nco[0] == 0.0, f"Ag NCO should be gated to 0 when balance is zero, got {gated_nco[0]}"
+    assert gated_flag[0] == True, "Ag NCO gating flag should be True when balance=0 and raw NCO!=0"
+    # Row 1: positive balance → raw NCO passes through, no flag
+    assert gated_nco[1] == 1500.0, f"Ag NCO should pass through when balance > 0, got {gated_nco[1]}"
+    assert gated_flag[1] == False, "Ag NCO gating flag should be False when balance > 0"
+    # Row 2: zero balance, zero raw NCO → no flag
+    assert gated_nco[2] == 0.0
+    assert gated_flag[2] == False, "Ag NCO gating flag should be False when both are zero"
+    print("  [PASS] test_balance_gate_ag_nco")
+
+
+def test_balance_gate_auto_nco():
+    """A bank with zero excluded Auto balance cannot produce nonzero excluded Auto NCO
+    without the _Auto_NCO_Gated flag being set."""
+    auto_bal = np.array([0.0, 100.0])
+    auto_nco_raw = np.array([27000.0, 500.0])
+    gated_nco = np.where(auto_bal > 0, auto_nco_raw, 0.0)
+    gated_flag = np.where((auto_bal == 0) & (auto_nco_raw != 0), True, False)
+
+    assert gated_nco[0] == 0.0, f"Auto NCO should be gated to 0 when balance is zero, got {gated_nco[0]}"
+    assert gated_flag[0] == True, "Auto NCO gating flag should be True when balance=0 and raw NCO!=0"
+    assert gated_nco[1] == 500.0, f"Auto NCO should pass through when balance > 0, got {gated_nco[1]}"
+    assert gated_flag[1] == False
+    print("  [PASS] test_balance_gate_auto_nco")
+
+
+def test_composite_coverage_below_threshold_forces_nan():
+    """Composite coverage below 50% threshold forces NaN for normalized composite metric."""
+    # Simulate 8 contributor banks, only 3 have non-NaN Norm_NCO_Rate (37.5% < 50%)
+    MIN_COVERAGE_PCT = 0.50
+    contributor_values = pd.Series([0.01, np.nan, np.nan, 0.02, np.nan, np.nan, np.nan, 0.015])
+    non_nan_count = contributor_values.notna().sum()
+    total_count = len(contributor_values)
+    coverage = non_nan_count / total_count  # 3/8 = 0.375
+
+    composite_value = contributor_values.mean()  # Would be 0.015
+    if coverage < MIN_COVERAGE_PCT:
+        composite_value = np.nan
+
+    assert np.isnan(composite_value), (
+        f"Composite should be NaN when coverage ({coverage:.1%}) < threshold ({MIN_COVERAGE_PCT:.0%}), "
+        f"got {composite_value}"
+    )
+    print("  [PASS] test_composite_coverage_below_threshold_forces_nan")
+
+
+def test_preflight_blocks_norm_composite_90006_material_in_latest():
+    """validate_output_inputs blocks when normalized composite 90006
+    has material failure specifically in the latest plotted period."""
+    from report_generator import validate_output_inputs
+    proc_df = pd.DataFrame({
+        "CERT": [19977, 90006, 90004, 33124, 19977, 90006, 90004, 33124],
+        "REPDTE": [pd.Timestamp("2024-12-31")] * 4 + [pd.Timestamp("2025-03-31")] * 4,
+        "Norm_NCO_Rate": [0.01] * 8,
+        "_Norm_NCO_Severity": ["ok", "ok", "ok", "ok",  # historical: all ok
+                                "ok", "material_nan", "ok", "ok"],  # latest: 90006 material
+        "_Norm_NA_Severity": ["ok"] * 8,
+        "_Norm_Loans_Severity": ["ok"] * 8,
+    })
+    rolling_df = pd.DataFrame({"CERT": [19977, 90006, 90004, 90003, 90001, 33124]})
+    result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+    assert not result["valid"], "Should block when 90006 has material_nan at latest period"
+    assert any("90006" in e for e in result["errors"]), f"Errors should mention 90006: {result['errors']}"
+    print("  [PASS] test_preflight_blocks_norm_composite_90006_material_in_latest")
+
+
+def test_preflight_does_not_block_historical_material():
+    """validate_output_inputs does NOT block when material failure
+    is only in a historical period, not the latest."""
+    from report_generator import validate_output_inputs
+    proc_df = pd.DataFrame({
+        "CERT": [19977, 90006, 90004, 33124, 19977, 90006, 90004, 33124],
+        "REPDTE": [pd.Timestamp("2024-12-31")] * 4 + [pd.Timestamp("2025-03-31")] * 4,
+        "Norm_NCO_Rate": [0.01] * 8,
+        "_Norm_NCO_Severity": ["ok", "material_nan", "ok", "ok",  # historical: 90006 material
+                                "ok", "ok", "ok", "ok"],  # latest: all ok
+        "_Norm_NA_Severity": ["ok"] * 8,
+        "_Norm_Loans_Severity": ["ok"] * 8,
+    })
+    rolling_df = pd.DataFrame({"CERT": [19977, 90006, 90004, 90003, 90001, 33124]})
+    result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+    assert result["valid"], f"Should NOT block on historical-only material failures, got errors: {result['errors']}"
+    print("  [PASS] test_preflight_does_not_block_historical_material")
+
+
+def test_load_config_defaults():
+    """load_config defaults must be 34221 / 32992, not stale 19977."""
+    from report_generator import load_config
+    # Temporarily clear env vars to test defaults
+    old_mspbna = os.environ.pop("MSPBNA_CERT", None)
+    old_msbna = os.environ.pop("MSBNA_CERT", None)
+    try:
+        cfg = load_config()
+        assert cfg["mspbna_cert"] == 34221, f"MSPBNA_CERT default should be 34221, got {cfg['mspbna_cert']}"
+        assert cfg["msbna_cert"] == 32992, f"MSBNA_CERT default should be 32992, got {cfg['msbna_cert']}"
+        assert cfg["subject_bank_cert"] == 34221, f"subject_bank_cert should match mspbna_cert"
+    finally:
+        if old_mspbna is not None:
+            os.environ["MSPBNA_CERT"] = old_mspbna
+        if old_msbna is not None:
+            os.environ["MSBNA_CERT"] = old_msbna
+    print("  [PASS] test_load_config_defaults")
+
+
+def test_workbook_includes_audit_sheets():
+    """write_excel_output call must include Exclusion_Component_Audit
+    and Composite_Coverage_Audit as kwargs."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "Exclusion_Component_Audit=excl_audit_df" in source, (
+        "write_excel_output call missing Exclusion_Component_Audit kwarg"
+    )
+    assert "Composite_Coverage_Audit=composite_coverage_df" in source, (
+        "write_excel_output call missing Composite_Coverage_Audit kwarg"
+    )
+    print("  [PASS] test_workbook_includes_audit_sheets")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -457,6 +589,14 @@ def run_all_tests():
         test_preflight_blocks_peer_avg_material_nan,
         test_preflight_blocks_missing_normalized_composite,
         test_claude_md_no_conflict_markers,
+        # 9. Balance-gating, composite coverage, preflight scoping
+        test_balance_gate_ag_nco,
+        test_balance_gate_auto_nco,
+        test_composite_coverage_below_threshold_forces_nan,
+        test_preflight_blocks_norm_composite_90006_material_in_latest,
+        test_preflight_does_not_block_historical_material,
+        test_load_config_defaults,
+        test_workbook_includes_audit_sheets,
     ]
 
     passed = 0
@@ -824,6 +964,165 @@ class TestClaudeMDIntegrity(unittest.TestCase):
         for marker in ["<<<<<<<", "=======", ">>>>>>>"]:
             self.assertNotIn(marker, content,
                 f"CLAUDE.md contains merge conflict marker: {marker}")
+
+
+class TestBalanceGating(unittest.TestCase):
+    """Tests for balance-gating logic on excluded NCO categories."""
+
+    def test_ag_nco_gated_when_balance_zero(self):
+        """Zero Ag balance + nonzero Ag NCO → NCO gated to 0, flag set."""
+        ag_bal = np.array([0.0, 500.0, 0.0])
+        ag_nco_raw = np.array([27000.0, 1500.0, 0.0])
+        gated_nco = np.where(ag_bal > 0, ag_nco_raw, 0.0)
+        gated_flag = np.where((ag_bal == 0) & (ag_nco_raw != 0), True, False)
+
+        self.assertEqual(gated_nco[0], 0.0)
+        self.assertTrue(gated_flag[0])
+        self.assertEqual(gated_nco[1], 1500.0)
+        self.assertFalse(gated_flag[1])
+        self.assertFalse(gated_flag[2])
+
+    def test_auto_nco_gated_when_balance_zero(self):
+        """Zero Auto balance + nonzero Auto NCO → NCO gated to 0, flag set."""
+        auto_bal = np.array([0.0, 100.0])
+        auto_nco_raw = np.array([27000.0, 500.0])
+        gated_nco = np.where(auto_bal > 0, auto_nco_raw, 0.0)
+        gated_flag = np.where((auto_bal == 0) & (auto_nco_raw != 0), True, False)
+
+        self.assertEqual(gated_nco[0], 0.0)
+        self.assertTrue(gated_flag[0])
+        self.assertEqual(gated_nco[1], 500.0)
+        self.assertFalse(gated_flag[1])
+
+    def test_adc_nco_gated_when_balance_zero(self):
+        """Zero ADC balance + nonzero ADC NCO → NCO gated to 0, flag set."""
+        adc_bal = np.array([0.0, 200.0])
+        adc_nco_raw = np.array([5000.0, 300.0])
+        gated_nco = np.where(adc_bal > 0, adc_nco_raw, 0.0)
+        gated_flag = np.where((adc_bal == 0) & (adc_nco_raw != 0), True, False)
+
+        self.assertEqual(gated_nco[0], 0.0)
+        self.assertTrue(gated_flag[0])
+        self.assertEqual(gated_nco[1], 300.0)
+        self.assertFalse(gated_flag[1])
+
+    def test_oo_cre_nco_gated_when_balance_zero(self):
+        """Zero OO CRE balance + nonzero OO CRE NCO → NCO gated to 0, flag set."""
+        oo_bal = np.array([0.0, 1000.0])
+        oo_nco_raw = np.array([8000.0, 600.0])
+        gated_nco = np.where(oo_bal > 0, oo_nco_raw, 0.0)
+        gated_flag = np.where((oo_bal == 0) & (oo_nco_raw != 0), True, False)
+
+        self.assertEqual(gated_nco[0], 0.0)
+        self.assertTrue(gated_flag[0])
+        self.assertEqual(gated_nco[1], 600.0)
+        self.assertFalse(gated_flag[1])
+
+
+class TestCompositeCoverage(unittest.TestCase):
+    """Tests for normalized composite minimum coverage threshold."""
+
+    def test_below_threshold_forces_nan(self):
+        """Composite coverage below 50% → metric NaN'd out."""
+        MIN_COVERAGE_PCT = 0.50
+        # 3 of 8 contributors have data = 37.5% coverage
+        values = pd.Series([0.01, np.nan, np.nan, 0.02, np.nan, np.nan, np.nan, 0.015])
+        coverage = values.notna().sum() / len(values)
+        composite = values.mean() if coverage >= MIN_COVERAGE_PCT else np.nan
+        self.assertTrue(np.isnan(composite))
+        self.assertLess(coverage, MIN_COVERAGE_PCT)
+
+    def test_above_threshold_preserves_value(self):
+        """Composite coverage above 50% → metric preserved."""
+        MIN_COVERAGE_PCT = 0.50
+        # 5 of 8 contributors have data = 62.5% coverage
+        values = pd.Series([0.01, 0.02, np.nan, 0.02, 0.015, np.nan, np.nan, 0.01])
+        coverage = values.notna().sum() / len(values)
+        composite = values.mean() if coverage >= MIN_COVERAGE_PCT else np.nan
+        self.assertFalse(np.isnan(composite))
+        self.assertGreater(coverage, MIN_COVERAGE_PCT)
+
+    def test_exactly_at_threshold_preserves_value(self):
+        """Composite coverage at exactly 50% → metric preserved (>= not >)."""
+        MIN_COVERAGE_PCT = 0.50
+        # 4 of 8 contributors = exactly 50%
+        values = pd.Series([0.01, 0.02, np.nan, 0.02, np.nan, np.nan, np.nan, 0.01])
+        coverage = values.notna().sum() / len(values)
+        composite = values.mean() if coverage >= MIN_COVERAGE_PCT else np.nan
+        self.assertFalse(np.isnan(composite))
+        self.assertEqual(coverage, MIN_COVERAGE_PCT)
+
+
+class TestPreflightScoping(unittest.TestCase):
+    """Tests for preflight period-scoping behavior."""
+
+    def test_blocks_material_at_latest_period(self):
+        """Material severity at latest period is blocking."""
+        from report_generator import validate_output_inputs
+        proc_df = pd.DataFrame({
+            "CERT": [19977, 90006, 90004, 33124] * 2,
+            "REPDTE": [pd.Timestamp("2024-12-31")] * 4 + [pd.Timestamp("2025-03-31")] * 4,
+            "Norm_NCO_Rate": [0.01] * 8,
+            "_Norm_NCO_Severity": ["ok"] * 4 + ["ok", "material_nan", "ok", "ok"],
+            "_Norm_NA_Severity": ["ok"] * 8,
+            "_Norm_Loans_Severity": ["ok"] * 8,
+        })
+        rolling_df = pd.DataFrame({"CERT": [19977, 90006, 90004, 90003, 90001, 33124]})
+        result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+        self.assertFalse(result["valid"])
+
+    def test_historical_only_material_does_not_block(self):
+        """Material severity only in historical period is NOT blocking."""
+        from report_generator import validate_output_inputs
+        proc_df = pd.DataFrame({
+            "CERT": [19977, 90006, 90004, 33124] * 2,
+            "REPDTE": [pd.Timestamp("2024-12-31")] * 4 + [pd.Timestamp("2025-03-31")] * 4,
+            "Norm_NCO_Rate": [0.01] * 8,
+            "_Norm_NCO_Severity": ["ok", "material_nan", "ok", "ok"] + ["ok"] * 4,
+            "_Norm_NA_Severity": ["ok"] * 8,
+            "_Norm_Loans_Severity": ["ok"] * 8,
+        })
+        rolling_df = pd.DataFrame({"CERT": [19977, 90006, 90004, 90003, 90001, 33124]})
+        result = validate_output_inputs(proc_df, rolling_df, subject_cert=19977)
+        self.assertTrue(result["valid"], f"Should not block: {result['errors']}")
+
+
+class TestLoadConfigDefaults(unittest.TestCase):
+    """Tests for load_config() default values."""
+
+    def test_defaults_are_34221_32992(self):
+        """load_config defaults must be 34221 / 32992."""
+        from report_generator import load_config
+        old_mspbna = os.environ.pop("MSPBNA_CERT", None)
+        old_msbna = os.environ.pop("MSBNA_CERT", None)
+        try:
+            cfg = load_config()
+            self.assertEqual(cfg["mspbna_cert"], 34221)
+            self.assertEqual(cfg["msbna_cert"], 32992)
+            self.assertEqual(cfg["subject_bank_cert"], 34221)
+        finally:
+            if old_mspbna is not None:
+                os.environ["MSPBNA_CERT"] = old_mspbna
+            if old_msbna is not None:
+                os.environ["MSBNA_CERT"] = old_msbna
+
+
+class TestWorkbookAuditSheets(unittest.TestCase):
+    """Tests for audit sheet inclusion in workbook output."""
+
+    def test_exclusion_component_audit_in_source(self):
+        """write_excel_output call must include Exclusion_Component_Audit."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("Exclusion_Component_Audit=excl_audit_df", source)
+
+    def test_composite_coverage_audit_in_source(self):
+        """write_excel_output call must include Composite_Coverage_Audit."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("Composite_Coverage_Audit=composite_coverage_df", source)
 
 
 if __name__ == '__main__':

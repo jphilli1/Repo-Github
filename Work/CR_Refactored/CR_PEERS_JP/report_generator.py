@@ -94,8 +94,8 @@ def load_config() -> Dict[str, Any]:
     MSPBNA_CERT and MSBNA_CERT are loaded dynamically via os.getenv.
     The subject bank is set to MSPBNA_CERT.
     """
-    mspbna_cert = int(os.getenv("MSPBNA_CERT", "19977"))
-    msbna_cert = int(os.getenv("MSBNA_CERT", "19977"))
+    mspbna_cert = int(os.getenv("MSPBNA_CERT", "34221"))
+    msbna_cert = int(os.getenv("MSBNA_CERT", "32992"))
     return {
         'subject_bank_cert': mspbna_cert,
         'mspbna_cert': mspbna_cert,
@@ -178,38 +178,62 @@ def validate_output_inputs(
 
     # 3. Check severity columns for material failures on subject bank
     #    AND on plotted peer-average composites. Both are blocking.
+    #    Scoped to the LATEST plotted period only — historical failures are
+    #    informational but not blocking for current-period charts/tables.
     sev_cols = ["_Norm_NCO_Severity", "_Norm_NA_Severity", "_Norm_Loans_Severity"]
     blocking_certs = {subject_cert} | _NORMALIZED_COMPOSITES  # 90004, 90006
+
+    # Determine latest plotted period
+    latest_repdte = None
+    if "REPDTE" in proc_df.columns:
+        latest_repdte = proc_df["REPDTE"].max()
+
     for sev_col in sev_cols:
         if sev_col not in proc_df.columns:
             continue
-        material = (proc_df[sev_col] == "material_nan")
-        if not material.any():
+
+        # Scope to latest period for blocking checks
+        if latest_repdte is not None:
+            latest_df = proc_df[proc_df["REPDTE"] == latest_repdte]
+        else:
+            latest_df = proc_df
+
+        material_latest = (latest_df[sev_col] == "material_nan")
+        if not material_latest.any():
             continue
 
-        # Check blocking CERTs (subject + plotted peer-average composites)
+        # Check blocking CERTs at latest period
         for cert in blocking_certs:
-            cert_material = proc_df.loc[
-                (proc_df["CERT"] == cert) & material
+            cert_material = latest_df.loc[
+                (latest_df["CERT"] == cert) & material_latest
             ]
             if not cert_material.empty:
                 label = f"subject bank (CERT {cert})" if cert == subject_cert else f"peer-average composite (CERT {cert})"
                 errors.append(
-                    f"BLOCKING: {sev_col} — {label} has "
-                    f"{len(cert_material)} material over-exclusion rows"
+                    f"BLOCKING: {sev_col} — {label} has material over-exclusion "
+                    f"at latest period ({latest_repdte})"
                 )
                 suppressed.append("normalized_credit_chart")
                 suppressed.append("normalized_scatter_nco_vs_nonaccrual")
 
-        # Non-blocking CERTs get warnings only
-        non_blocking = proc_df.loc[
-            material & ~proc_df["CERT"].isin(blocking_certs)
+        # Non-blocking CERTs at latest period get warnings
+        non_blocking = latest_df.loc[
+            material_latest & ~latest_df["CERT"].isin(blocking_certs)
         ]
         if not non_blocking.empty:
             warnings.append(
                 f"{sev_col}: {len(non_blocking)} non-critical peer rows "
-                f"have material over-exclusion (NaN)"
+                f"have material over-exclusion at latest period"
             )
+
+    # 3b. Historical material failures: informational warnings only
+    for sev_col in sev_cols:
+        if sev_col not in proc_df.columns:
+            continue
+        all_material = (proc_df[sev_col] == "material_nan")
+        if all_material.any():
+            hist_count = all_material.sum()
+            warnings.append(f"{sev_col}: {hist_count} total historical material rows (informational)")
 
     # 4. Validate required peer-average composite CERTs exist
     proc_certs = set(proc_df["CERT"].unique()) if "CERT" in proc_df.columns else set()
