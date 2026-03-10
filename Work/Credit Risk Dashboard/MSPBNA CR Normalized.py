@@ -27,6 +27,17 @@ from scipy import stats
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as tqdm_asyncio
 
+# Metric registry — formal derived-metric specs and validation engine
+try:
+    from metric_registry import (
+        run_upstream_validation_suite,
+        DERIVED_METRIC_SPECS,
+        REPORT_CONSUMER_MAP,
+    )
+    _HAS_METRIC_REGISTRY = True
+except ImportError:
+    _HAS_METRIC_REGISTRY = False
+
 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -4854,7 +4865,7 @@ class ExcelOutputGenerator:
                     logging.info(f"Sheet '{sheet_name}' contains {n_rows} rows and {n_cols} cols.")
                     if n_rows > 1048576:
                         logging.error(f"Sheet '{sheet_name}' too large ({n_rows} rows).")
-                    write_index = sheet_name in ["Latest_Peer_Snapshot", "Averages_8Q_All_Metrics", "Data_Validation_Report"]
+                    write_index = sheet_name in ["Latest_Peer_Snapshot", "Averages_8Q_All_Metrics", "Data_Validation_Report", "Metric_Validation_Audit"]
                     df.to_excel(writer, sheet_name=sheet_name, index=write_index)
             logging.info("All data written, starting styling...")
             self._style_metric_descriptions_sheet(writer)
@@ -5492,6 +5503,22 @@ class BankPerformanceDashboard:
         powerbi_macro_df = enhanced_analyzer.generate_powerbi_output(processed_data)
 
 
+        # ── Metric Registry Validation ──────────────────────────────────────
+        # Run the formal derived-metric validation suite before writing output.
+        # Results go to a separate audit sheet in the Excel file.
+        metric_validation_df = pd.DataFrame()
+        if _HAS_METRIC_REGISTRY:
+            try:
+                logging.info("Running metric registry validation suite...")
+                metric_validation_df = run_upstream_validation_suite(proc_df_with_peers)
+                n_fail = (~metric_validation_df["Validation_Pass"]).sum() if not metric_validation_df.empty else 0
+                logging.info(f"Metric validation complete: {len(metric_validation_df)} checks, {n_fail} failures.")
+            except Exception as e:
+                logging.warning(f"Metric validation suite failed (non-fatal): {e}")
+                metric_validation_df = pd.DataFrame()
+        else:
+            logging.info("metric_registry not found — skipping derived-metric validation.")
+
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"{self.config.output_dir}/Bank_Performance_Dashboard_{ts}.xlsx"
         peer_comp_df = self._optimize_df_dtypes(peer_comp_df)
@@ -5590,6 +5617,17 @@ class BankPerformanceDashboard:
         ])
         # === END FDIC-META ===
 
+        # Augment FDIC_Metadata with dependency & consumer info from metric registry
+        if _HAS_METRIC_REGISTRY:
+            dep_col = []
+            consumer_col = []
+            for _, row in fdic_meta_df.iterrows():
+                mc = row.get("MetricCode", "")
+                spec = DERIVED_METRIC_SPECS.get(mc)
+                dep_col.append(", ".join(spec.dependencies) if spec else "")
+                consumer_col.append(", ".join(spec.consumers) if spec else "")
+            fdic_meta_df["Direct_Dependencies"] = dep_col
+            fdic_meta_df["Downstream_Report_Consumers"] = consumer_col
 
         self.output_gen.write_excel_output(
             file_path=fname,
@@ -5598,13 +5636,14 @@ class BankPerformanceDashboard:
             Latest_Peer_Snapshot=snapshot_df,
             Averages_8Q_All_Metrics=avg_8q_all_metrics_df,
             FDIC_Metric_Descriptions=self.output_gen.fdic_desc_df,
-            FDIC_Metadata=fdic_meta_df,                     # <<— NEW SHEET
+            FDIC_Metadata=fdic_meta_df,
             Macro_Analysis=powerbi_macro_df,
             FDIC_Data=proc_df_with_peers,
             FRED_Data=fred_df.reset_index(),
             FRED_Metadata=fred_metadata_df,
             FRED_Descriptions=fred_desc_df,
             Data_Validation_Report=validation_df,
+            Metric_Validation_Audit=metric_validation_df,
         )
 
 

@@ -27,6 +27,15 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from matplotlib.gridspec import GridSpec
 
+# Metric dependency and consumer mapping is centrally managed by metric_registry.py.
+# The REPORT_CONSUMER_MAP dict maps each metric code to the list of downstream
+# charts/tables that consume it.  This enables impact analysis when a metric
+# fails upstream validation.
+try:
+    from metric_registry import REPORT_CONSUMER_MAP
+except ImportError:
+    REPORT_CONSUMER_MAP = {}
+
 # Set style for better-looking charts
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_palette("husl")
