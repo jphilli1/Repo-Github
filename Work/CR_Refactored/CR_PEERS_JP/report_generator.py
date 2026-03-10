@@ -1574,6 +1574,49 @@ def generate_reports(
             print(f"  Migration ladder chart saved: {ladder_path}")
 
         # ------------------------------------------------------------------
+        # ROADMAP CHARTS -> charts_dir
+        # ------------------------------------------------------------------
+        print("\n" + "-" * 60)
+        print("GENERATING ROADMAP CHARTS")
+        print("-" * 60)
+
+        # 5. Years-of-Reserves by Segment
+        yor_path = str(charts_dir / f"{base}_years_of_reserves_{stamp}.png")
+        fig = plot_years_of_reserves(proc_df_with_peers, subject_bank_cert, save_path=yor_path)
+        if fig:
+            print(f"  Years-of-reserves chart saved: {yor_path}")
+
+        # 6. Growth vs Deterioration Quadrant
+        gvd_path = str(charts_dir / f"{base}_growth_vs_deterioration_{stamp}.png")
+        fig = plot_growth_vs_deterioration(proc_df_with_peers, subject_bank_cert, save_path=gvd_path)
+        if fig:
+            print(f"  Growth-vs-deterioration chart saved: {gvd_path}")
+
+        # 7. Risk-Adjusted Return Frontier
+        rar_path = str(charts_dir / f"{base}_risk_adjusted_return_{stamp}.png")
+        fig = plot_risk_adjusted_return(proc_df_with_peers, subject_bank_cert, save_path=rar_path)
+        if fig:
+            print(f"  Risk-adjusted return chart saved: {rar_path}")
+
+        # 8. Concentration vs Capital Sensitivity
+        cvc_path = str(charts_dir / f"{base}_concentration_vs_capital_{stamp}.png")
+        fig = plot_concentration_vs_capital(proc_df_with_peers, subject_bank_cert, save_path=cvc_path)
+        if fig:
+            print(f"  Concentration-vs-capital chart saved: {cvc_path}")
+
+        # 9. Liquidity / Draw-Risk Overlay
+        liq_path = str(charts_dir / f"{base}_liquidity_overlay_{stamp}.png")
+        fig = plot_liquidity_overlay(proc_df_with_peers, subject_bank_cert, save_path=liq_path)
+        if fig:
+            print(f"  Liquidity overlay chart saved: {liq_path}")
+
+        # 10. Macro Overlay on Credit Trend
+        macro_path = str(charts_dir / f"{base}_macro_overlay_{stamp}.png")
+        fig = plot_macro_overlay(proc_df_with_peers, subject_bank_cert, excel_file, save_path=macro_path)
+        if fig:
+            print(f"  Macro overlay chart saved: {macro_path}")
+
+        # ------------------------------------------------------------------
         # SUMMARY
         # ------------------------------------------------------------------
         print("\n" + "=" * 80)
@@ -2223,6 +2266,398 @@ def plot_migration_ladder(
     for sp in ["top", "right"]:
         ax.spines[sp].set_visible(False)
     ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+# ==================================================================================
+# ROADMAP CHART FUNCTIONS
+# ==================================================================================
+
+def _economist_ax(ax):
+    """Apply economist-style formatting to an axes."""
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    for s in ax.spines.values():
+        s.set_linewidth(1.1)
+        s.set_color("#2B2B2B")
+    ax.tick_params(axis="both", colors="#2B2B2B")
+    ax.grid(True, alpha=0.3, color="#D0D0D0")
+
+
+def plot_years_of_reserves(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Lollipop chart showing years-of-reserves by loan segment for the latest quarter."""
+    reserve_cols = {k: k.replace("RIC_", "").replace("_Years_of_Reserves", "")
+                    for k in df.columns if k.endswith("_Years_of_Reserves")}
+    if not reserve_cols:
+        print("  Skipped years-of-reserves: no RIC_*_Years_of_Reserves columns found")
+        return None
+
+    latest_date = df["REPDTE"].max()
+    subj = df[(df["CERT"] == subject_bank_cert) & (df["REPDTE"] == latest_date)]
+    if subj.empty:
+        print("  Skipped years-of-reserves: no subject bank data")
+        return None
+    subj = subj.iloc[0]
+
+    # Also get All Peers (90003) for comparison
+    peer = df[(df["CERT"] == 90003) & (df["REPDTE"] == latest_date)]
+    peer = peer.iloc[0] if not peer.empty else None
+
+    segments, subj_vals, peer_vals = [], [], []
+    for col, seg_label in reserve_cols.items():
+        sv = pd.to_numeric(subj.get(col, np.nan), errors="coerce")
+        if pd.notna(sv):
+            segments.append(seg_label.replace("_", " "))
+            subj_vals.append(float(sv))
+            pv = pd.to_numeric(peer.get(col, np.nan), errors="coerce") if peer is not None else np.nan
+            peer_vals.append(float(pv) if pd.notna(pv) else 0.0)
+
+    if not segments:
+        print("  Skipped years-of-reserves: all values N/A")
+        return None
+
+    fig, ax = plt.subplots(figsize=(12, max(5, len(segments) * 0.8 + 2)))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    y = np.arange(len(segments))
+    # Lollipop: horizontal stems + dots
+    ax.hlines(y, 0, subj_vals, color="#F7A81B", linewidth=2.5, zorder=2)
+    ax.scatter(subj_vals, y, color="#F7A81B", s=100, zorder=3, label="MSPBNA")
+    if any(v > 0 for v in peer_vals):
+        ax.scatter(peer_vals, y, color="#4C78A8", s=80, marker="D", zorder=3, label="All Peers")
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(segments, fontsize=12)
+    ax.set_xlabel("Years of Reserves", fontsize=13, fontweight="bold")
+    ax.set_title("Years of Reserves by Segment", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.legend(loc="lower right", frameon=True, fontsize=11)
+    ax.invert_yaxis()
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_growth_vs_deterioration(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Scatter plot: loan growth TTM (x) vs NCO rate (y) for peers, with MSPBNA highlighted."""
+    # Try multiple growth column names
+    growth_col = None
+    for cand in ["MSPBNA_CRE_Growth_TTM", "CRE_Growth_TTM", "Loan_Growth_TTM", "Total_Loan_Growth_TTM"]:
+        if cand in df.columns:
+            growth_col = cand
+            break
+    nco_col = "TTM_NCO_Rate"
+
+    if growth_col is None or nco_col not in df.columns:
+        print("  Skipped growth-vs-deterioration: missing growth or NCO columns")
+        return None
+
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date].copy()
+    latest[growth_col] = pd.to_numeric(latest[growth_col], errors="coerce")
+    latest[nco_col] = pd.to_numeric(latest[nco_col], errors="coerce")
+    latest = latest.dropna(subset=[growth_col, nco_col])
+    if latest.empty:
+        print("  Skipped growth-vs-deterioration: no valid data")
+        return None
+
+    # Exclude composite CERTs from the scatter cloud
+    composite = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999}
+    peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
+    subj = latest[latest["CERT"] == subject_bank_cert]
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    ax.scatter(peers[growth_col], peers[nco_col], s=50, alpha=0.7, color="#4C78A8",
+               edgecolor="white", linewidth=0.5, label="Peers")
+    if not subj.empty:
+        ax.scatter(subj[growth_col], subj[nco_col], s=120, color="#F7A81B",
+                   edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+
+    # Quadrant lines at medians
+    mx = latest[growth_col].median()
+    my = latest[nco_col].median()
+    ax.axvline(mx, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
+    ax.axhline(my, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
+
+    ax.set_xlabel(growth_col.replace("_", " "), fontsize=13, fontweight="bold")
+    ax.set_ylabel("TTM NCO Rate", fontsize=13, fontweight="bold")
+    ax.set_title("Growth vs Deterioration Quadrant", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.legend(loc="upper right", frameon=True, fontsize=11)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_risk_adjusted_return(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Bubble scatter: Norm_Loss_Adj_Yield (x) vs Norm_Risk_Adj_Return (y), bubble size = Norm_NCO_Rate."""
+    x_col = "Norm_Loss_Adj_Yield"
+    y_col = "Norm_Risk_Adj_Return"
+    size_col = "Norm_NCO_Rate"
+
+    missing = [c for c in [x_col, y_col, size_col] if c not in df.columns]
+    if missing:
+        print(f"  Skipped risk-adjusted return: missing columns {missing}")
+        return None
+
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date].copy()
+    for c in [x_col, y_col, size_col]:
+        latest[c] = pd.to_numeric(latest[c], errors="coerce")
+    latest = latest.dropna(subset=[x_col, y_col])
+    if latest.empty:
+        print("  Skipped risk-adjusted return: no valid data")
+        return None
+
+    composite = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999}
+    peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
+    subj = latest[latest["CERT"] == subject_bank_cert]
+
+    # Bubble sizes: scale NCO rate to reasonable dot sizes
+    def bubble_size(s):
+        s = s.fillna(0).abs()
+        if s.max() > 0:
+            return 50 + (s / s.max()) * 400
+        return pd.Series([100] * len(s), index=s.index)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    if not peers.empty:
+        ax.scatter(peers[x_col], peers[y_col], s=bubble_size(peers[size_col]),
+                   alpha=0.55, color="#4C78A8", edgecolor="white", linewidth=0.5, label="Peers")
+    if not subj.empty:
+        ax.scatter(subj[x_col].values, subj[y_col].values,
+                   s=bubble_size(subj[size_col]).values,
+                   color="#F7A81B", edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+
+    ax.set_xlabel("Norm Loss-Adjusted Yield", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Norm Risk-Adjusted Return", fontsize=13, fontweight="bold")
+    ax.set_title("Risk-Adjusted Return Frontier\n(bubble size = Norm NCO Rate)",
+                 fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.legend(loc="upper left", frameon=True, fontsize=11)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_concentration_vs_capital(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Quadrant scatter: CRE Concentration Risk (x) vs C&I to Capital Risk (y)."""
+    x_col = "CRE_Concentration_Capital_Risk"
+    y_col = "CI_to_Capital_Risk"
+
+    if x_col not in df.columns or y_col not in df.columns:
+        print(f"  Skipped concentration-vs-capital: missing {x_col} or {y_col}")
+        return None
+
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date].copy()
+    latest[x_col] = pd.to_numeric(latest[x_col], errors="coerce")
+    latest[y_col] = pd.to_numeric(latest[y_col], errors="coerce")
+    latest = latest.dropna(subset=[x_col, y_col])
+    if latest.empty:
+        print("  Skipped concentration-vs-capital: no valid data")
+        return None
+
+    composite = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999}
+    peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
+    subj = latest[latest["CERT"] == subject_bank_cert]
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    ax.scatter(peers[x_col], peers[y_col], s=50, alpha=0.7, color="#4C78A8",
+               edgecolor="white", linewidth=0.5, label="Peers")
+    if not subj.empty:
+        ax.scatter(subj[x_col].values, subj[y_col].values, s=120, color="#F7A81B",
+                   edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+
+    # Quadrant lines at medians
+    mx = latest[x_col].median()
+    my = latest[y_col].median()
+    ax.axvline(mx, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
+    ax.axhline(my, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
+
+    # Quadrant labels
+    xlims, ylims = ax.get_xlim(), ax.get_ylim()
+    ax.text(xlims[1], ylims[1], "High CRE + High C&I", ha="right", va="top",
+            fontsize=9, color="#7F8C8D", style="italic")
+    ax.text(xlims[0], ylims[0], "Low CRE + Low C&I", ha="left", va="bottom",
+            fontsize=9, color="#7F8C8D", style="italic")
+
+    ax.set_xlabel("CRE Concentration / Capital Risk (%)", fontsize=13, fontweight="bold")
+    ax.set_ylabel("C&I / Capital Risk (%)", fontsize=13, fontweight="bold")
+    ax.set_title("Concentration vs Capital Sensitivity", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.legend(loc="upper left", frameon=True, fontsize=11)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_liquidity_overlay(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Combo chart: Loans-to-Deposits, Liquidity Ratio, HQLA Ratio over time for the subject bank."""
+    series_map = {
+        "Loans_to_Deposits": ("Loans / Deposits", "#F7A81B", "-"),
+        "Liquidity_Ratio": ("Liquidity Ratio", "#4C78A8", "--"),
+        "HQLA_Ratio": ("HQLA Ratio", "#70AD47", "-."),
+    }
+    available = {k: v for k, v in series_map.items() if k in df.columns}
+    if not available:
+        print("  Skipped liquidity overlay: no liquidity columns found")
+        return None
+
+    subj = df[df["CERT"] == subject_bank_cert].copy()
+    if subj.empty:
+        print("  Skipped liquidity overlay: no subject bank data")
+        return None
+    subj = subj.sort_values("REPDTE")
+    for c in available:
+        subj[c] = pd.to_numeric(subj[c], errors="coerce")
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    for col, (label, color, ls) in available.items():
+        ax.plot(subj["REPDTE"], subj[col], label=label, color=color,
+                linewidth=2.2, linestyle=ls, marker="o", markersize=4)
+
+    ax.set_xlabel("Reporting Period", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Ratio (%)", fontsize=13, fontweight="bold")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    ax.set_title("Liquidity / Draw-Risk Overlay", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.legend(loc="upper left", frameon=True, fontsize=11)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_macro_overlay(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    excel_file: str,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Dual-axis chart: Norm_NCO_Rate on left axis, key FRED macro series on right axis."""
+    nco_col = "Norm_NCO_Rate"
+    if nco_col not in df.columns:
+        print("  Skipped macro overlay: Norm_NCO_Rate not in data")
+        return None
+
+    subj = df[df["CERT"] == subject_bank_cert].copy()
+    if subj.empty:
+        print("  Skipped macro overlay: no subject bank data")
+        return None
+    subj = subj.sort_values("REPDTE")
+    subj[nco_col] = pd.to_numeric(subj[nco_col], errors="coerce")
+
+    # Load FRED data
+    try:
+        fred, desc = _load_fred_tables(excel_file)
+    except Exception as e:
+        print(f"  Skipped macro overlay: {e}")
+        return None
+
+    # Pick a macro series: prefer Fed Funds, fall back to Unemployment, then any available
+    target_names = ["Fed Funds", "Unemployment", "All Loans Delinquency Rate"]
+    sel = None
+    chosen_name = None
+    for tn in target_names:
+        match = desc[desc["ShortName"] == tn]
+        if not match.empty:
+            sid = match.iloc[0]["SeriesID"]
+            candidate = fred[fred["SeriesID"] == sid].copy()
+            if not candidate.empty:
+                sel = candidate
+                chosen_name = tn
+                break
+    if sel is None:
+        # Fall back to any available series
+        if not fred.empty:
+            first_sid = fred["SeriesID"].iloc[0]
+            sel = fred[fred["SeriesID"] == first_sid].copy()
+            match = desc[desc["SeriesID"] == first_sid]
+            chosen_name = match.iloc[0]["ShortName"] if not match.empty else first_sid
+        else:
+            print("  Skipped macro overlay: no FRED data available")
+            return None
+
+    sel = sel.sort_values("DATE")
+    sel["VALUE"] = pd.to_numeric(sel["VALUE"], errors="coerce")
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    ax.plot(subj["REPDTE"], subj[nco_col], color="#F7A81B", linewidth=2.5,
+            marker="o", markersize=4, label="MSPBNA Norm NCO Rate", zorder=3)
+    ax.set_ylabel("Norm NCO Rate", fontsize=13, fontweight="bold", color="#F7A81B")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2%}"))
+
+    ax2 = ax.twinx()
+    ax2.plot(sel["DATE"], sel["VALUE"], color="#4C78A8", linewidth=2, linestyle="--",
+             label=chosen_name, alpha=0.85)
+    ax2.set_ylabel(chosen_name, fontsize=13, fontweight="bold", color="#4C78A8")
+    for sp in ["top"]:
+        ax2.spines[sp].set_visible(False)
+
+    ax.set_xlabel("Date", fontsize=13, fontweight="bold")
+    ax.set_title(f"Macro Overlay: Norm NCO Rate vs {chosen_name}",
+                 fontsize=18, fontweight="bold", color="#2B2B2B")
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", frameon=True, fontsize=11)
     plt.tight_layout()
 
     if save_path:

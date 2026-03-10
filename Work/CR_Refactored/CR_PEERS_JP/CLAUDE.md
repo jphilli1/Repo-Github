@@ -73,7 +73,10 @@ report_generator.py
         │
         ├──► output/Peers/charts/   (Standard + Normalized deterioration charts,
         │                           Portfolio Mix, Segment Attribution,
-        │                           Reserve Allocation, Migration Ladder PNGs)
+        │                           Reserve Allocation, Migration Ladder,
+        │                           Years-of-Reserves, Growth vs Deterioration,
+        │                           Risk-Adjusted Return, Concentration vs Capital,
+        │                           Liquidity Overlay, Macro Overlay PNGs)
         ├──► output/Peers/scatter/  (Standard + Normalized scatter plot PNGs)
         └──► output/Peers/tables/   (Standard + Normalized HTML tables, FRED macro table)
 ```
@@ -103,6 +106,12 @@ All output files include the source Excel stem and a datestamp:
 - `{stem}_standard_table_YYYYMMDD.html`
 - `{stem}_normalized_table_YYYYMMDD.html`
 - `{stem}_fred_table_YYYYMMDD.html`
+- `{stem}_years_of_reserves_YYYYMMDD.png`
+- `{stem}_growth_vs_deterioration_YYYYMMDD.png`
+- `{stem}_risk_adjusted_return_YYYYMMDD.png`
+- `{stem}_concentration_vs_capital_YYYYMMDD.png`
+- `{stem}_liquidity_overlay_YYYYMMDD.png`
+- `{stem}_macro_overlay_YYYYMMDD.png`
 
 ---
 
@@ -206,21 +215,3 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 **Symptom:** `FileNotFoundError: 8Q average sheet not found`
 
 **Fix:** Ensure `MSPBNA_CR_Normalized.py` completed successfully and the output Excel contains the `Averages_8Q*` sheet. Re-run Step 1 if needed.
-
----
-
-## 6. Future Roadmap / Unfinished Charts
-
-The following visuals are prioritized for future development. When implementing, add the plotting logic to `report_generator.py` and route output to `output/Peers/charts/`.
-
-- **Years-of-reserves by segment:** (Line/Lollipop) Series: `RIC_*_Years_of_Reserves`. Intuitive framing for senior management — "coverage in years" lands better than raw reserve ratios.
-
-- **Growth vs deterioration quadrant:** (Peer Scatter) Series: `*_Growth_TTM` vs `TTM_NCO_Rate` / `NPL_to_Gross_Loans_Rate`. Answers whether portfolio growth is being bought at the cost of future credit losses.
-
-- **Risk-adjusted return frontier:** (Bubble Scatter) Series: `Norm_Risk_Adj_Return`, `Norm_Loss_Adj_Yield`, `Norm_NCO_Rate`. Makes the business-unit tradeoff visible.
-
-- **Concentration vs capital sensitivity:** (Quadrant) Series: `CRE_Concentration_Capital_Risk`, `CI_to_Capital_Risk`. Frames loan risk in capital language for escalation.
-
-- **Liquidity / draw-risk overlay:** (Combo Chart) Series: `Loans_to_Deposits`, `Liquidity_Ratio`, `HQLA_Ratio`. Stress often arrives through utilization and liquidity pressure before credit losses show up.
-
-- **Macro overlay on credit trend:** (Dual-axis/Small multiples) Series: FRED macro data vs `Norm_NCO_Rate`. Useful for explaining whether current deterioration is idiosyncratic or macro-linked.
