@@ -456,6 +456,20 @@ async def run_expansion_pipeline_async(
     if not validation_df.empty:
         sheets["FRED_Expansion_Validation"] = validation_df
 
+    # ── Case-Shiller ZIP enrichment (HUD USPS Crosswalk) ──────────────
+    if os.getenv("ENABLE_CASE_SHILLER_ZIP_ENRICHMENT", "true").lower() in ("true", "1", "yes"):
+        try:
+            from case_shiller_zip_mapper import build_case_shiller_zip_sheets
+            zip_sheets = build_case_shiller_zip_sheets()
+            for sheet_name, sheet_df in zip_sheets.items():
+                if not sheet_df.empty:
+                    sheets[sheet_name] = sheet_df
+            logger.info(f"Case-Shiller ZIP enrichment added {len(zip_sheets)} sheets")
+        except ImportError:
+            logger.warning("case_shiller_zip_mapper not available — skipping ZIP enrichment")
+        except Exception as e:
+            logger.warning(f"Case-Shiller ZIP enrichment failed (non-blocking): {e}")
+
     return sheets, validation_df, failed
 
 

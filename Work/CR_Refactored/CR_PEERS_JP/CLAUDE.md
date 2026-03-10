@@ -21,6 +21,7 @@ The two core scripts are:
 | `fred_transforms.py` | Transforms, spreads, z-scores, regime flags |
 | `fred_ingestion_engine.py` | Async FRED fetcher, validation, sheet routing, Excel output |
 | `test_regression.py` | Regression tests: scatter integrity, peer groups, over-exclusion, validation |
+| `case_shiller_zip_mapper.py` | HUD USPS ZIP Crosswalk enrichment for Case-Shiller metros |
 
 ---
 
@@ -52,6 +53,10 @@ python report_generator.py
 | `SUBJECT_BANK_CERT` | Used by `MSPBNA_CR_Normalized.py` | `34221` |
 | `MS_COMBINED_CERT` | MS Combined Entity CERT (default `88888`) | `88888` |
 | `REPORT_VIEW` | Controls table filtering logic | `ALL_BANKS` or `MSPBNA_WEALTH_NORM` |
+| `HUD_USER_TOKEN` | HUD USPS Crosswalk API bearer token (required for ZIP enrichment) | `export HUD_USER_TOKEN='eyJ...'` |
+| `HUD_CROSSWALK_YEAR` | Optional crosswalk vintage year | `2025` |
+| `HUD_CROSSWALK_QUARTER` | Optional crosswalk vintage quarter (1-4) | `4` |
+| `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` | Enable/disable ZIP enrichment (default `true`) | `true` or `false` |
 
 These can be set in a `.env` file in the project root or exported in the shell.
 
@@ -105,6 +110,9 @@ report_generator.py
 | `Normalization_Diagnostics` | Over-exclusion flags, residuals, severity per CERT/quarter |
 | `Peer_Group_Definitions` | All 6 peer group definitions with member CERTs and metadata |
 | `Resi_Normalized_Audit` | Residential metric values, mapping/label status, latest quarter |
+| `CaseShiller_Zip_Coverage` | One row per (Case-Shiller region, ZIP code) with HUD crosswalk ratios |
+| `CaseShiller_Zip_Summary` | One row per metro with aggregate ZIP counts and mapping metadata |
+| `CaseShiller_Metro_Map_Audit` | 20-entry metro → CBSA/CBSA-Div mapping table with judgment call notes |
 
 ### Output File Naming
 
@@ -384,6 +392,18 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 
 **New Excel sheet:** `Resi_Normalized_Audit`
 
+### 2026-03-10 — HUD USPS ZIP Crosswalk Enrichment for Case-Shiller Metros
+
+1. **New module `case_shiller_zip_mapper.py`**: Maps 20 regional Case-Shiller metros to ZIP codes via HUD USPS Crosswalk API. Contains 20-entry `CASE_SHILLER_METRO_MAP` with CBSA/CBSA-Div codes, HUD API client with retry logic, coverage builder, summary aggregator, and 7-check validation.
+
+2. **Metro mapping judgment calls**: 10 metros use CBSA Division-level mapping (type=9) where S&P CoreLogic tracks a subdivision: New York (Div 35614), Los Angeles (31084), Chicago (16974), Miami (33124), Washington (47894), Detroit (19804), Seattle (42644), Boston (14454), Dallas (19124), San Francisco (41884). Remaining 10 metros use CBSA-level (type=8).
+
+3. **Integration into `fred_ingestion_engine.py`**: ZIP enrichment runs automatically after FRED data fetch in `run_expansion_pipeline_async()`. Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` env var (default: `true`). Graceful fallback if HUD token is missing or API fails.
+
+4. **3 new Excel sheets**: `CaseShiller_Zip_Coverage` (one row per region/ZIP), `CaseShiller_Zip_Summary` (aggregate per metro), `CaseShiller_Metro_Map_Audit` (mapping table with judgment call notes).
+
+5. **Excluded indexes**: U.S. National, Composite-10, Composite-20 are explicitly excluded (no geographic footprint).
+
 ### 2026-03-10 — Resi Series Expansion + Top-Down Normalization Fix
 
 **Root cause**: A "OVERRIDE: Normalized Performance (Wealth Segments Only)" block was reconstructing `Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_PD30`, and `Norm_PD90` bottom-up from `wealth_resi_nco_pure + sum_cols(...)`. This accidentally excluded SBL and any unmapped RESI lines from normalized totals.
@@ -587,3 +607,65 @@ The ingestion engine validates:
 - **Missing metadata**: Flags specs missing display_name, freq, units, or use_case
 - **Stale releases**: Warns if last valid observation is > 6 months old
 - **Orphan columns**: Data columns not present in registry
+
+---
+
+## 10. HUD USPS ZIP Crosswalk — Case-Shiller Metro Enrichment
+
+### Overview
+
+`case_shiller_zip_mapper.py` maps the 20 regional Case-Shiller metro indexes to ZIP codes using the HUD USPS ZIP Code Crosswalk API. This is an **internal reference mapping layer** — it does not alter FRED data or FDIC metrics. Its purpose is to enable downstream loan-level geographic tagging against Case-Shiller regions.
+
+**Explicitly excluded**: U.S. National, Composite-10, and Composite-20 indexes (these have no geographic footprint to map).
+
+### HUD API Token Setup (One-Time)
+
+1. Register at https://www.huduser.gov/hudapi/public/register
+2. Receive your access token via email
+3. Set the environment variable:
+   ```bash
+   export HUD_USER_TOKEN='eyJ...'
+   ```
+   Or add to `.env`: `HUD_USER_TOKEN=eyJ...`
+4. The token is a Bearer token used in the `Authorization` header
+
+### Integration
+
+ZIP enrichment runs automatically within `run_expansion_pipeline_async()` in `fred_ingestion_engine.py`, after FRED data fetch and Case-Shiller discovery. It is controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`). If the HUD token is missing, the enrichment is skipped gracefully with a warning.
+
+### Metro → CBSA Mapping Judgment Calls
+
+7 of the 20 metros use CBSA Division-level mapping (type=9) instead of full CBSA (type=8) because the S&P CoreLogic index tracks a subdivision of the broader metro:
+
+| Metro | CBSA | Division Used | Rationale |
+|---|---|---|---|
+| New York | 35620 | 35614 (NY-Jersey City-White Plains) | Core NY metro tracked by S&P |
+| Los Angeles | 31080 | 31084 (LA-Long Beach-Glendale) | Excludes Orange County |
+| Chicago | 16980 | 16974 (Chicago-Naperville-Evanston) | Core Chicago metro |
+| Miami | 33100 | 33124 (Miami-Miami Beach-Kendall) | Miami-Dade focus |
+| Washington | 47900 | 47894 (DC-VA-MD-WV core) | Core DC metro |
+| Detroit | 19820 | 19804 (Detroit-Dearborn-Livonia) | Core Detroit metro |
+| Seattle | 42660 | 42644 (Seattle-Bellevue-Kent) | Core Seattle area |
+| Boston | 14460 | 14454 (Boston, MA) | Core Boston metro |
+| Dallas | 19100 | 19124 (Dallas-Plano-Irving) | Dallas division |
+| San Francisco | 41860 | 41884 (SF-San Mateo-Redwood City) | Core SF area |
+
+The remaining 10 metros (Atlanta, Charlotte, Cleveland, Denver, Las Vegas, Minneapolis, Phoenix, Portland, San Diego, Tampa) use CBSA-level mapping only as they have no subdivisions.
+
+### Output Sheets
+
+| Sheet | Description |
+|---|---|
+| `CaseShiller_Zip_Coverage` | One row per (region, ZIP) with CBSA codes, HUD ratios (`tot_ratio`, `res_ratio`, `bus_ratio`, `oth_ratio`), crosswalk vintage |
+| `CaseShiller_Zip_Summary` | One row per metro: ZIP count, CBSA/Div counts, mapping type used, vintage |
+| `CaseShiller_Metro_Map_Audit` | Full 20-entry mapping table with judgment call comments and `included_in_zip_output` flag |
+
+### Validation (7 Checks)
+
+1. No non-metro regions leak into coverage
+2. No blank ZIP codes
+3. All ZIPs are 5-character zero-padded strings
+4. Summary ZIP counts reconcile with detail rows
+5. No duplicate region definitions in metro map
+6. All 20 metros have at least one ZIP row
+7. HUD ratio columns are not entirely null
