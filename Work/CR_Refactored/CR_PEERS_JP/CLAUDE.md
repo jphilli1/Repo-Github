@@ -172,6 +172,17 @@ All charts must use this color palette consistently:
 
 Both standard and normalized credit-deterioration charts are generated.
 
+### FRED Deduplication
+
+- `series_ids` must always be deduplicated before async fetching to prevent `ValueError: cannot reindex on an axis with duplicate labels`.
+- Use `list(dict.fromkeys(series_ids))` to preserve order while removing duplicates.
+- The guard must exist both at construction time (when building `series_ids_to_fetch`) and at the entry point of `fetch_all_series_async()`.
+
+### Always Update CLAUDE.md
+
+- Architecture changes, new conventions, and non-trivial pipeline modifications **must** be documented in this file.
+- If you add a new coding convention, env variable, output sheet, or data-flow step, update the relevant section of `CLAUDE.md` before considering the task complete.
+
 ---
 
 ## 5. Common Errors & Troubleshooting
