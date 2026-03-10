@@ -104,6 +104,7 @@ report_generator.py
 | `FRED_Expansion_Registry` | Full metadata registry audit sheet |
 | `Normalization_Diagnostics` | Over-exclusion flags, residuals, severity per CERT/quarter |
 | `Peer_Group_Definitions` | All 6 peer group definitions with member CERTs and metadata |
+| `Resi_Normalized_Audit` | Residential metric values, mapping/label status, latest quarter |
 
 ### Output File Naming
 
@@ -203,6 +204,27 @@ Both standard and normalized credit-deterioration charts are generated.
 ### TABLE DUPLICATION
 
 - The Detailed Peer Analysis, Core PB Analysis, CRE Segment, and Resi Segment tables **must** ALWAYS output both a Standard and a Normalized version.
+
+### NORMALIZED RESIDENTIAL METRIC NAMING
+
+**Canonical names** — only these are valid column references:
+
+| Metric | Column Name | Numerator | Denominator | Type |
+|---|---|---|---|---|
+| Resi % of Norm Loans | `Norm_Wealth_Resi_Composition` | `Wealth_Resi_Balance` | `Norm_Gross_Loans` | composition |
+| Resi ACL Share | `Norm_Resi_ACL_Share` | `RIC_Resi_ACL` | `Norm_ACL_Balance` | share |
+| Resi ACL Coverage | `Norm_Resi_ACL_Coverage` | `RIC_Resi_ACL` | `Wealth_Resi_Balance` | coverage |
+| Resi NCO Rate | `Wealth_Resi_TTM_NCO_Rate` | `wealth_resi_nco_pure` | `Wealth_Resi_Balance` | rate |
+| Resi Nonaccrual Rate | `Wealth_Resi_NA_Rate` | `wealth_resi_na_pure` | `Wealth_Resi_Balance` | rate |
+| Resi Delinquency Rate | `Wealth_Resi_Delinquency_Rate` | PD30+PD90 pure | `Wealth_Resi_Balance` | rate |
+
+**Deprecated / phantom names** — must NEVER appear in code:
+- `Norm_Resi_Composition` — use `Norm_Wealth_Resi_Composition` instead
+- `Norm_RESI_ACL_Coverage` — use `Norm_Resi_ACL_Coverage` (consistent casing)
+- `RIC_Resi_Balance` — use `RIC_Resi_Cost` (RI-C cost basis column)
+- `RIC_CRE_Balance` — use `RIC_CRE_Cost` (RI-C cost basis column)
+
+**Coverage vs Share rule**: If the denominator is a loan balance, the metric is "coverage." If the denominator is total ACL, it is "share." Never label a share metric as coverage or vice versa.
 
 ### FORMATTING RULES
 
@@ -324,6 +346,25 @@ Or export it directly: `export FRED_API_KEY='your_key_here'`
 6. **Regression tests (test_regression.py)**: 11 executable assertions covering scatter integrity, peer group uniqueness, over-exclusion detection, workbook sanity, consumer trace, and semantic validation.
 
 **New Excel sheets:** `Normalization_Diagnostics`, `Peer_Group_Definitions`
+
+### 2026-03-10 — Normalized Residential QA (Part 4B)
+
+**Defects found:**
+1. **Naming collision**: `Norm_Resi_Composition` referenced in detailed peer table and segment focus table but never computed upstream. Canonical name is `Norm_Wealth_Resi_Composition`.
+2. **Casing inconsistency**: Upstream created `Norm_RESI_ACL_Coverage`, report_generator expected `Norm_Resi_ACL_Coverage`.
+3. **Mislabeled metadata**: `Norm_RESI_ACL_Coverage` described as "Resi Reserve % of Norm ACL" — actually `RIC_Resi_ACL / Wealth_Resi_Balance` (coverage, not share). Same for `Norm_CRE_ACL_Coverage` and `Norm_Comm_ACL_Coverage`.
+4. **Phantom column refs**: `RIC_Resi_Balance` and `RIC_CRE_Balance` in segment focus tables — these don't exist (should be `RIC_Resi_Cost` / `RIC_CRE_Cost`).
+
+**Fixes applied:**
+1. All `Norm_Resi_Composition` refs → `Norm_Wealth_Resi_Composition` in report_generator.py
+2. `Norm_RESI_ACL_Coverage` → `Norm_Resi_ACL_Coverage` in upstream
+3. Metadata display labels corrected to reflect actual numerator/denominator
+4. `RIC_Resi_Balance` → `RIC_Resi_Cost`, `RIC_CRE_Balance` → `RIC_CRE_Cost`
+5. Added `Norm_Wealth_Resi_Composition`, `Norm_Resi_ACL_Share`, `Norm_Resi_ACL_Coverage` to metric registry
+6. Added `Resi_Normalized_Audit` Excel sheet
+7. Added 4 regression tests for resi naming, coverage/share, and canonical references
+
+**New Excel sheet:** `Resi_Normalized_Audit`
 
 ---
 

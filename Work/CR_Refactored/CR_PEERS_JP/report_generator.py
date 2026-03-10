@@ -871,7 +871,7 @@ def generate_detailed_peer_table(
             ("Norm Nonaccrual Rate (%)", "Norm_Nonaccrual_Rate", "%"),
             ("Norm NCO Rate (TTM) (%)", "Norm_NCO_Rate", "%"),
             ("Norm SBL % of Loans", "Norm_SBL_Composition", "%"),
-            ("Norm Resi % of Loans", "Norm_Resi_Composition", "%"),
+            ("Norm Resi % of Loans", "Norm_Wealth_Resi_Composition", "%"),
             ("Norm CRE % of Loans", "Norm_CRE_Investment_Composition", "%"),
             ("Norm CRE % of ACL", "Norm_CRE_ACL_Share", "%"),
             ("Norm CRE ACL Ratio (%)", "Norm_CRE_ACL_Coverage", "%"),
@@ -936,7 +936,7 @@ def generate_core_pb_peer_table(
             ("Norm Nonaccrual Rate (%)", "Norm_Nonaccrual_Rate", "%"),
             ("Norm NCO Rate (TTM) (%)", "Norm_NCO_Rate", "%"),
             ("Norm SBL % of Loans", "Norm_SBL_Composition", "%"),
-            ("Norm Resi % of Loans", "Norm_Resi_Composition", "%"),
+            ("Norm Resi % of Loans", "Norm_Wealth_Resi_Composition", "%"),
             ("Norm CRE % of Loans", "Norm_CRE_Investment_Composition", "%"),
             ("Norm CRE % of ACL", "Norm_CRE_ACL_Share", "%"),
             ("Norm CRE ACL Ratio (%)", "Norm_CRE_ACL_Coverage", "%"),
@@ -1267,7 +1267,7 @@ def generate_segment_focus_table(
         common = [
             ("Norm_Gross_Loans", "Total Loans ($B)*", "B", False),
             ("Norm_SBL_Composition", "SBL % of Loans*", "%", False),
-            ("Norm_Resi_Composition", "Resi % of Loans*", "%", False),
+            ("Norm_Wealth_Resi_Composition", "Resi % of Loans*", "%", False),
             ("Norm_CRE_Investment_Composition", "CRE % of Loans*", "%", False),
             ("Norm_Risk_Adj_Allowance_Coverage", "Risk-Adj ACL Ratio (%)*", "%", True),
             ("Norm_Nonaccrual_Rate", "Nonaccrual Rate (%)*", "%", False),
@@ -1276,7 +1276,7 @@ def generate_segment_focus_table(
         ]
         if segment_name == "CRE":
             metrics = common + [
-                ("RIC_CRE_Balance", "CRE Balance ($B)", "B", False),
+                ("RIC_CRE_Cost", "CRE Balance ($B)", "B", False),
                 ("Norm_CRE_ACL_Share", "CRE % of ACL*", "%", False),
                 ("Norm_CRE_ACL_Coverage", "CRE ACL Ratio (%)*", "%", True),
                 ("RIC_CRE_Risk_Adj_Coverage", "CRE NPL Coverage (x)", "x", True),
@@ -1286,7 +1286,7 @@ def generate_segment_focus_table(
             ]
         else:
             metrics = common + [
-                ("RIC_Resi_Balance", "Resi Balance ($B)*", "B", False),
+                ("RIC_Resi_Cost", "Resi Balance ($B)*", "B", False),
                 ("Norm_Resi_ACL_Share", "Resi % of ACL*", "%", False),
                 ("Norm_Resi_ACL_Coverage", "Resi ACL Ratio (%)*", "%", True),
                 ("RIC_Resi_Risk_Adj_Coverage", "Resi NPL Coverage (x)", "x", True),
@@ -1308,7 +1308,7 @@ def generate_segment_focus_table(
         ]
         if segment_name == "CRE":
             metrics = common + [
-                ("RIC_CRE_Balance", "CRE Balance ($B)", "B", False),
+                ("RIC_CRE_Cost", "CRE Balance ($B)", "B", False),
                 ("RIC_CRE_ACL_Share", "CRE % of ACL*", "%", False),
                 ("RIC_CRE_ACL_Coverage", "CRE ACL Ratio (%)*", "%", True),
                 ("RIC_CRE_Risk_Adj_Coverage", "CRE NPL Coverage (x)", "x", True),
@@ -1318,7 +1318,7 @@ def generate_segment_focus_table(
             ]
         else:
             metrics = common + [
-                ("RIC_Resi_Balance", "Resi Balance ($B)*", "B", False),
+                ("RIC_Resi_Cost", "Resi Balance ($B)*", "B", False),
                 ("RIC_Resi_ACL_Share", "Resi % of ACL*", "%", False),
                 ("RIC_Resi_ACL_Coverage", "Resi ACL Ratio (%)*", "%", True),
                 ("RIC_Resi_Risk_Adj_Coverage", "Resi NPL Coverage (x)", "x", True),
