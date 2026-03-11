@@ -182,6 +182,18 @@ Each script produces its own CSV log file in `logs/`, reset (overwritten) each r
 - `TeeToLogger` — stream wrapper for stdout/stderr capture
 - `setup_csv_logging(script_name)` — one-call setup (creates logger, installs tee, logs startup)
 
+**Safe logging lifecycle:**
+- `CsvLogger.log()` is a no-op after close — never raises `ValueError`
+- `TeeToLogger.write()` always writes to the original stream first; if the CSV logger is closed, CSV logging is silently skipped — `print()` after close never crashes
+- `CsvLogger.close()` restores `sys.stdout`/`sys.stderr` to originals before closing the file
+- `CsvLogger.shutdown()` logs a final CONFIG message, restores streams, closes file — preferred over bare `close()`
+- Both `close()` and `shutdown()` are idempotent (safe to call multiple times)
+- `setup_csv_logging()` unwraps existing `TeeToLogger` instances to prevent nested wrapping
+- Logging failures never crash the pipeline or mask real application exceptions
+- Each script has exactly **one** terminal shutdown path:
+  - `MSPBNA_CR_Normalized.py`: `csv_log.shutdown()` in `main()`'s `finally` block, after all prints
+  - `report_generator.py`: `csv_log.shutdown()` in `generate_reports()`'s `finally` block
+
 ---
 
 ## 4. Strict Coding Conventions & Rules
@@ -439,6 +451,47 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — CSV Logger Lifecycle Safety Fix
+
+**Problem**: `csv_log.close()` inside `dash.run()` closed the CSV file while `sys.stdout`/`sys.stderr` were still wrapped by `TeeToLogger`. Subsequent `print()` calls in `main()` raised `ValueError: I/O operation on closed file`. Same risk in `report_generator.py`.
+
+**Root cause**: `CsvLogger.close()` did not restore streams, `TeeToLogger.write()` did not check if the logger was closed, and the close was called too early in the pipeline (inside `run()` before `main()` finished printing).
+
+**Solution**: Made the entire logging lifecycle crash-proof.
+
+**Changes by file:**
+
+1. **logging_utils.py** — Safe lifecycle:
+   - `CsvLogger._closed` flag; `is_closed` property
+   - `CsvLogger.log()` — no-op after close, wrapped in try/except (never raises)
+   - `CsvLogger.log_exception()` — wrapped in try/except (never raises)
+   - `CsvLogger.restore_streams()` — puts `sys.stdout`/`sys.stderr` back to originals
+   - `CsvLogger.close()` — idempotent: restores streams → flushes → closes file → sets `_closed = True`
+   - `CsvLogger.shutdown()` — logs final CONFIG message, then calls `close()`; suppresses secondary exceptions
+   - `TeeToLogger.write()` — checks `is_closed` before CSV logging; try/except around CSV call
+   - `setup_csv_logging()` — unwraps existing `TeeToLogger` to prevent nested stacking
+   - Docstring corrected: 15-column schema (was incorrectly labeled 16)
+
+2. **MSPBNA_CR_Normalized.py** — Removed early close:
+   - Removed `csv_log.close()` from `run()` method (was line ~6406)
+   - Added `csv_log.shutdown()` in `main()`'s `finally` block — after ALL prints, verification, Power BI, and FRED series check
+
+3. **report_generator.py** — Safe shutdown:
+   - Replaced `csv_log.info("shutdown") + csv_log.close()` with `csv_log.shutdown()`
+   - Wrapped `csv_log.log_exception()` in try/except to prevent logging errors masking real exceptions
+
+4. **test_regression.py** — 7 new tests in `TestLoggerSafeLifecycle`:
+   - `test_print_after_logger_close_does_not_crash`
+   - `test_stderr_after_logger_close_does_not_crash`
+   - `test_close_restores_streams`
+   - `test_double_close_is_safe`
+   - `test_setup_csv_logging_does_not_stack_nested_tees`
+   - `test_mspbna_has_single_terminal_csv_close_path`
+   - `test_report_generator_safe_shutdown`
+   - Fixed docstring: "16 columns" → "15 columns"
+
+5. **CLAUDE.md** — Added safe logging lifecycle documentation, corrected schema count, added changelog entry
 
 ### 2026-03-11 — Output Naming + CSV Logging Overhaul
 

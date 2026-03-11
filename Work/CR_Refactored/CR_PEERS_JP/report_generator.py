@@ -2607,15 +2607,13 @@ def generate_reports(
 
     except Exception as e:
         print(f"ERROR: An unexpected error occurred: {e}")
-        csv_log.log_exception(exc=e, phase="generate_reports", component="main")
+        try:
+            csv_log.log_exception(exc=e, phase="generate_reports", component="main")
+        except Exception:
+            pass
     finally:
         plt.close("all")
-        csv_log.info(
-            "Report generation finished",
-            event_type="CONFIG",
-            phase="shutdown",
-        )
-        csv_log.close()
+        csv_log.shutdown()
 
 
 def create_credit_deterioration_chart_ppt(

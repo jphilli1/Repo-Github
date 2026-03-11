@@ -4,11 +4,11 @@ Centralized Logging & Artifact Naming Utilities
 
 Provides:
 - Date-only artifact naming (YYYYMMDD, no HHMMSS)
-- CSV-based structured logging (16-column schema)
+- CSV-based structured logging (15-column schema)
 - stdout/stderr tee capture into CSV log
 - Reusable across MSPBNA_CR_Normalized.py and report_generator.py
 
-CSV Log Schema (16 columns):
+CSV Log Schema (15 columns):
     timestamp, run_date, script_name, run_id, level, phase, component,
     function, line_no, event_type, message, exception_type, exception_message,
     traceback, context_json
@@ -17,6 +17,15 @@ Event types:
     CONFIG, FILE_DISCOVERED, FILE_WRITTEN, DATAFRAME_SHAPE, VALIDATION_WARNING,
     VALIDATION_ERROR, EXCEPTION, STDOUT, STDERR, CHART_SKIPPED, TABLE_SKIPPED,
     METRIC_SUPPRESSED, PRECHECK_FAIL, PRECHECK_WARN
+
+Safe lifecycle:
+    - CsvLogger.log() is a no-op after close (never raises)
+    - TeeToLogger.write() always writes to the original stream first, then
+      attempts CSV logging; if the logger is closed, CSV logging is silently
+      skipped — console output is never interrupted
+    - CsvLogger.close() restores sys.stdout/sys.stderr before closing the file
+    - close() and shutdown() are idempotent
+    - Logging failures never crash the pipeline or mask real exceptions
 """
 
 import csv
@@ -126,6 +135,11 @@ class CsvLogger:
         <script_name>_YYYYMMDD_log.csv
 
     The log is reset (overwritten) each run.
+
+    Safe lifecycle guarantees:
+    - log() is a no-op after close (never raises)
+    - close() restores stdout/stderr before closing the file
+    - close() and shutdown() are idempotent
     """
 
     def __init__(
@@ -143,6 +157,12 @@ class CsvLogger:
             self.log_dir / f"{script_name}_{self.run_date}_log.csv"
         )
 
+        self._closed = False
+
+        # Track original streams for restoration on close
+        self._original_stdout = None
+        self._original_stderr = None
+
         # Open in write mode (reset each run) with newline='' for csv module
         self._file = open(self.log_filename, "w", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(
@@ -150,6 +170,11 @@ class CsvLogger:
         )
         self._writer.writeheader()
         self._file.flush()
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether this logger has been closed."""
+        return self._closed
 
     def log(
         self,
@@ -165,26 +190,34 @@ class CsvLogger:
         tb: str = "",
         context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Write a single structured row to the CSV log."""
-        row = {
-            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
-            "run_date": self.run_date,
-            "script_name": self.script_name,
-            "run_id": self.run_id,
-            "level": level.upper(),
-            "phase": phase,
-            "component": component,
-            "function": function,
-            "line_no": str(line_no) if line_no else "",
-            "event_type": event_type,
-            "message": message,
-            "exception_type": exception_type,
-            "exception_message": exception_message,
-            "traceback": tb,
-            "context_json": json.dumps(context) if context else "",
-        }
-        self._writer.writerow(row)
-        self._file.flush()
+        """Write a single structured row to the CSV log.
+
+        Safe: no-op if logger is closed. Never raises.
+        """
+        if self._closed:
+            return
+        try:
+            row = {
+                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "run_date": self.run_date,
+                "script_name": self.script_name,
+                "run_id": self.run_id,
+                "level": level.upper(),
+                "phase": phase,
+                "component": component,
+                "function": function,
+                "line_no": str(line_no) if line_no else "",
+                "event_type": event_type,
+                "message": message,
+                "exception_type": exception_type,
+                "exception_message": exception_message,
+                "traceback": tb,
+                "context_json": json.dumps(context) if context else "",
+            }
+            self._writer.writerow(row)
+            self._file.flush()
+        except Exception:
+            pass
 
     # Convenience methods
     def info(self, message: str, **kwargs) -> None:
@@ -204,19 +237,22 @@ class CsvLogger:
         component: str = "",
         function: str = "",
     ) -> None:
-        """Log an exception with full traceback."""
-        tb_str = traceback.format_exception(type(exc), exc, exc.__traceback__)
-        self.log(
-            level="ERROR",
-            message=message or str(exc),
-            event_type="EXCEPTION",
-            phase=phase,
-            component=component,
-            function=function,
-            exception_type=type(exc).__name__,
-            exception_message=str(exc),
-            tb="".join(tb_str),
-        )
+        """Log an exception with full traceback. Never raises."""
+        try:
+            tb_str = traceback.format_exception(type(exc), exc, exc.__traceback__)
+            self.log(
+                level="ERROR",
+                message=message or str(exc),
+                event_type="EXCEPTION",
+                phase=phase,
+                component=component,
+                function=function,
+                exception_type=type(exc).__name__,
+                exception_message=str(exc),
+                tb="".join(tb_str),
+            )
+        except Exception:
+            pass
 
     def log_file_written(
         self, filepath: str, phase: str = "", component: str = "",
@@ -244,11 +280,55 @@ class CsvLogger:
             context={"df_name": name, "rows": rows, "cols": cols},
         )
 
+    def restore_streams(self) -> None:
+        """Restore sys.stdout and sys.stderr to their original streams.
+
+        Only restores if they are currently wrapped by TeeToLogger instances
+        that belong to this logger.
+        """
+        if self._original_stdout is not None:
+            if isinstance(sys.stdout, TeeToLogger) and sys.stdout._csv_logger is self:
+                sys.stdout = self._original_stdout
+            self._original_stdout = None
+
+        if self._original_stderr is not None:
+            if isinstance(sys.stderr, TeeToLogger) and sys.stderr._csv_logger is self:
+                sys.stderr = self._original_stderr
+            self._original_stderr = None
+
     def close(self) -> None:
-        """Flush and close the CSV log file."""
-        if self._file and not self._file.closed:
-            self._file.flush()
-            self._file.close()
+        """Restore streams, flush, and close the CSV log file.
+
+        Idempotent — safe to call multiple times. Never raises.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self.restore_streams()
+        try:
+            if self._file and not self._file.closed:
+                self._file.flush()
+                self._file.close()
+        except Exception:
+            pass
+
+    def shutdown(self) -> None:
+        """Safe shutdown: log final message, restore streams, close file.
+
+        Idempotent. Suppresses all secondary logging exceptions.
+        """
+        if self._closed:
+            return
+        try:
+            self.log(
+                level="INFO",
+                message="Logger shutdown",
+                event_type="CONFIG",
+                phase="shutdown",
+            )
+        except Exception:
+            pass
+        self.close()
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +339,11 @@ class TeeToLogger:
     """
     Wraps a stream (stdout or stderr) so that every write() is also
     captured as a CSV log row. Console output is preserved.
+
+    Safe lifecycle guarantees:
+    - write() always writes to the original stream first
+    - If the CSV logger is closed, CSV logging is silently skipped
+    - write() never raises from logging failures
 
     Usage:
         csv_logger = CsvLogger("my_script")
@@ -274,17 +359,21 @@ class TeeToLogger:
         self._level = "INFO" if stream_name == "STDOUT" else "ERROR"
 
     def write(self, text: str) -> int:
-        # Always write to original stream (preserve console output)
+        # Always write to original stream first (preserve console output)
         result = self._original.write(text)
-        # Log non-empty, non-whitespace lines to CSV
-        stripped = text.strip()
-        if stripped:
-            self._csv_logger.log(
-                level=self._level,
-                message=stripped,
-                event_type=self._event_type,
-                component="console_capture",
-            )
+        # Attempt CSV logging only if logger is still open
+        if not self._csv_logger.is_closed:
+            stripped = text.strip()
+            if stripped:
+                try:
+                    self._csv_logger.log(
+                        level=self._level,
+                        message=stripped,
+                        event_type=self._event_type,
+                        component="console_capture",
+                    )
+                except Exception:
+                    pass
         return result
 
     def flush(self) -> None:
@@ -317,6 +406,9 @@ def setup_csv_logging(
     """
     One-call setup: create CSV logger, tee stdout/stderr, log startup event.
 
+    Safe against nested calls: if stdout/stderr are already TeeToLogger
+    instances, they are unwrapped before re-wrapping to prevent stacking.
+
     Parameters
     ----------
     script_name : str
@@ -336,9 +428,19 @@ def setup_csv_logging(
     csv_log = CsvLogger(script_name, log_dir=log_dir)
 
     if capture_stdout:
-        sys.stdout = TeeToLogger(sys.stdout, csv_log, stream_name="STDOUT")
+        # Unwrap existing TeeToLogger to prevent nesting
+        raw_stdout = sys.stdout
+        while isinstance(raw_stdout, TeeToLogger):
+            raw_stdout = raw_stdout._original
+        csv_log._original_stdout = raw_stdout
+        sys.stdout = TeeToLogger(raw_stdout, csv_log, stream_name="STDOUT")
+
     if capture_stderr:
-        sys.stderr = TeeToLogger(sys.stderr, csv_log, stream_name="STDERR")
+        raw_stderr = sys.stderr
+        while isinstance(raw_stderr, TeeToLogger):
+            raw_stderr = raw_stderr._original
+        csv_log._original_stderr = raw_stderr
+        sys.stderr = TeeToLogger(raw_stderr, csv_log, stream_name="STDERR")
 
     csv_log.info(
         f"Pipeline started: {script_name}",
