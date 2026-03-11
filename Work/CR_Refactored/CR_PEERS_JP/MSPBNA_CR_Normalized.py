@@ -137,23 +137,28 @@ MIN_PEER_MEMBERS = int(os.getenv("MIN_PEER_MEMBERS", "2"))
 # ==================================================================================
 
 def setup_logging(log_dir: str = "logs") -> logging.Logger:
-    """Setup comprehensive logging configuration."""
+    """Setup logging: CSV structured log + standard Python logger for backward compat."""
+    from logging_utils import setup_csv_logging
     Path(log_dir).mkdir(exist_ok=True)
-    log_filename = f"{log_dir}/bank_dashboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-    # Remove existing handlers to avoid duplicate logs in interactive environments
+    # CSV structured log (per-script, reset each run, captures stdout/stderr)
+    global csv_log
+    csv_log = setup_csv_logging("MSPBNA_CR_Normalized", log_dir=log_dir)
+
+    # Retain standard Python logger for backward compatibility with existing
+    # logging.info / logger.info calls throughout the codebase
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
-
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.FileHandler(log_filename), logging.StreamHandler(sys.stdout)]
+        handlers=[logging.StreamHandler(sys.stdout)]
     )
     logger = logging.getLogger(__name__)
-    logger.info(f"Logging initialized. Log file: {log_filename}")
+    logger.info(f"Logging initialized. CSV log: {csv_log.log_filename}")
     return logger
 
+csv_log = None  # Will be set by setup_logging()
 logger = setup_logging()
 
 @dataclass
@@ -5726,8 +5731,17 @@ class BankPerformanceDashboard:
 
     def run(self) -> Dict[str, Any]:
         logging.info("Starting dashboard generation...")
+        if csv_log:
+            csv_log.info("Dashboard generation started",
+                         event_type="CONFIG", phase="startup", component="run",
+                         context={"subject_cert": self.config.subject_bank_cert,
+                                  "peer_certs": self.config.peer_bank_certs})
+
         fdic_df, _ = self.fdic_fetcher.fetch_all_banks()
         if fdic_df.empty: raise ValueError("No FDIC data retrieved.")
+        if csv_log:
+            csv_log.log_df_shape("fdic_df", len(fdic_df), len(fdic_df.columns),
+                                 phase="data_fetch", component="fdic")
 
         all_certs = fdic_df['CERT'].unique().tolist()
         locations_df = get_bank_locations(all_certs)
@@ -5741,11 +5755,19 @@ class BankPerformanceDashboard:
         proc_df = self.processor.create_derived_metrics(fdic_df)
         proc_df_with_ttm = self.processor.calculate_ttm_metrics(proc_df)
         proc_df_with_peers = self._create_peer_composite(proc_df_with_ttm)
+        if csv_log:
+            csv_log.log_df_shape("proc_df_with_peers", len(proc_df_with_peers),
+                                 len(proc_df_with_peers.columns),
+                                 phase="processing", component="peer_composite")
 
         peer_comp_df = self.analyzer.create_peer_comparison(proc_df_with_peers)
-        norm_comp_df = self.analyzer.create_normalized_comparison(proc_df_with_peers)  # NEW: Normalized view
+        norm_comp_df = self.analyzer.create_normalized_comparison(proc_df_with_peers)
         snapshot_df = self.processor.create_latest_snapshot(proc_df_with_peers)
         avg_8q_all_metrics_df = self.processor.calculate_8q_averages(proc_df_with_peers)
+        if csv_log:
+            csv_log.log_df_shape("avg_8q_all_metrics_df", len(avg_8q_all_metrics_df),
+                                 len(avg_8q_all_metrics_df.columns),
+                                 phase="processing", component="8q_averages")
 
         # === FRED DATA FETCHING - NO DUPLICATES ===
         logging.info("Fetching FRED macroeconomic data asynchronously...")
@@ -5932,8 +5954,11 @@ class BankPerformanceDashboard:
         powerbi_macro_df = enhanced_analyzer.generate_powerbi_output(processed_data)
 
 
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        fname = f"{self.config.output_dir}/Bank_Performance_Dashboard_{ts}.xlsx"
+        from logging_utils import get_run_date_str, build_artifact_filename
+        fname = build_artifact_filename(
+            "Bank_Performance_Dashboard", "", ext=".xlsx",
+            output_dir=self.config.output_dir,
+        )
         peer_comp_df = self._optimize_df_dtypes(peer_comp_df)
         norm_comp_df = self._optimize_df_dtypes(norm_comp_df)  # NEW: Optimize normalized view
         snapshot_df = self._optimize_df_dtypes(snapshot_df)
@@ -6197,6 +6222,10 @@ class BankPerformanceDashboard:
         else:
             logging.warning("Normalized_Comparison is empty — curated normalized comparison produced no rows")
 
+        if csv_log:
+            csv_log.info(f"Writing workbook: {fname}",
+                         event_type="FILE_WRITTEN", phase="output", component="excel",
+                         context={"filename": fname})
         self.output_gen.write_excel_output(
             file_path=fname,
             Summary_Dashboard=peer_comp_df,
@@ -6370,6 +6399,11 @@ class BankPerformanceDashboard:
             print(f"❌ ERROR during diagnostic inspection: {e}")
 
         print("="*80)
+        if csv_log:
+            csv_log.info("Pipeline completed successfully",
+                         event_type="CONFIG", phase="shutdown", component="run",
+                         context={"output_file": fname})
+            csv_log.close()
         return {
             "output_file": fname,
             "powerbi_macro_df": powerbi_macro_df,
