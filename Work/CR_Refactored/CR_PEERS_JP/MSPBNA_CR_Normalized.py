@@ -228,7 +228,7 @@ class DashboardConfig:
     fred_api_key: str
     subject_bank_cert: int
     peer_bank_certs: List[int]
-    quarters_back: int = 30
+    quarters_back: int = 48
     fred_years_back: int = 15
     output_dir: str = "output"
     fdic_api_base: str = "https://banks.data.fdic.gov/api"
@@ -1637,7 +1637,9 @@ class FFIECBulkLoader:
         if df_fdic.empty:
             return df_fdic
 
-        dates = sorted(df_fdic['REPDTE'].unique(), reverse=True)[:30]
+        # Heal all available dates (no artificial cap — upstream FDIC fetch
+        # already constrains to quarters_back + 4 via the API limit).
+        dates = sorted(df_fdic['REPDTE'].unique(), reverse=True)
         ffiec_frames = []
 
         for dt in dates:
