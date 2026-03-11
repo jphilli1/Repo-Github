@@ -119,28 +119,38 @@ report_generator.py
 
 ### Output File Naming
 
-**Date-only naming** (YYYYMMDD, no HHMMSS). Same-day reruns overwrite previous artifacts. All filenames are built via `build_artifact_filename()` from `logging_utils.py` or use `get_run_date_str()` for the date component.
+**Date-only naming** (YYYYMMDD, no HHMMSS). Same-day reruns overwrite previous artifacts. The Excel dashboard filename is `Bank_Performance_Dashboard_YYYYMMDD.xlsx`. The stem (`Bank_Performance_Dashboard_YYYYMMDD`) already contains the date, so report artifacts append only the artifact descriptor — **no second date suffix**.
 
 - Excel dashboard: `Bank_Performance_Dashboard_YYYYMMDD.xlsx`
-- Charts/scatters/tables include source Excel stem and datestamp:
-  - `{stem}_standard_credit_chart_YYYYMMDD.png`
-  - `{stem}_normalized_credit_chart_YYYYMMDD.png`
-  - `{stem}_portfolio_mix_YYYYMMDD.png`
-  - `{stem}_problem_asset_attribution_YYYYMMDD.png`
-  - `{stem}_reserve_risk_allocation_YYYYMMDD.png`
-  - `{stem}_migration_ladder_YYYYMMDD.png`
-  - `{stem}_scatter_nco_vs_npl_YYYYMMDD.png`
-  - `{stem}_scatter_pd_vs_npl_YYYYMMDD.png`
-  - `{stem}_scatter_norm_nco_vs_nonaccrual_YYYYMMDD.png`
-  - `{stem}_standard_table_YYYYMMDD.html`
-  - `{stem}_normalized_table_YYYYMMDD.html`
-  - `{stem}_fred_table_YYYYMMDD.html`
-  - `{stem}_years_of_reserves_YYYYMMDD.png`
-  - `{stem}_growth_vs_deterioration_YYYYMMDD.png`
-  - `{stem}_risk_adjusted_return_YYYYMMDD.png`
-  - `{stem}_concentration_vs_capital_YYYYMMDD.png`
-  - `{stem}_liquidity_overlay_YYYYMMDD.png`
-  - `{stem}_macro_overlay_YYYYMMDD.png`
+- Charts/scatters/tables use the dashboard stem (which already includes the date):
+  - `{stem}_standard_credit_chart.png`
+  - `{stem}_normalized_credit_chart.png`
+  - `{stem}_executive_summary_standard.html`
+  - `{stem}_executive_summary_normalized.html`
+  - `{stem}_detailed_peer_table_standard.html`
+  - `{stem}_detailed_peer_table_normalized.html`
+  - `{stem}_core_pb_peer_table_standard.html`
+  - `{stem}_core_pb_peer_table_normalized.html`
+  - `{stem}_ratio_components_standard.html`
+  - `{stem}_ratio_components_normalized.html`
+  - `{stem}_cre_segment_standard.html` / `{stem}_cre_segment_normalized.html`
+  - `{stem}_resi_segment_standard.html` / `{stem}_resi_segment_normalized.html`
+  - `{stem}_fred_table.html`
+  - `{stem}_portfolio_mix.png`
+  - `{stem}_problem_asset_attribution.png`
+  - `{stem}_reserve_risk_allocation.png`
+  - `{stem}_migration_ladder.png`
+  - `{stem}_scatter_nco_vs_npl.png`
+  - `{stem}_scatter_pd_vs_npl.png`
+  - `{stem}_scatter_norm_nco_vs_nonaccrual.png`
+  - `{stem}_years_of_reserves.png`
+  - `{stem}_growth_vs_deterioration.png`
+  - `{stem}_risk_adjusted_return.png`
+  - `{stem}_concentration_vs_capital.png`
+  - `{stem}_liquidity_overlay.png`
+  - `{stem}_macro_overlay.png`
+
+Where `{stem}` = `Bank_Performance_Dashboard_YYYYMMDD`
 
 ### CSV Structured Logging
 
@@ -333,7 +343,7 @@ Three table tiers serve different audiences:
 - The detailed peer table is the **only** broad all-peer table.
 - Both standard and normalized versions are generated as **separate artifacts**.
 - Individual banks display as **tickers** (GS, UBS, JPM, BAC, C, WFC), not full names. Composites display as **descriptive labels** (Wealth Peers, All Peers). All labels are resolved via `resolve_display_label()` in `report_generator.py`.
-- Goldman Sachs and UBS are identified dynamically from bank NAME in data, not hardcoded CERTs.
+- GS and UBS are identified dynamically from bank NAME in data (via `_TICKER_MAP`), not hardcoded CERTs.
 
 ---
 
@@ -451,6 +461,15 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — Presentation & Output Cleanup
+
+**Fixes:**
+1. **Removed mixed standard-vs-normalized comparison HTML artifact** — `generate_normalized_comparison_table()` produced a side-by-side table mixing standard and normalized columns. This violates the single-regime-per-artifact rule. Removed from `generate_reports()`. The function definition is retained but no longer called.
+2. **Fixed double-date artifact filenames** — `{stem}` already contains the date from the Excel file (`Bank_Performance_Dashboard_YYYYMMDD`), so appending `_{stamp}` produced `..._20260311_..._20260311.html`. Removed the redundant `_{stamp}` suffix from all 28+ artifact paths.
+3. **Fixed "Norm NCO Rate (TTM) (%)" label** — Normalized NCO is not TTM; changed to "Norm NCO Rate (%)" in `generate_core_pb_peer_table`, `generate_detailed_peer_table`, and `generate_segment_focus_table`.
+4. **Updated CLAUDE.md** — Corrected artifact filename examples (no double date), updated table column examples to use tickers (GS, UBS not Goldman Sachs), removed stale normalized_comparison_table reference from naming docs.
+5. **Added 5 regression tests** — no mixed-regime artifacts, no double-date filenames, correct normalized NCO label, CLAUDE.md ticker convention, CLAUDE.md no stale full-name output examples.
 
 ### 2026-03-11 — CSV Logger Lifecycle Safety Fix
 
@@ -588,9 +607,9 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 **Report Design — Wealth-Focused Executive Summary & Segment Tables:**
 
-1. **Executive summary rewrite (report_generator.py)**: `generate_credit_metrics_email_table` now accepts `is_normalized` parameter. Columns changed from MSPBNA/MSBNA/Core PB/All Peers to **MSPBNA | Goldman Sachs | UBS | Wealth Peers | Delta MSPBNA vs Wealth Peers**. Wealth Peers = Core PB composite (90001 standard, 90004 normalized). Both standard and normalized versions generated as separate artifacts.
+1. **Executive summary rewrite (report_generator.py)**: `generate_credit_metrics_email_table` now accepts `is_normalized` parameter. Columns changed from MSPBNA/MSBNA/Core PB/All Peers to **MSPBNA | GS | UBS | Wealth Peers | Delta MSPBNA vs Wealth Peers**. Wealth Peers = Core PB composite (90001 standard, 90004 normalized). Both standard and normalized versions generated as separate artifacts.
 
-2. **Segment focus tables (report_generator.py)**: `generate_segment_focus_table` rewritten with same wealth-focused columns. Dropped MSBNA and All Peers. Uses Core PB composite as Wealth Peers. Goldman Sachs and UBS identified dynamically from bank NAME.
+2. **Segment focus tables (report_generator.py)**: `generate_segment_focus_table` rewritten with same wealth-focused columns (MSPBNA | GS | UBS | Wealth Peers | Delta). Dropped MSBNA and All Peers. Uses Core PB composite as Wealth Peers. GS and UBS identified dynamically from bank NAME.
 
 3. **Core PB peer table (report_generator.py)**: `generate_core_pb_peer_table` repurposed — dropped MSBNA column, composite labeled "Wealth Peers" instead of "Core PB Avg". Title changed to "Wealth Peer Analysis".
 
