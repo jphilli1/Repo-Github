@@ -158,7 +158,72 @@ _STANDARD_COMPOSITES = set(ACTIVE_STANDARD_COMPOSITES.values())
 _NORMALIZED_COMPOSITES = set(ACTIVE_NORMALIZED_COMPOSITES.values())
 
 
-def validate_composite_cert_regime(proc_df: pd.DataFrame) -> Dict[str, Any]:
+# ==================================================================================
+# CENTRALIZED DISPLAY LABEL RESOLVER
+# ==================================================================================
+# All charts and tables MUST use this resolver for entity labels.
+# Individual banks → ticker symbols.  Composites → descriptive labels.
+
+# Ticker lookup: bank NAME substring → ticker symbol
+_TICKER_MAP = {
+    "GOLDMAN": "GS",
+    "UBS": "UBS",
+    "JPMORGAN": "JPM",
+    "BANK OF AMERICA": "BAC",
+    "CITIBANK": "C",
+    "CITI ": "C",
+    "WELLS FARGO": "WFC",
+}
+
+# Composite CERT → display label
+_COMPOSITE_LABELS = {
+    90001: "Wealth Peers",
+    90003: "All Peers",
+    90004: "Wealth Peers",
+    90006: "All Peers",
+    88888: "MS Combined",
+}
+
+_SUBJECT_CERT = int(os.getenv("MSPBNA_CERT", "34221"))
+_MSBNA_CERT = int(os.getenv("MSBNA_CERT", "32992"))
+
+
+def resolve_display_label(cert: int, name: Optional[str] = None, *,
+                          subject_cert: int = _SUBJECT_CERT) -> str:
+    """
+    Returns standardized display labels for all charts/tables.
+
+    Rules:
+    - subject bank → "MSPBNA"
+    - MSBNA → "MS"
+    - individual peers → ticker symbols (GS, UBS, JPM, BAC, C, WFC)
+    - active composites → descriptive labels (Wealth Peers, All Peers, MS Combined)
+    - unknown individuals → cleaned NAME fallback (not raw CERT)
+    """
+    if cert == subject_cert:
+        return "MSPBNA"
+    if cert == _MSBNA_CERT:
+        return "MS"
+
+    # Composite labels
+    if cert in _COMPOSITE_LABELS:
+        return _COMPOSITE_LABELS[cert]
+
+    # Ticker resolution from NAME
+    if name:
+        name_upper = name.upper()
+        for pattern, ticker in _TICKER_MAP.items():
+            if pattern in name_upper:
+                return ticker
+
+    # Fallback: clean bank name (strip "National Association", "N.A.", etc.)
+    if name:
+        cleaned = str(name).title()
+        for suffix in [" National Association", " N.A.", ", National Association"]:
+            cleaned = cleaned.replace(suffix, "")
+        return cleaned.strip()
+
+    return f"CERT {cert}"
     """Confirms active composites are present and legacy composites are not used
     for active artifact construction.
 
@@ -372,9 +437,9 @@ def create_credit_deterioration_chart_v3(
             90001: '#70AD47'
         }
         entity_names = {
-            subject_bank_cert: "MSPBNA",
-            90003: "All Peers",
-            90001: "Core PB"
+            subject_bank_cert: resolve_display_label(subject_bank_cert, subject_cert=subject_bank_cert),
+            90003: resolve_display_label(90003),
+            90001: resolve_display_label(90001),
         }
     else:
         entities_to_plot.append(90003)
@@ -383,8 +448,8 @@ def create_credit_deterioration_chart_v3(
             90003: '#5B9BD5'
         }
         entity_names = {
-            subject_bank_cert: "MSPBNA",
-            90003: "All Peers"
+            subject_bank_cert: resolve_display_label(subject_bank_cert, subject_cert=subject_bank_cert),
+            90003: resolve_display_label(90003),
         }
 
     chart_df = proc_df_with_peers[proc_df_with_peers['CERT'].isin(entities_to_plot)].copy()
@@ -662,7 +727,7 @@ def generate_html_email_table_dynamic(df: pd.DataFrame, report_date: datetime,
             cls = ""
             if c == "Metric": val = f"<b>{val}</b>"; cls = 'class="metric-name"'
             elif c == "MSPBNA": cls = 'class="subject-value"'
-            elif c == "MSBNA": cls = 'class="msbna-value"'
+            elif c == "MS": cls = 'class="msbna-value"'
 
             # Trend Coloring Logic based on original files
             if "Diff" in c and "N/A" not in str(val):
@@ -698,10 +763,11 @@ def generate_credit_metrics_email_table(
 ) -> Tuple[Optional[str], Optional[pd.DataFrame]]:
     """
     Wealth-focused executive summary table.
-    Columns: Metric | MSPBNA | Goldman Sachs | UBS | Wealth Peers | Delta MSPBNA vs Wealth Peers
+    Columns: Metric | MSPBNA | <peer tickers> | Wealth Peers | Delta MSPBNA vs Wealth Peers
 
+    Individual banks use ticker symbols via resolve_display_label().
     'Wealth Peers' = Core PB composite (90001 standard, 90004 normalized).
-    Does NOT include MSBNA or All Peers — those belong in the detailed peer table.
+    Does NOT include MS or All Peers — those belong in the detailed peer table.
     """
     if is_normalized:
         metric_map = {
@@ -755,16 +821,15 @@ def generate_credit_metrics_email_table(
     # Wealth Peers = Core PB composite (90001 standard, 90004 normalized)
     wealth_peers_cert = ACTIVE_NORMALIZED_COMPOSITES["core_pb"] if is_normalized else ACTIVE_STANDARD_COMPOSITES["core_pb"]
 
-    # Identify Goldman Sachs and UBS from the data
-    goldman_cert, ubs_cert = None, None
+    # Identify wealth peer constituents (Goldman, UBS) via resolver
+    peer_certs = []  # (cert, label)
     for c in latest_data["CERT"].unique():
-        if c in ALL_COMPOSITE_CERTS:
+        if c in ALL_COMPOSITE_CERTS or c == subject_bank_cert:
             continue
-        name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]).upper()
-        if "GOLDMAN" in name:
-            goldman_cert = c
-        elif "UBS" in name:
-            ubs_cert = c
+        raw_name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0])
+        label = resolve_display_label(c, raw_name, subject_cert=subject_bank_cert)
+        if label in ("GS", "UBS"):
+            peer_certs.append((c, label))
 
     try:
         subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
@@ -777,51 +842,47 @@ def generate_credit_metrics_email_table(
         sl = latest_data[latest_data["CERT"] == cert]
         return sl.iloc[0] if not sl.empty else None
 
-    goldman = _safe_row(goldman_cert)
-    ubs = _safe_row(ubs_cert)
-    wealth = _safe_row(wealth_peers_cert)
+    # Build ordered column map: MSPBNA, peer tickers, Wealth Peers
+    col_entities = [("MSPBNA", subj)]
+    for pc, lbl in sorted(peer_certs, key=lambda x: x[1]):
+        col_entities.append((lbl, _safe_row(pc)))
+    wealth_label = resolve_display_label(wealth_peers_cert)
+    col_entities.append((wealth_label, _safe_row(wealth_peers_cert)))
 
     rows = []
     for code, (disp, fmt) in metric_map.items():
         if code not in subj.index:
             continue
 
-        v_subj = subj.get(code, np.nan)
-        v_goldman = goldman.get(code, np.nan) if goldman is not None else np.nan
-        v_ubs = ubs.get(code, np.nan) if ubs is not None else np.nan
-        v_wealth = wealth.get(code, np.nan) if wealth is not None else np.nan
+        vals = {}
+        for lbl, entity_row in col_entities:
+            vals[lbl] = entity_row.get(code, np.nan) if entity_row is not None else np.nan
 
         # Dead-metric suppression
-        all_vals = [v_subj, v_goldman, v_ubs, v_wealth]
-        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in all_vals):
+        if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in vals.values()):
             continue
 
+        v_subj = vals["MSPBNA"]
+        v_wealth = vals[wealth_label]
         delta = v_subj - v_wealth if pd.notna(v_subj) and pd.notna(v_wealth) else np.nan
 
+        row = {"Metric": disp}
+        for lbl, _ in col_entities:
+            v = vals[lbl]
+            if fmt == 'B':
+                row[lbl] = _fmt_money_billions(v)
+            elif fmt == 'x':
+                row[lbl] = _fmt_multiple(v)
+            else:
+                row[lbl] = _fmt_percent(v)
+
         if fmt == 'B':
-            f = _fmt_money_billions
-            rows.append({
-                "Metric": disp,
-                "MSPBNA": f(v_subj), "Goldman Sachs": f(v_goldman),
-                "UBS": f(v_ubs), "Wealth Peers": f(v_wealth),
-                "Delta MSPBNA vs Wealth Peers": _fmt_money_billions_diff(delta),
-            })
+            row["Delta MSPBNA vs Wealth Peers"] = _fmt_money_billions_diff(delta)
         elif fmt == 'x':
-            f = _fmt_multiple
-            rows.append({
-                "Metric": disp,
-                "MSPBNA": f(v_subj), "Goldman Sachs": f(v_goldman),
-                "UBS": f(v_ubs), "Wealth Peers": f(v_wealth),
-                "Delta MSPBNA vs Wealth Peers": _fmt_multiple_diff(delta),
-            })
+            row["Delta MSPBNA vs Wealth Peers"] = _fmt_multiple_diff(delta)
         else:
-            f = _fmt_percent
-            rows.append({
-                "Metric": disp,
-                "MSPBNA": f(v_subj), "Goldman Sachs": f(v_goldman),
-                "UBS": f(v_ubs), "Wealth Peers": f(v_wealth),
-                "Delta MSPBNA vs Wealth Peers": _fmt_percent_diff(delta, v_subj),
-            })
+            row["Delta MSPBNA vs Wealth Peers"] = _fmt_percent_diff(delta, v_subj)
+        rows.append(row)
 
     df = pd.DataFrame(rows)
     norm_str = "Normalized" if is_normalized else "Standard"
@@ -1009,7 +1070,7 @@ def generate_detailed_peer_table(
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date].copy()
 
-    msbna_cert = 32992
+    msbna_cert = _MSBNA_CERT
 
     # 1. Individual peers excluding Subject, MSBNA, and Composites
     individual_peer_certs = [
@@ -1017,13 +1078,16 @@ def generate_detailed_peer_table(
         if c not in ALL_COMPOSITE_CERTS and c not in (subject_bank_cert, msbna_cert)
     ]
 
-    col_mapping = {subject_bank_cert: "MSPBNA", msbna_cert: "MSBNA"}
+    col_mapping = {
+        subject_bank_cert: resolve_display_label(subject_bank_cert, subject_cert=subject_bank_cert),
+        msbna_cert: resolve_display_label(msbna_cert),
+    }
     for c in individual_peer_certs:
-        name = latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]
-        col_mapping[c] = str(name).title().replace(" National Association", "").replace(" N.A.", "").strip()
+        raw_name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0])
+        col_mapping[c] = resolve_display_label(c, raw_name, subject_cert=subject_bank_cert)
 
     peer_avg_cert = ACTIVE_NORMALIZED_COMPOSITES["all_peers"] if is_normalized else ACTIVE_STANDARD_COMPOSITES["all_peers"]
-    col_mapping[peer_avg_cert] = "All Peers (Norm)" if is_normalized else "All Peers"
+    col_mapping[peer_avg_cert] = resolve_display_label(peer_avg_cert)
 
     # ORDER: MSPBNA, MSBNA on the LEFT
     ordered_certs = [subject_bank_cert, msbna_cert] + individual_peer_certs + [peer_avg_cert]
@@ -1074,27 +1138,29 @@ def generate_core_pb_peer_table(
     is_normalized: bool = False,
 ) -> Optional[str]:
     """
-    Wealth-focused peer table: MSPBNA | Goldman Sachs | UBS | Wealth Peers.
-    No MSBNA. 'Wealth Peers' = Core PB composite (90001 std, 90004 norm).
+    Wealth-focused peer table: MSPBNA | <peer tickers> | Wealth Peers.
+    No MS. Uses resolve_display_label() for ticker-style names.
+    'Wealth Peers' = Core PB composite (90001 std, 90004 norm).
     """
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date].copy()
 
-    # Identify Core PB constituents (Goldman and UBS)
+    # Identify Core PB constituents via resolver
     core_pb_certs = []
-    col_mapping = {subject_bank_cert: "MSPBNA"}
+    col_mapping = {subject_bank_cert: resolve_display_label(subject_bank_cert, subject_cert=subject_bank_cert)}
     for c in latest_data["CERT"].unique():
-        if c in ALL_COMPOSITE_CERTS:
+        if c in ALL_COMPOSITE_CERTS or c == subject_bank_cert:
             continue
-        name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]).upper()
-        if "GOLDMAN" in name or "UBS" in name:
+        raw_name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0])
+        label = resolve_display_label(c, raw_name, subject_cert=subject_bank_cert)
+        if label in ("GS", "UBS"):
             core_pb_certs.append(c)
-            col_mapping[c] = "Goldman Sachs" if "GOLDMAN" in name else "UBS"
+            col_mapping[c] = label
 
     peer_avg_cert = ACTIVE_NORMALIZED_COMPOSITES["core_pb"] if is_normalized else ACTIVE_STANDARD_COMPOSITES["core_pb"]
-    col_mapping[peer_avg_cert] = "Wealth Peers"
+    col_mapping[peer_avg_cert] = resolve_display_label(peer_avg_cert)
 
-    # ORDER: MSPBNA, Goldman, UBS, Wealth Peers (no MSBNA)
+    # ORDER: MSPBNA, peer tickers, Wealth Peers (no MS)
     ordered_certs = [subject_bank_cert] + core_pb_certs + [peer_avg_cert]
 
     if is_normalized:
@@ -1164,8 +1230,6 @@ def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
         html += f"<th>{col_mapping[c]}</th>"
     html += f"<th>Diff Vs {col_mapping[avg_cert]}</th></tr></thead><tbody>"
 
-    msbna_cert = 32992
-
     for disp, code, fmt in metrics:
         html += f'<tr><td class="metric-name"><b>{disp}</b></td>'
         subj_val, avg_val = np.nan, np.nan
@@ -1188,7 +1252,7 @@ def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
                 f_v = f"{val * 100:.2f}%" if abs(val) < 1.0 else f"{val:.2f}%"
 
             cls = ('class="subject-value"' if c == subject_cert
-                   else ('class="msbna-value"' if c == msbna_cert else ''))
+                   else ('class="msbna-value"' if c == _MSBNA_CERT else ''))
             html += f"<td {cls}>{f_v}</td>"
 
         diff = subj_val - avg_val if pd.notna(subj_val) and pd.notna(avg_val) else np.nan
@@ -1449,8 +1513,9 @@ def generate_segment_focus_table(
 ) -> Optional[str]:
     """
     Wealth-focused segment table.
-    Columns: Metric | MSPBNA | Goldman Sachs | UBS | Wealth Peers | Delta vs Wealth Peers
+    Columns: Metric | MSPBNA | <peer tickers> | Wealth Peers | Delta vs Wealth Peers
 
+    Uses resolve_display_label() for ticker-style names.
     'Wealth Peers' = Core PB composite (90001 standard, 90004 normalized).
     """
     latest_date = proc_df_with_peers["REPDTE"].max()
@@ -1459,24 +1524,16 @@ def generate_segment_focus_table(
     # Wealth Peers = Core PB composite
     wealth_peers_cert = ACTIVE_NORMALIZED_COMPOSITES["core_pb"] if is_normalized else ACTIVE_STANDARD_COMPOSITES["core_pb"]
 
-    # Identify Goldman Sachs and UBS
-    goldman_cert, ubs_cert = None, None
-    for c in latest_data["CERT"].unique():
-        if c in ALL_COMPOSITE_CERTS:
-            continue
-        name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]).upper()
-        if "GOLDMAN" in name:
-            goldman_cert = c
-        elif "UBS" in name:
-            ubs_cert = c
-
-    # Build column map: label -> cert
+    # Identify wealth peer constituents via resolver
     col_certs = {"MSPBNA": subject_bank_cert}
-    if goldman_cert is not None:
-        col_certs["Goldman Sachs"] = goldman_cert
-    if ubs_cert is not None:
-        col_certs["UBS"] = ubs_cert
-    col_certs["Wealth Peers"] = wealth_peers_cert
+    for c in latest_data["CERT"].unique():
+        if c in ALL_COMPOSITE_CERTS or c == subject_bank_cert:
+            continue
+        raw_name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0])
+        label = resolve_display_label(c, raw_name, subject_cert=subject_bank_cert)
+        if label in ("GS", "UBS"):
+            col_certs[label] = c
+    col_certs[resolve_display_label(wealth_peers_cert)] = wealth_peers_cert
 
     row_data = {
         k: latest_data[latest_data["CERT"] == v].iloc[0]
@@ -1579,7 +1636,8 @@ def generate_segment_focus_table(
     for code, disp, fmt, higher_is_better in metrics:
         vals = {k: row_data[k].get(code, np.nan) for k in col_certs}
         v_subj = vals.get("MSPBNA", np.nan)
-        v_wealth = vals.get("Wealth Peers", np.nan)
+        wealth_label = resolve_display_label(wealth_peers_cert)
+        v_wealth = vals.get(wealth_label, np.nan)
         diff = v_subj - v_wealth if pd.notna(v_subj) and pd.notna(v_wealth) else np.nan
 
         def fmt_val(v, fmt_type):
@@ -2557,8 +2615,9 @@ def create_credit_deterioration_chart_ppt(
     default_entities = [subject_bank_cert, 90003, 90001]
     bar_entities  = bar_entities  or default_entities
     line_entities = line_entities or list(bar_entities)
-    names  = {subject_bank_cert:"MSPBNA", 90003:"All Peers", 90001:"Core PB",
-              90006:"All Peers (Norm)", 90004:"Core PB (Norm)"}
+    names  = {subject_bank_cert: resolve_display_label(subject_bank_cert, subject_cert=subject_bank_cert),
+              90003: resolve_display_label(90003), 90001: resolve_display_label(90001),
+              90006: resolve_display_label(90006), 90004: resolve_display_label(90004)}
     colors = {subject_bank_cert:GOLD, 90003:BLUE, 90001:PURPLE,
               90006:BLUE, 90004:PURPLE}
 
@@ -3256,7 +3315,7 @@ def plot_years_of_reserves(
     ax.hlines(y, 0, subj_vals, color="#F7A81B", linewidth=2.5, zorder=2)
     ax.scatter(subj_vals, y, color="#F7A81B", s=100, zorder=3, label="MSPBNA")
     if any(v > 0 for v in peer_vals):
-        ax.scatter(peer_vals, y, color="#4C78A8", s=80, marker="D", zorder=3, label="All Peers")
+        ax.scatter(peer_vals, y, color="#4C78A8", s=80, marker="D", zorder=3, label=resolve_display_label(90003))
 
     ax.set_yticks(y)
     ax.set_yticklabels(segments, fontsize=12)

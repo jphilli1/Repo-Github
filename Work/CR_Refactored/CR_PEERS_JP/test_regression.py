@@ -1796,13 +1796,12 @@ class TestDirectiveC(unittest.TestCase):
             cls.mdd_source = f.read()
 
     # ------------------------------------------------------------------
-    # 1. Executive summary columns are wealth-focused
+    # 1. Executive summary columns use ticker-style labels
     # ------------------------------------------------------------------
     def test_executive_summary_has_wealth_peers_column(self):
-        """Executive summary must use 'Wealth Peers' column, not 'All Peers'."""
+        """Executive summary must use ticker-style labels via resolve_display_label."""
         self.assertIn('"Wealth Peers"', self.rg_source)
-        # The function should NOT produce MSBNA columns
-        # Check that generate_credit_metrics_email_table doesn't reference MSBNA as a column
+        # The function should use resolve_display_label, not hardcoded full names
         import ast
         tree = ast.parse(self.rg_source)
         for node in ast.walk(tree):
@@ -1812,9 +1811,10 @@ class TestDirectiveC(unittest.TestCase):
                     "Executive summary must not include MSBNA column")
                 self.assertNotIn('"All Peers"', body_src,
                     "Executive summary must not include All Peers column")
-                self.assertIn('"Goldman Sachs"', body_src)
-                self.assertIn('"UBS"', body_src)
-                self.assertIn('"Wealth Peers"', body_src)
+                # Must use resolve_display_label, not hardcoded "Goldman Sachs"
+                self.assertIn('resolve_display_label', body_src)
+                self.assertNotIn('"Goldman Sachs"', body_src,
+                    "Executive summary must use ticker GS, not full name Goldman Sachs")
                 self.assertIn('"Delta MSPBNA vs Wealth Peers"', body_src)
                 break
 
@@ -1850,33 +1850,36 @@ class TestDirectiveC(unittest.TestCase):
     # 4. Segment tables use Wealth Peers, not All Peers
     # ------------------------------------------------------------------
     def test_segment_focus_table_wealth_peers(self):
-        """Segment focus tables must use Wealth Peers (core_pb), not All Peers."""
+        """Segment focus tables must use Wealth Peers (core_pb) via resolver."""
         import ast
         tree = ast.parse(self.rg_source)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "generate_segment_focus_table":
                 body_src = ast.get_source_segment(self.rg_source, node)
-                self.assertIn('"Wealth Peers"', body_src)
                 self.assertIn('core_pb', body_src,
                     "Segment table must use core_pb composite as Wealth Peers")
-                # Should NOT have MSBNA as a column
                 self.assertNotIn('"MSBNA"', body_src)
+                self.assertIn('resolve_display_label', body_src,
+                    "Segment table must use resolve_display_label for peer names")
+                self.assertNotIn('"Goldman Sachs"', body_src,
+                    "Segment table must use ticker GS, not full name")
                 break
 
     # ------------------------------------------------------------------
     # 5. Core PB peer table drops MSBNA, labels as Wealth Peers
     # ------------------------------------------------------------------
     def test_core_pb_table_no_msbna(self):
-        """Core PB peer table must not include MSBNA; composite labeled Wealth Peers."""
+        """Core PB peer table must not include MSBNA; uses resolve_display_label."""
         import ast
         tree = ast.parse(self.rg_source)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "generate_core_pb_peer_table":
                 body_src = ast.get_source_segment(self.rg_source, node)
-                # No MSBNA in col_mapping
                 self.assertNotIn('"MSBNA"', body_src)
-                # Must label as "Wealth Peers"
-                self.assertIn('"Wealth Peers"', body_src)
+                self.assertIn('resolve_display_label', body_src,
+                    "Core PB table must use resolve_display_label for labels")
+                self.assertNotIn('"Goldman Sachs"', body_src,
+                    "Core PB table must use ticker GS, not full name")
                 break
 
     # ------------------------------------------------------------------
@@ -1980,6 +1983,159 @@ class TestDirectiveC(unittest.TestCase):
         snippet = self.mdd_source[idx:idx+80]  # Just the short label
         self.assertNotIn("TTM Past Due", snippet,
             "Past_Due_Rate short display label must not say TTM")
+
+
+class TestLabelResolver(unittest.TestCase):
+    """Regression tests for centralized label resolver (resolve_display_label)."""
+
+    @classmethod
+    def setUpClass(cls):
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        rg_path = os.path.join(project_dir, "report_generator.py")
+        with open(rg_path, "r", encoding="utf-8") as f:
+            cls.rg_source = f.read()
+
+    # ------------------------------------------------------------------
+    # 1. resolve_display_label function exists in report_generator.py
+    # ------------------------------------------------------------------
+    def test_resolve_display_label_exists(self):
+        """resolve_display_label must be defined in report_generator.py."""
+        self.assertIn("def resolve_display_label(", self.rg_source)
+
+    # ------------------------------------------------------------------
+    # 2. _TICKER_MAP has correct mappings
+    # ------------------------------------------------------------------
+    def test_ticker_map_has_required_entries(self):
+        """_TICKER_MAP must contain GS, UBS, JPM, BAC, C, WFC."""
+        self.assertIn('"GOLDMAN"', self.rg_source)
+        self.assertIn('"GS"', self.rg_source)
+        self.assertIn('"UBS"', self.rg_source)
+        self.assertIn('"JPM"', self.rg_source)
+        self.assertIn('"BAC"', self.rg_source)
+        # Citibank -> C
+        self.assertIn('"CITIBANK"', self.rg_source)
+        self.assertIn('"WELLS FARGO"', self.rg_source)
+        self.assertIn('"WFC"', self.rg_source)
+
+    # ------------------------------------------------------------------
+    # 3. _COMPOSITE_LABELS maps active composites to descriptive names
+    # ------------------------------------------------------------------
+    def test_composite_labels_defined(self):
+        """_COMPOSITE_LABELS must map 90001/90003/90004/90006 to descriptive names."""
+        self.assertIn("_COMPOSITE_LABELS", self.rg_source)
+        self.assertIn("90001", self.rg_source)
+        self.assertIn("90003", self.rg_source)
+        self.assertIn('"Wealth Peers"', self.rg_source)
+        self.assertIn('"All Peers"', self.rg_source)
+
+    # ------------------------------------------------------------------
+    # 4. No hardcoded "Goldman Sachs" in table/chart builder functions
+    # ------------------------------------------------------------------
+    def test_no_hardcoded_goldman_sachs_in_builders(self):
+        """No table or chart builder function should hardcode 'Goldman Sachs' as a label."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        builder_funcs = [
+            "generate_credit_metrics_email_table",
+            "generate_core_pb_peer_table",
+            "generate_detailed_peer_table",
+            "generate_segment_focus_table",
+            "create_credit_deterioration_chart_v3",
+            "create_credit_deterioration_chart_ppt",
+        ]
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name in builder_funcs:
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertNotIn('"Goldman Sachs"', body_src,
+                    f"{node.name} must not hardcode 'Goldman Sachs' — use resolve_display_label")
+
+    # ------------------------------------------------------------------
+    # 5. Chart v3 uses resolve_display_label for entity names
+    # ------------------------------------------------------------------
+    def test_chart_v3_uses_resolver(self):
+        """create_credit_deterioration_chart_v3 must use resolve_display_label."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "create_credit_deterioration_chart_v3":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn("resolve_display_label", body_src,
+                    "Chart v3 must use resolve_display_label for entity names")
+                break
+
+    # ------------------------------------------------------------------
+    # 6. Chart PPT uses resolve_display_label
+    # ------------------------------------------------------------------
+    def test_chart_ppt_uses_resolver(self):
+        """create_credit_deterioration_chart_ppt must use resolve_display_label."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "create_credit_deterioration_chart_ppt":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn("resolve_display_label", body_src,
+                    "Chart PPT must use resolve_display_label for entity names")
+                break
+
+    # ------------------------------------------------------------------
+    # 7. Detailed peer table uses resolve_display_label
+    # ------------------------------------------------------------------
+    def test_detailed_peer_table_uses_resolver(self):
+        """generate_detailed_peer_table must use resolve_display_label for column headers."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_detailed_peer_table":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn("resolve_display_label", body_src,
+                    "Detailed peer table must use resolve_display_label")
+                break
+
+    # ------------------------------------------------------------------
+    # 8. Segment focus table uses resolve_display_label
+    # ------------------------------------------------------------------
+    def test_segment_focus_table_uses_resolver(self):
+        """generate_segment_focus_table must use resolve_display_label."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_segment_focus_table":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn("resolve_display_label", body_src,
+                    "Segment focus table must use resolve_display_label")
+                break
+
+    # ------------------------------------------------------------------
+    # 9. Subject bank resolves to MSPBNA
+    # ------------------------------------------------------------------
+    def test_subject_bank_label_is_mspbna(self):
+        """resolve_display_label for subject cert must return MSPBNA."""
+        self.assertIn('"MSPBNA"', self.rg_source)
+        # The resolver must return MSPBNA for subject_cert
+        self.assertIn('return "MSPBNA"', self.rg_source)
+
+    # ------------------------------------------------------------------
+    # 10. MSBNA cert resolves to MS
+    # ------------------------------------------------------------------
+    def test_msbna_label_is_ms(self):
+        """resolve_display_label for MSBNA cert must return MS."""
+        self.assertIn('return "MS"', self.rg_source)
+
+    # ------------------------------------------------------------------
+    # 11. _build_dynamic_peer_html uses _MSBNA_CERT constant
+    # ------------------------------------------------------------------
+    def test_dynamic_peer_html_uses_msbna_constant(self):
+        """_build_dynamic_peer_html must use _MSBNA_CERT, not hardcoded 32992."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_build_dynamic_peer_html":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn("_MSBNA_CERT", body_src,
+                    "_build_dynamic_peer_html must use _MSBNA_CERT constant")
+                self.assertNotIn("msbna_cert = 32992", body_src,
+                    "_build_dynamic_peer_html must not hardcode msbna_cert = 32992")
+                break
 
 
 if __name__ == '__main__':
