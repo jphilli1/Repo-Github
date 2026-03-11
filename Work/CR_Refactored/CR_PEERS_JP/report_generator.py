@@ -224,14 +224,24 @@ def resolve_display_label(cert: int, name: Optional[str] = None, *,
         return cleaned.strip()
 
     return f"CERT {cert}"
+
+
+def validate_composite_cert_regime(proc_df: pd.DataFrame) -> Dict[str, Any]:
     """Confirms active composites are present and legacy composites are not used
     for active artifact construction.
 
-    Returns dict with:
-        - valid: bool
-        - active_present: set of active CERTs found
-        - active_missing: set of active CERTs NOT found
-        - legacy_present: set of legacy CERTs found (for info only)
+    Parameters
+    ----------
+    proc_df : pd.DataFrame
+        Processed DataFrame with a ``CERT`` column.
+
+    Returns
+    -------
+    dict
+        - valid: bool — True if all active composites are present
+        - active_present: set of active CERTs found in data
+        - active_missing: set of active CERTs NOT found in data
+        - legacy_present: set of legacy CERTs found (informational)
         - warnings: list[str]
         - errors: list[str]
     """
@@ -244,10 +254,10 @@ def resolve_display_label(cert: int, name: Optional[str] = None, *,
     warnings_list = []
     errors_list = []
 
-    for cert in active_missing:
+    for cert in sorted(active_missing):
         errors_list.append(f"Active composite CERT {cert} is missing from data — charts/tables requiring it will be skipped")
 
-    for cert in legacy_present:
+    for cert in sorted(legacy_present):
         warnings_list.append(f"Legacy composite CERT {cert} found in data — must NOT be used for chart/table selection")
 
     return {
@@ -1289,60 +1299,25 @@ def generate_normalized_comparison_table(
     subject_cert: int,
 ) -> Optional[str]:
     """
-    Side-by-side table comparing Standard vs Normalized metrics for the subject bank
-    and the All Peers composite.
+    DEPRECATED — This function produced a mixed standard-vs-normalized side-by-side
+    table, which violates the single-regime-per-artifact rule. Use the separate
+    standard and normalized table generators instead:
+      - generate_executive_summary (is_normalized=False / True)
+      - generate_detailed_peer_table (is_normalized=False / True)
+      - generate_core_pb_peer_table (is_normalized=False / True)
+
+    Retained as a compatibility stub. Will be removed in a future release.
+
+    Raises
+    ------
+    NotImplementedError
+        Always. This function is deprecated and must not be called.
     """
-    latest_date = df["REPDTE"].max()
-    latest = df[df["REPDTE"] == latest_date]
-
-    subj = latest[latest["CERT"] == subject_cert]
-    if subj.empty:
-        print("  Skipped normalized comparison table: no subject bank data")
-        return None
-    subj = subj.iloc[0]
-
-    # All Peers standard (90003) and normalized (90006)
-    peer_std = latest[latest["CERT"] == 90003]
-    peer_norm = latest[latest["CERT"] == 90006]
-    peer_std = peer_std.iloc[0] if not peer_std.empty else None
-    peer_norm = peer_norm.iloc[0] if not peer_norm.empty else None
-
-    pairs = [
-        ("NCO Rate", "TTM_NCO_Rate", "Norm_NCO_Rate"),
-        ("Nonaccrual / NPL Rate", "NPL_to_Gross_Loans_Rate", "Norm_Nonaccrual_Rate"),
-        ("Past Due Rate", "Past_Due_Rate", "Norm_Past_Due_Rate"),
-        ("ALLL / Gross Loans", "Allowance_to_Gross_Loans_Rate", "Norm_Allowance_Rate"),
-    ]
-
-    html = f"""<html><head><meta charset="utf-8">{_TABLE_CSS}</head><body>
-<div class="tbl-container">
-<h2>Standard vs Normalized Metrics</h2>
-<p class="sub">Side-by-Side Comparison | {latest_date.strftime('%B %d, %Y')}</p>
-<table><thead>
-<tr><th rowspan="2">Metric</th>
-<th colspan="2" style="background:#2980b9">MSPBNA</th>
-<th colspan="2" style="background:#27ae60">All Peers</th></tr>
-<tr><th>Standard</th><th>Normalized</th><th>Standard</th><th>Normalized</th></tr>
-</thead><tbody>\n"""
-
-    for display, std_col, norm_col in pairs:
-        sv_std = _safe_val(subj, std_col)
-        sv_norm = _safe_val(subj, norm_col)
-        pv_std = _safe_val(peer_std, std_col) if peer_std is not None else np.nan
-        pv_norm = _safe_val(peer_norm, norm_col) if peer_norm is not None else np.nan
-
-        # Skip row if neither standard nor normalized column exists in the data
-        if std_col not in subj.index and norm_col not in subj.index:
-            continue
-
-        html += f'<tr><td class="metric-name">{display}</td>'
-        html += f'<td class="mspbna-value">{_fmt_percent_auto(sv_std)}</td>'
-        html += f'<td class="mspbna-value">{_fmt_percent_auto(sv_norm)}</td>'
-        html += f"<td>{_fmt_percent_auto(pv_std)}</td>"
-        html += f"<td>{_fmt_percent_auto(pv_norm)}</td></tr>\n"
-
-    html += "</tbody></table></div></body></html>"
-    return html
+    raise NotImplementedError(
+        "generate_normalized_comparison_table() is deprecated. "
+        "Use separate standard/normalized table generators instead. "
+        "See report_generator.py docstring for alternatives."
+    )
 
 
 def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,

@@ -224,6 +224,16 @@ These are **non-negotiable** for any agent editing this codebase:
 - Never hardcode CERT numbers directly. Always use the config/env pattern. Production defaults: `MSPBNA_CERT=34221`, `MSBNA_CERT=32992`.
 - The FRED API key must come from `os.getenv('FRED_API_KEY')` or `.env`.
 
+### IMPORT SAFETY
+
+- `MSPBNA_CR_Normalized.py` must be importable **without** setting environment variables, altering `cwd`, printing to stdout, or opening log files. All side effects live in `main()` (via `_validate_runtime_env()`, `setup_logging()`, `os.chdir()`).
+- Module-level `MSPBNA_CERT` and `MSBNA_CERT` use `os.getenv()` with defaults for import safety. The hard validation (ValueError on missing vars) happens at runtime in `_validate_runtime_env()`.
+- `csv_log` and `logger` are initialized to `None` at module level and set by `setup_logging()` inside `main()`.
+
+### DEPRECATED FUNCTIONS
+
+- `generate_normalized_comparison_table()` in `report_generator.py` is **deprecated** — raises `NotImplementedError`. It produced a mixed standard-vs-normalized artifact violating the single-regime-per-artifact rule. Use the separate standard/normalized table generators instead.
+
 ### SCATTER & CHART COMPOSITE HANDLING
 
 - **Active composite regime** is defined at the top of `report_generator.py`:
@@ -461,6 +471,30 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — Final Cleanup & Testability
+
+**Changes:**
+1. **Deprecated `generate_normalized_comparison_table()`** — Function body replaced with `raise NotImplementedError`. Retained as a compatibility stub with deprecation docstring pointing to the separate standard/normalized table generators. Was already removed from `generate_reports()` in prior directive; this formalizes the deprecation.
+
+2. **Restored `validate_composite_cert_regime()` as a proper function** — The implementation was orphaned as dead code after `resolve_display_label()`'s `return` statement. Extracted into a standalone top-level function with proper signature (`proc_df: pd.DataFrame`) and docstring. Returns structured dict with `valid`, `active_present`, `active_missing`, `legacy_present`, `warnings`, `errors`. Fixes the pre-existing `test_validate_composite_cert_regime_exists` test failure.
+
+3. **Removed import-time side effects from `MSPBNA_CR_Normalized.py`** — Importing the module no longer requires environment variables, alters `cwd`, prints to stdout, or opens log files. Specifically:
+   - `os.chdir(script_dir)` moved from module level into `main()`
+   - HUD token print statements moved into `_validate_runtime_env()`
+   - `ValueError` raise on missing MSPBNA_CERT/MSBNA_CERT moved into `_validate_runtime_env()`
+   - `MSPBNA_CERT` and `MSBNA_CERT` now use `os.getenv()` with defaults (`34221`/`32992`) for import safety
+   - `logger = setup_logging()` moved from module level into `main()`
+   - `main()` now calls `os.chdir(script_dir)`, `_validate_runtime_env()`, `setup_logging()` at start
+
+4. **Added 15 new regression tests** across 3 test classes:
+   - `TestDeprecatedNormalizedComparison` (3 tests): stub exists, raises NotImplementedError, not called in generate_reports
+   - `TestValidateCompositeCertRegime` (5 tests): function exists, top-level (not dead code), returns required keys, checks active/legacy composites
+   - `TestImportSafety` (7 tests): no import-time ValueError, print, setup_logging, os.chdir; env vars have defaults; `_validate_runtime_env` exists; main calls runtime bootstrap
+
+5. **Fixed `TestNoMixedRegimeArtifact` false positive** — Test regex was matching the `NotImplementedError` message string, not an actual function call. Updated to skip string literals.
+
+**Test baseline**: 156 tests — 144 passing, 0 failures, 10 pre-existing errors (missing `matplotlib`/`aiohttp`), 2 skipped.
 
 ### 2026-03-11 — Presentation & Output Cleanup
 

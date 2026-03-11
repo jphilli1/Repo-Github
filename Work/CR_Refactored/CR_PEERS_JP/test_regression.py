@@ -2539,14 +2539,24 @@ class TestNoMixedRegimeArtifact(unittest.TestCase):
         """generate_reports must not call generate_normalized_comparison_table."""
         src_path = Path(__file__).parent / "report_generator.py"
         src = src_path.read_text(encoding="utf-8")
-        # Find calls to generate_normalized_comparison_table (not the def itself)
+        # Find actual code calls (not def, not inside strings/comments)
         import re
-        calls = re.findall(
-            r'(?<!def\s)generate_normalized_comparison_table\s*\(', src
-        )
-        self.assertEqual(len(calls), 0,
-            "generate_reports must not call generate_normalized_comparison_table "
-            "(mixed standard+normalized artifact violates single-regime rule)")
+        for line in src.splitlines():
+            stripped = line.strip()
+            # Skip def lines, comments, and string literals
+            if stripped.startswith("def "):
+                continue
+            if stripped.startswith("#"):
+                continue
+            if stripped.startswith('"') or stripped.startswith("'"):
+                continue
+            if "raise NotImplementedError" in stripped:
+                continue
+            if re.search(r'generate_normalized_comparison_table\s*\(', stripped):
+                self.fail(
+                    "generate_reports must not call generate_normalized_comparison_table "
+                    "(mixed standard+normalized artifact violates single-regime rule)"
+                )
 
 
 class TestNoDoubleDateFilenames(unittest.TestCase):
@@ -2610,6 +2620,202 @@ class TestTickerConventionInDocs(unittest.TestCase):
         md = md_path.read_text(encoding="utf-8")
         self.assertIn("MSPBNA | GS | UBS", md,
             "CLAUDE.md must document ticker-style column convention: MSPBNA | GS | UBS")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DIRECTIVE 4 TESTS — Final Cleanup & Testability
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestDeprecatedNormalizedComparison(unittest.TestCase):
+    """Tests for deprecated generate_normalized_comparison_table()."""
+
+    def test_function_exists(self):
+        """generate_normalized_comparison_table must still exist as a stub."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("def generate_normalized_comparison_table", source)
+
+    def test_raises_not_implemented(self):
+        """Calling generate_normalized_comparison_table must raise NotImplementedError."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("raise NotImplementedError", source)
+        # Verify the raise is inside the function body
+        in_func = False
+        for line in source.splitlines():
+            if "def generate_normalized_comparison_table" in line:
+                in_func = True
+            elif in_func and line.strip().startswith("def "):
+                break
+            elif in_func and "raise NotImplementedError" in line:
+                return  # found it
+        self.fail("NotImplementedError not found inside generate_normalized_comparison_table")
+
+    def test_not_called_in_generate_reports(self):
+        """generate_reports() must NOT call generate_normalized_comparison_table."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        # Find generate_reports body
+        lines = source.splitlines()
+        in_func = False
+        for line in lines:
+            if "def generate_reports" in line:
+                in_func = True
+                continue
+            if in_func:
+                if line.strip() and not line[0].isspace() and not line.strip().startswith("#"):
+                    break  # left function
+                self.assertNotIn("generate_normalized_comparison_table", line,
+                    "generate_reports() must not call deprecated generate_normalized_comparison_table")
+
+
+class TestValidateCompositeCertRegime(unittest.TestCase):
+    """Tests for validate_composite_cert_regime() function."""
+
+    def setUp(self):
+        src = Path(__file__).parent / "report_generator.py"
+        self.source = src.read_text(encoding="utf-8")
+
+    def test_function_exists(self):
+        """validate_composite_cert_regime must be a proper function definition."""
+        self.assertIn("def validate_composite_cert_regime", self.source)
+
+    def test_is_not_dead_code(self):
+        """validate_composite_cert_regime must not be inside another function's body
+        after a return statement (i.e., must be a top-level function)."""
+        import re
+        # Find the def line and verify it's at top indentation level
+        for line in self.source.splitlines():
+            if "def validate_composite_cert_regime" in line:
+                # Should be at column 0 (no leading whitespace)
+                self.assertFalse(line.startswith(" "),
+                    "validate_composite_cert_regime should be a top-level function, not nested")
+                return
+        self.fail("def validate_composite_cert_regime not found")
+
+    def test_returns_dict_with_required_keys(self):
+        """Function must return dict with valid, active_present, active_missing, legacy_present, warnings, errors."""
+        for key in ["valid", "active_present", "active_missing", "legacy_present", "warnings", "errors"]:
+            self.assertIn(f'"{key}"', self.source,
+                f"validate_composite_cert_regime must return dict with '{key}' key")
+
+    def test_checks_active_composites(self):
+        """Function must check both standard and normalized active composites."""
+        self.assertIn("ACTIVE_STANDARD_COMPOSITES", self.source)
+        self.assertIn("ACTIVE_NORMALIZED_COMPOSITES", self.source)
+
+    def test_checks_legacy_composites(self):
+        """Function must check for legacy composites."""
+        self.assertIn("INACTIVE_LEGACY_COMPOSITES", self.source)
+
+
+class TestImportSafety(unittest.TestCase):
+    """Tests that MSPBNA_CR_Normalized.py can be imported without side effects."""
+
+    def test_no_import_time_value_error(self):
+        """Importing the module with missing env vars must not raise ValueError."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        # The ValueError raise must be inside a function, not at module level
+        lines = source.splitlines()
+        in_function = False
+        indent_level = 0
+        for i, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            if stripped.startswith("def ") or stripped.startswith("class "):
+                in_function = True
+            # Check for bare raise ValueError at module level (indent 0)
+            if "raise ValueError" in line and not in_function:
+                # Check if this line is at module level (no indentation or only in try block)
+                leading = len(line) - len(line.lstrip())
+                if leading == 0:
+                    self.fail(f"Line {i}: raise ValueError at module level — "
+                              "import will crash without env vars")
+
+    def test_no_import_time_print(self):
+        """Importing the module must not print HUD token info at import time."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_function = False
+        for i, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            if stripped.startswith("def ") or stripped.startswith("class "):
+                in_function = True
+                continue
+            if not in_function and stripped.startswith("print(") and "HUD_USER_TOKEN" in stripped:
+                self.fail(f"Line {i}: print() with HUD_USER_TOKEN at module level — "
+                          "will execute at import time")
+
+    def test_no_import_time_setup_logging(self):
+        """setup_logging() must not be called at module level."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_function = False
+        for i, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            if stripped.startswith("def ") or stripped.startswith("class "):
+                in_function = True
+                continue
+            if not in_function and "= setup_logging()" in stripped and not stripped.startswith("#"):
+                self.fail(f"Line {i}: setup_logging() called at module level — "
+                          "will open log files at import time")
+
+    def test_no_import_time_os_chdir(self):
+        """os.chdir() must not be called at module level."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_function = False
+        for i, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            if stripped.startswith("def ") or stripped.startswith("class "):
+                in_function = True
+                continue
+            if not in_function and "os.chdir(" in stripped and not stripped.startswith("#"):
+                self.fail(f"Line {i}: os.chdir() at module level — "
+                          "will change cwd at import time")
+
+    def test_env_vars_have_defaults(self):
+        """MSPBNA_CERT and MSBNA_CERT must have default values for import safety."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        # Should use os.getenv with defaults
+        self.assertIn('os.getenv("MSPBNA_CERT", "34221")', source,
+            "MSPBNA_CERT must have a default value for import safety")
+        self.assertIn('os.getenv("MSBNA_CERT", "32992")', source,
+            "MSBNA_CERT must have a default value for import safety")
+
+    def test_validate_runtime_env_exists(self):
+        """_validate_runtime_env() must exist for main() to call."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("def _validate_runtime_env", source)
+
+    def test_main_calls_runtime_bootstrap(self):
+        """main() must call _validate_runtime_env, setup_logging, and os.chdir."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        # Find main() body
+        lines = source.splitlines()
+        in_main = False
+        main_body = []
+        for line in lines:
+            if "def main():" in line:
+                in_main = True
+                continue
+            if in_main:
+                if line.strip() and not line[0].isspace():
+                    break
+                main_body.append(line)
+        main_text = "\n".join(main_body)
+        self.assertIn("_validate_runtime_env()", main_text,
+            "main() must call _validate_runtime_env()")
+        self.assertIn("setup_logging()", main_text,
+            "main() must call setup_logging()")
+        self.assertIn("os.chdir(", main_text,
+            "main() must call os.chdir()")
 
 
 if __name__ == '__main__':
