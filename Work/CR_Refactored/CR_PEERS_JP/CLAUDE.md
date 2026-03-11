@@ -214,88 +214,12 @@ All charts must use this color palette consistently:
 
 Both standard and normalized credit-deterioration charts are generated.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-### TABLE COLUMN ORDERING
-
-- HTML tables comparing individual peers **must** always place the Subject Bank (MSPBNA) and MSBNA on the extreme left, followed by individual peers, followed by the peer average.
-
-### TABLE COMPLETENESS
-
-- Segment Focus tables must never truncate metrics. Both standard and normalized variants must explicitly map all 15 core segment series.
-
-### TABLE DUPLICATION
-
-- The Detailed Peer Analysis, Core PB Analysis, CRE Segment, and Resi Segment tables **must** ALWAYS output both a Standard and a Normalized version.
-
-### NORMALIZED RESIDENTIAL METRIC NAMING
-
-**Canonical names** — only these are valid column references:
-
-| Metric | Column Name | Numerator | Denominator | Type |
-|---|---|---|---|---|
-| Resi % of Norm Loans | `Norm_Wealth_Resi_Composition` | `Wealth_Resi_Balance` | `Norm_Gross_Loans` | composition |
-| Resi ACL Share | `Norm_Resi_ACL_Share` | `RIC_Resi_ACL` | `Norm_ACL_Balance` | share |
-| Resi ACL Coverage | `Norm_Resi_ACL_Coverage` | `RIC_Resi_ACL` | `Wealth_Resi_Balance` | coverage |
-| Resi NCO Rate | `Wealth_Resi_TTM_NCO_Rate` | `wealth_resi_nco_pure` | `Wealth_Resi_Balance` | rate |
-| Resi Nonaccrual Rate | `Wealth_Resi_NA_Rate` | `wealth_resi_na_pure` | `Wealth_Resi_Balance` | rate |
-| Resi Delinquency Rate | `Wealth_Resi_Delinquency_Rate` | PD30+PD90 pure | `Wealth_Resi_Balance` | rate |
-
-**Deprecated / phantom names** — must NEVER appear in code:
-- `Norm_Resi_Composition` — use `Norm_Wealth_Resi_Composition` instead
-- `Norm_RESI_ACL_Coverage` — use `Norm_Resi_ACL_Coverage` (consistent casing)
-- `RIC_Resi_Balance` — use `RIC_Resi_Cost` (RI-C cost basis column)
-- `RIC_CRE_Balance` — use `RIC_CRE_Cost` (RI-C cost basis column)
-
-**Coverage vs Share rule**: If the denominator is a loan balance, the metric is "coverage." If the denominator is total ACL, it is "share." Never label a share metric as coverage or vice versa.
-
-### NORMALIZATION METHODOLOGY
-
-**Normalized totals (e.g., `Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_Gross_Loans`, `Norm_PD30`, `Norm_PD90`) MUST always be calculated top-down:**
-
-```
-Norm_Total_NCO         = Total_NCO_TTM     - Excluded_NCO_TTM
-Norm_Total_Nonaccrual  = Total_Nonaccrual  - Excluded_Nonaccrual
-Norm_Gross_Loans       = Gross_Loans       - Excluded_Balance
-Norm_PD30              = TopHouse_PD30     - Excluded_PD30
-Norm_PD90              = TopHouse_PD90     - Excluded_PD90
-```
-
-**Never reconstruct normalized totals bottom-up** (e.g., `wealth_resi_nco_pure + sum_cols(...)`). Bottom-up reconstruction risks accidentally excluding core series like SBL or unmapped RESI lines.
-
-**All Residential Real Estate series must be unconditionally retained in normalized figures.** The exclusion set covers only: C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag, and Owner-Occupied CRE. Residential (1-4 Family + HELOC) and SBL are NEVER excluded.
-
-**Wealth Resi segment metrics** (`Wealth_Resi_TTM_NCO_Rate`, `Wealth_Resi_NA_Rate`, `Wealth_Resi_Delinquency_Rate`) are segment-level rates for HTML tables only — they do NOT feed into normalized totals.
-
-### FORMATTING RULES
-
-- **Diffs are Percentage-Point Deltas**: All "Diff vs Peer" columns MUST use simple subtraction (`v_subject - v_peer`), never relative percentage change (`(v_subject - v_peer) / v_peer`). Use `_fmt_percent_diff(diff, ref_value)` to format; it uses the reference value's scale to decide whether to multiply by 100.
-- **Dollar Amounts = $B**: FDIC data stores dollar amounts in thousands ($K). Use `_fmt_money_billions()` which converts: `v/1e6` → `$X.XB`, `v/1e3` → `$X.XM`. Never divide by `1e9` (that produces values 1000x too small).
-- **Multiplier metrics**: Metrics labeled `(x)` (e.g., CRE NPL Coverage) must format as `X.XXx`, not as `%`.
-- **Dead metric suppression**: If a metric is entirely 0/NaN across all displayed entities for the latest quarter, the row is automatically suppressed from HTML tables.
-=======
-=======
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
 ### FRED Deduplication
 
 - `series_ids` must always be deduplicated before async fetching to prevent `ValueError: cannot reindex on an axis with duplicate labels`.
 - Use `list(dict.fromkeys(series_ids))` to preserve order while removing duplicates.
 - The guard must exist both at construction time (when building `series_ids_to_fetch`) and at the entry point of `fetch_all_series_async()`.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-### Always Update CLAUDE.md
-
-- Architecture changes, new conventions, and non-trivial pipeline modifications **must** be documented in this file.
-- If you add a new coding convention, env variable, output sheet, or data-flow step, update the relevant section of `CLAUDE.md` before considering the task complete.
-<<<<<<< HEAD
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
-=======
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
-
-=======
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
-=======
 ### FRED Series Validation
 
 - The FRED API returns HTTP 400 Bad Request for discontinued or mistyped series IDs. Always verify IDs against the FRED website before adding them to `FRED_SERIES_TO_FETCH`.
@@ -303,7 +227,37 @@ Norm_PD90              = TopHouse_PD90     - Excluded_PD90
 - Discontinued series must be removed, not left in the fetch list (e.g., `GOLDAMGBD228NLBM` was discontinued by FRED).
 - Redundant series should be removed if covered by another ID (e.g., `DEPALL` removed in favor of `DPSACBW027SBOG`).
 
->>>>>>> origin/claude/fix-fdic-data-fetcher-3D5wx
+### STOCK vs FLOW MATH CONVENTION
+
+Call Report variables fall into two categories that require different math:
+
+| Type | Variables | Math Treatment |
+|---|---|---|
+| **Stock** (point-in-time) | Balances, Delinquency (PD30/PD90), Nonaccrual, ACL | Use directly. No TTM prefix. Delinquency metric is `Past_Due_Rate` (NOT `TTM_Past_Due_Rate`). |
+| **Flow** (cumulative YTD) | NCO, Income, Provision, Interest Expense | Convert YTD → discrete quarterly via `ytd_to_discrete()`, then `rolling(4).sum()` for TTM. |
+
+**Income-statement annualization**: Loan Yield (`Loan_Yield_Proxy`) and Provision Rate (`Provision_to_Loans_Rate`) use `annualize_ytd()` which computes `YTD_value * (4.0 / quarter)`. This is the standard banking convention — it gives a current-period-only view without mixing in prior-year stale quarters.
+
+**Module-level helpers** in `MSPBNA_CR_Normalized.py`:
+- `ytd_to_discrete(df, col_name)` — YTD → discrete quarterly flows
+- `annualize_ytd(df, col_name)` — YTD → annualized rate
+
+### WEALTH-FOCUSED vs DETAILED TABLE DISTINCTION
+
+Three table tiers serve different audiences:
+
+| Table | Columns | Composite Used | Purpose |
+|---|---|---|---|
+| **Executive Summary** | MSPBNA \| Goldman Sachs \| UBS \| Wealth Peers \| Delta | Core PB (90001 std / 90004 norm) | Wealth-focused peer comparison |
+| **Segment Focus** (CRE, Resi) | MSPBNA \| Goldman Sachs \| UBS \| Wealth Peers \| Delta | Core PB (90001 std / 90004 norm) | Segment-specific drill-down |
+| **Detailed Peer Table** | MSPBNA + all individual peers + composites | All Peers (90003 std / 90006 norm) | Full peer landscape |
+
+**Key rules:**
+- Executive summary and segment tables use **"Wealth Peers" = Core PB composite** (90001/90004). Do NOT include MSBNA or All Peers.
+- The detailed peer table is the **only** broad all-peer table.
+- Both standard and normalized versions are generated as **separate artifacts**.
+- Goldman Sachs and UBS are identified dynamically from bank NAME in data, not hardcoded CERTs.
+
 ---
 
 ## 5. Common Errors & Troubleshooting
@@ -420,6 +374,38 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — Wealth-Focused Tables, Data Integrity, Stock vs Flow
+
+**Report Design — Wealth-Focused Executive Summary & Segment Tables:**
+
+1. **Executive summary rewrite (report_generator.py)**: `generate_credit_metrics_email_table` now accepts `is_normalized` parameter. Columns changed from MSPBNA/MSBNA/Core PB/All Peers to **MSPBNA | Goldman Sachs | UBS | Wealth Peers | Delta MSPBNA vs Wealth Peers**. Wealth Peers = Core PB composite (90001 standard, 90004 normalized). Both standard and normalized versions generated as separate artifacts.
+
+2. **Segment focus tables (report_generator.py)**: `generate_segment_focus_table` rewritten with same wealth-focused columns. Dropped MSBNA and All Peers. Uses Core PB composite as Wealth Peers. Goldman Sachs and UBS identified dynamically from bank NAME.
+
+3. **Core PB peer table (report_generator.py)**: `generate_core_pb_peer_table` repurposed — dropped MSBNA column, composite labeled "Wealth Peers" instead of "Core PB Avg". Title changed to "Wealth Peer Analysis".
+
+4. **Ratio components fix (report_generator.py)**: `_synth()` now synthesizes `Norm_Risk_Adj_Gross_Loans = Norm_Gross_Loans - SBL_Balance` for normalized mode. Fixes N/A denominator on Norm_Risk_Adj_Allowance_Coverage row.
+
+5. **Detailed peer table unchanged**: `generate_detailed_peer_table` remains the only broad all-peer table using 90003/90006.
+
+**Data Integrity — Stock vs Flow Math:**
+
+1. **PLLL added to FDIC_FIELDS_TO_FETCH**: Provision for Loan & Lease Losses now fetched.
+
+2. **Module-level `ytd_to_discrete()` (MSPBNA_CR_Normalized.py)**: New helper converts YTD cumulative series to discrete quarterly flows. Inner `compute_quarterly_from_ytd` now delegates to this. Groups by CERT, handles Q1 (flow = YTD), Q2-Q4 (flow = diff).
+
+3. **Module-level `annualize_ytd()` (MSPBNA_CR_Normalized.py)**: New helper annualizes YTD flow variables: `YTD_value * (4.0 / quarter)`. Standard banking convention for income-statement ratios.
+
+4. **Provision and Yield annualized**: `Provision_to_Loans_Rate` and `Loan_Yield_Proxy` (and `Norm_Loan_Yield`) now use `annualize_ytd()` instead of TTM rolling sums. Gives current-period-only view without stale prior-year quarters.
+
+5. **NCO TTM verified correct**: All NCO calculations already use `ytd_to_discrete` → `rolling(4).sum()` path. No change needed.
+
+6. **`TTM_Past_Due_Rate` → `Past_Due_Rate`**: Renamed globally across MSPBNA_CR_Normalized.py, report_generator.py, master_data_dictionary.py. Delinquency is a point-in-time stock variable — the TTM prefix was incorrect. Display label updated to "Past Due Rate (%)" without TTM.
+
+**Tests (test_regression.py)**: Added `TestDirectiveC` class (15 tests): executive summary wealth columns, core_pb composite usage, is_normalized parameter, segment table wealth peers, core PB table no MSBNA, detailed table all_peers, ratio components norm denominator, Past_Due_Rate rename, PLLL fetch, ytd_to_discrete/annualize_ytd existence, provision/yield annualization, quarterly delegation, both executive versions, display label.
+
+**CLAUDE.md**: Added Stock vs Flow Math convention, Wealth-Focused vs Detailed Table distinction, executive/segment column requirements.
 
 ### 2026-03-10 — Balance-Gating, Composite Coverage, Preflight Scoping
 

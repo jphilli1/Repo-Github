@@ -38,6 +38,65 @@ from metric_registry import run_upstream_validation_suite
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
 
+
+# ==================================================================================
+#  STOCK vs FLOW MATH UTILITIES
+# ==================================================================================
+# Call Report flow variables (NCO, Income, Provision) are cumulative Year-To-Date.
+# Stock variables (Balances, Delinquency) are point-in-time snapshots.
+#
+# For flows: YTD → discrete quarterly → rolling(4).sum() = TTM
+# For stocks: No TTM prefix. Use point-in-time values directly.
+
+def ytd_to_discrete(df: pd.DataFrame, col_name: str) -> pd.Series:
+    """
+    Convert a YTD cumulative series to discrete quarterly flows.
+
+    Q1: discrete = YTD (accumulation starts fresh each year)
+    Q2: discrete = YTD_Q2 - YTD_Q1
+    Q3: discrete = YTD_Q3 - YTD_Q2
+    Q4: discrete = YTD_Q4 - YTD_Q3
+
+    Groups by CERT to prevent differencing across banks.
+    """
+    if col_name not in df.columns:
+        return pd.Series(0.0, index=df.index)
+
+    q_flows = []
+    for cert, group in df.groupby('CERT'):
+        group = group.sort_values('REPDTE')
+        diffs = group[col_name].diff()
+
+        # Q1: flow IS the YTD value (no prior quarter to subtract)
+        is_q1 = group['REPDTE'].dt.quarter == 1
+        diffs.loc[is_q1] = group.loc[is_q1, col_name]
+
+        # First record fallback (when diff is NaN due to no prior row)
+        diffs = diffs.fillna(group[col_name])
+        q_flows.append(diffs)
+
+    return pd.concat(q_flows).reindex(df.index).fillna(0)
+
+
+def annualize_ytd(df: pd.DataFrame, col_name: str) -> pd.Series:
+    """
+    Annualize a YTD cumulative flow variable: YTD_value * (4.0 / quarter).
+
+    This is the standard banking convention for income-statement items:
+    - Q1: YTD * 4 (project 1 quarter to full year)
+    - Q2: YTD * 2 (project 2 quarters to full year)
+    - Q3: YTD * 4/3
+    - Q4: YTD * 1 (full year, no adjustment)
+
+    Use for Yield and Provision rates. Do NOT use for NCO (use TTM instead).
+    """
+    if col_name not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+
+    quarter = df['REPDTE'].dt.quarter
+    return df[col_name] * (4.0 / quarter)
+
+
 # ==================================================================================
 #  DETERMINISTIC CERT CONFIGURATION
 # ==================================================================================
@@ -319,6 +378,9 @@ FDIC_FIELDS_TO_FETCH = [
     "RCFD2005",    # Balance: Loans to Depository Institutions (Banks)
 
     # --- 6. C&I NCO Proxy (Alternative to segment-level calculation) ---
+
+    # --- 7. Provision for Loan and Lease Losses (PLLL) ---
+    "PLLL",        # Provision for Loan & Lease Losses (YTD, text alias)
 ]
 
 
@@ -2248,33 +2310,9 @@ class BankMetricsProcessor:
         df_processed['LNCONOTHX'] = (lncon - lnauto - lncrcd).clip(lower=0)
 
         # --- Helper: Compute Quarterly Flow from YTD ---
+        # Delegates to module-level ytd_to_discrete() for consistency
         def compute_quarterly_from_ytd(df_in, col_name):
-            """
-            Converts YTD cumulative series to discrete quarterly flows.
-            Logic: If Q1, Flow = YTD. Else, Flow = YTD_Current - YTD_Prev.
-            """
-            if col_name not in df_in.columns:
-                return pd.Series(0.0, index=df_in.index)
-
-            # Group by CERT to ensure we don't diff across banks
-            q_flows = []
-            for cert, group in df_in.groupby('CERT'):
-                group = group.sort_values('REPDTE')
-
-                # Calculate diff
-                diffs = group[col_name].diff()
-
-                # Fix Q1: In Q1, the flow is the YTD value itself (no subtraction)
-                is_q1 = group['REPDTE'].dt.quarter == 1
-                diffs.loc[is_q1] = group.loc[is_q1, col_name]
-
-                # Handle cases where diff is negative (accounting adjustments)
-                # or fill NaN (first record)
-                diffs = diffs.fillna(group[col_name]) # First record fallback
-
-                q_flows.append(diffs)
-
-            return pd.concat(q_flows).reindex(df_in.index).fillna(0)
+            return ytd_to_discrete(df_in, col_name)
         def sum_cols(df, cols):
             total = pd.Series(0.0, index=df.index)
             for col in cols:
@@ -3122,18 +3160,20 @@ class BankMetricsProcessor:
         )
 
         # --- B. Profitability & Efficiency ---
-        # Prefer NaN over 0 when TTM columns are absent — silent 0 masks data gaps
-        prov_ttm = df_processed.get('Provision_Exp_TTM', pd.Series(np.nan, index=df_processed.index))
-        inc_ttm = df_processed.get('Int_Inc_Loans_TTM', pd.Series(np.nan, index=df_processed.index))
+        # ANNUALIZED: Yield and Provision use YTD * (4/quarter), not TTM rolling sum.
+        # This is the standard banking convention for income-statement ratios:
+        # it gives a current-period view without mixing in prior-year stale quarters.
+        prov_ann = annualize_ytd(df_processed, 'Provision_Exp_YTD')
+        inc_ann = annualize_ytd(df_processed, 'Int_Inc_Loans_YTD')
 
-        new_cols['Provision_to_Loans_Rate'] = safe_div(prov_ttm, df_processed['Gross_Loans'])
-        loan_yield = safe_div(inc_ttm, df_processed['Gross_Loans'])
+        new_cols['Provision_to_Loans_Rate'] = safe_div(prov_ann, df_processed['Gross_Loans'])
+        loan_yield = safe_div(inc_ann, df_processed['Gross_Loans'])
         new_cols['Loan_Yield_Proxy'] = loan_yield
         new_cols['Provision_Elasticity'] = safe_div(df_processed['Delta_Provision'], df_processed['Delta_Nonaccrual'])
 
         # --- B.5 NORMALIZED PROFITABILITY (Ex-Commercial/Ex-Consumer) ---
         # Normalized yield uses normalized loans as denominator for apples-to-apples comparison
-        norm_loan_yield = safe_div(inc_ttm, norm_loans)
+        norm_loan_yield = safe_div(inc_ann, norm_loans)
         new_cols['Norm_Loan_Yield'] = norm_loan_yield
         # Normalized Provision Rate is misleading because we cannot exclude C&I/Consumer provision flow
         # new_cols['Norm_Provision_Rate'] = safe_div(prov_ttm, norm_loans)  <-- COMMENT THIS OUT
@@ -3384,7 +3424,7 @@ class BankMetricsProcessor:
         v26 UPDATES:
         - Targets new 'RIC_' segments for Growth calculations.
         - Calculates 'TTM_NCO_Rate' (Bank-wide) using 4Q Sum / 4Q Avg Loans.
-        - Calculates 'TTM_Past_Due_Rate' (Smoothed 4Q Average).
+        - Calculates 'Past_Due_Rate' (point-in-time delinquency, smoothed 4Q average).
         """
         if df.empty: return df
 
@@ -3458,7 +3498,7 @@ class BankMetricsProcessor:
                 # Quarterly Rate
                 pd_rate = total_pd / bank_df['LNLS']
                 # Smoothed (Average of last 4 quarters)
-                bank_df['TTM_Past_Due_Rate'] = pd_rate.rolling(window=4, min_periods=1).mean()
+                bank_df['Past_Due_Rate'] = pd_rate.rolling(window=4, min_periods=1).mean()
 
             all_banks_data.append(bank_df)
 
@@ -3484,7 +3524,7 @@ class BankMetricsProcessor:
             'ASSET', 'LNLS', 'Total_ACL', 'Total_Capital',
             'Allowance_to_Gross_Loans_Rate', 'Nonaccrual_to_Gross_Loans_Rate',
             'Risk_Adj_Allowance_Coverage',
-            'TTM_NCO_Rate', 'TTM_Past_Due_Rate', 'ACL_Integrity_Status',
+            'TTM_NCO_Rate', 'Past_Due_Rate', 'ACL_Integrity_Status',
             # Dual-Tier Reporting: legacy series for report_generator.py
             'NPL_to_Gross_Loans_Rate', 'Tier_1_Leverage_Ratio',
             'Total_Assets', 'Net_Charge_Off_Rate',
@@ -5936,7 +5976,7 @@ class BankPerformanceDashboard:
             {"MetricCode":"TTM_NCO_Rate",                  "Display":"TTM NCO Rate (%)",                    "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"NPL_to_Gross_Loans_Rate",       "Display":"NPL to Gross Loans (%)",              "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Allowance_to_Gross_Loans_Rate", "Display":"Allowance to Gross Loans (%)",        "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"TTM_Past_Due_Rate",             "Display":"TTM Past Due Rate (%)",               "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Past_Due_Rate",             "Display":"Past Due Rate (%)",                   "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"TTM_PD30_Rate",                 "Display":"TTM Past Due (30-90 Days) Rate (%)",  "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"TTM_PD90_Rate",                 "Display":"TTM Past Due (90+ Days) Rate (%)",    "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
 
