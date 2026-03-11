@@ -379,7 +379,7 @@ def create_credit_deterioration_chart_v3(
         if not entity_data.empty:
             label = entity_names.get(cert, f"CERT {cert}")
             nco_rate = entity_data['TTM_NCO_Rate'].fillna(0) / 100
-            bars = ax.bar(bar_positions[cert], nco_rate, alpha=0.7, color=colors[cert],
+            bars = ax.bar(bar_positions[cert], nco_rate, alpha=0.7, color=colors.get(cert, "#7F8C8D"),
                          label=f'{label} TTM NCO Rate', width=bar_width)
 
     ax2 = ax.twinx()
@@ -391,7 +391,7 @@ def create_credit_deterioration_chart_v3(
             label = entity_names.get(cert, f"CERT {cert}")
             npl_rate = entity_data['NPL_to_Gross_Loans_Rate'].fillna(0) / 100
             line_style = line_styles[i % len(line_styles)]
-            ax2.plot(x_positions, npl_rate, color=colors[cert],
+            ax2.plot(x_positions, npl_rate, color=colors.get(cert, "#7F8C8D"),
                     linestyle=line_style, marker='o', linewidth=2.5,
                     label=f'{label} NPL-to-Book', markersize=5)
 
@@ -2420,11 +2420,22 @@ def create_credit_deterioration_chart_ppt(
     names  = {subject_bank_cert:"MSPBNA", 99999:"All Peers", 99998:"Peers (Ex. F&V)"}
     colors = {subject_bank_cert:GOLD,   99999:BLUE,       99998:PURPLE}
 
+    all_requested = set(bar_entities + line_entities)
     df = proc_df_with_peers.loc[
-        proc_df_with_peers["CERT"].isin(set(bar_entities + line_entities))
+        proc_df_with_peers["CERT"].isin(all_requested)
     ].copy()
     df = df[df["REPDTE"] >= pd.to_datetime(start_date)].sort_values(["REPDTE","CERT"])
     if df.empty:
+        return None, None
+
+    # Filter out CERTs that are entirely missing from data (composite suppressed by coverage rules)
+    available_certs = set(df["CERT"].unique())
+    for cert in all_requested - available_certs:
+        print(f"    [WARNING] CERT {cert} not found in data — skipping from chart.")
+    bar_entities  = [c for c in bar_entities if c in available_certs]
+    line_entities = [c for c in line_entities if c in available_certs]
+    if subject_bank_cert not in available_certs:
+        print(f"    [WARNING] Subject bank CERT {subject_bank_cert} missing. Cannot generate chart.")
         return None, None
 
     df["Period_Label"] = "Q" + df["REPDTE"].dt.quarter.astype(str) + "-" + (df["REPDTE"].dt.year % 100).astype(str).str.zfill(2)
@@ -2486,7 +2497,7 @@ def create_credit_deterioration_chart_ppt(
     bar_handles, bar_labels, line_handles, line_labels = [], [], [], []
     for c in bar_entities:
         vals = series_for(c, bar_metric)
-        b = ax.bar(x + offsets[c], vals, width=bar_w, color=colors[c], alpha=0.92,
+        b = ax.bar(x + offsets[c], vals, width=bar_w, color=colors.get(c, "#7F8C8D"), alpha=0.92,
                    label=f"{names.get(c,f'CERT {c}')} {bar_metric.replace('_',' ')}", zorder=2)
         bar_handles.append(b[0]); bar_labels.append(f"{names.get(c,f'CERT {c}')} {bar_metric.replace('_',' ')}")
 
@@ -2564,6 +2575,9 @@ def create_credit_deterioration_chart_ppt(
 
     for c in line_entities:
         s = series_for(c, line_metric)
+        if s.isna().all():
+            print(f"    [WARNING] CERT {c} has all-NaN for {line_metric}. Skipping peer line.")
+            continue
         ln, = ax2.plot(
             x, s, color=colors.get(c, "#7F8C8D"),
             linewidth=2.4, linestyle="-" if c == subject_bank_cert else "--",
