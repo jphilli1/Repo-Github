@@ -479,6 +479,35 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-11 — Fix DashboardConfig HUD Token TypeError
+
+**Bug**: `main()` crashed with `TypeError: 'DashboardConfig' object does not support item assignment` at `config["_hud_user_token"] = _hud_token`. The `DashboardConfig` class is a plain Python class, not a dict, so bracket-style item assignment fails.
+
+**Root cause**: Two dict-style accesses on `DashboardConfig`:
+1. `config["_hud_user_token"] = _hud_token` in `main()` (item assignment)
+2. `self.config.get("_hud_user_token")` in the pipeline (dict `.get()` call)
+
+**Fix** (3 changes in `MSPBNA_CR_Normalized.py`):
+1. Added `hud_user_token: Optional[str] = None` field to `DashboardConfig` class
+2. Changed `config["_hud_user_token"] = _hud_token` → `config.hud_user_token = _hud_token` (attribute assignment)
+3. Changed `self.config.get("_hud_user_token")` → `getattr(self.config, "hud_user_token", None)` (safe attribute access)
+
+**Token flow (explicit)**: `_validate_runtime_env()` → returns resolved token → `main()` sets `config.hud_user_token` → pipeline reads via `getattr(self.config, "hud_user_token", None)` → passes `hud_user_token=_hud_tok` explicitly to `build_case_shiller_zip_sheets()`.
+
+**Why the TypeError can no longer occur**: `DashboardConfig` now has a proper `hud_user_token` attribute. All access uses Python attribute syntax (dot notation), never dict bracket syntax. No code path attempts `config[...]` assignment.
+
+**Tests added** (`TestHUDTokenDashboardConfigFix`, 8 tests):
+- `test_dashboard_config_has_hud_user_token_field`
+- `test_no_item_assignment_on_dashboard_config`
+- `test_no_config_get_dict_style`
+- `test_main_uses_attribute_assignment_for_token`
+- `test_pipeline_uses_getattr_for_token`
+- `test_hud_token_passed_explicitly_to_enrichment`
+- `test_token_diagnostics_no_full_token_leak`
+- `test_enrichment_status_codes_are_distinct`
+
+**Test baseline**: 204 tests (previous 196 + 8 new).
+
 ### 2026-03-11 — Coverage/Share Semantics & HUD Token Discovery (Directive 7)
 
 **8-part directive**: Fix coverage vs share label semantics, metric formatting, and HUD token discovery/diagnostics.
@@ -1294,7 +1323,7 @@ The `CASE_SHILLER_COUNTY_MAP` list contains the official county-level definition
 
 ### Integration
 
-ZIP enrichment runs automatically as part of the MSPBNA_CR_Normalized pipeline. Token is resolved once at startup via `_validate_runtime_env()` and passed explicitly to `build_case_shiller_zip_sheets(hud_user_token=...)`. Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`). Returns structured status codes (`SKIPPED_NO_TOKEN`, `FAILED_TOKEN_AUTH`, `FAILED_HTTP`, `FAILED_EMPTY_RESPONSE`, `SUCCESS_NO_ZIPS`, `SUCCESS_WITH_ZIPS`) to distinguish skip vs failure vs empty vs success.
+ZIP enrichment runs automatically as part of the MSPBNA_CR_Normalized pipeline. Token is resolved once at startup via `_validate_runtime_env()`, stored on `DashboardConfig.hud_user_token` (attribute assignment, never dict-style), and passed explicitly to `build_case_shiller_zip_sheets(hud_user_token=config.hud_user_token)`. The pipeline reads the token via `getattr(self.config, "hud_user_token", None)`. Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`). Returns structured status codes (`SKIPPED_NO_TOKEN`, `FAILED_TOKEN_AUTH`, `FAILED_HTTP`, `FAILED_EMPTY_RESPONSE`, `SUCCESS_NO_ZIPS`, `SUCCESS_WITH_ZIPS`) to distinguish skip vs failure vs empty vs success.
 
 ### HUD API: County-to-ZIP (Type 7)
 

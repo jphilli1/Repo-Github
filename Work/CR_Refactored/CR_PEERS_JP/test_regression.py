@@ -3385,5 +3385,78 @@ class TestEnrichmentStatusCodes(unittest.TestCase):
             "MSPBNA_CR_Normalized must import resolve_hud_token for multi-source discovery")
 
 
+class TestHUDTokenDashboardConfigFix(unittest.TestCase):
+    """Tests for the DashboardConfig HUD token fix (TypeError prevention)."""
+
+    def test_dashboard_config_has_hud_user_token_field(self):
+        """DashboardConfig must declare hud_user_token as a class attribute."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("hud_user_token: Optional[str] = None", source,
+            "DashboardConfig must have hud_user_token: Optional[str] = None field")
+
+    def test_no_item_assignment_on_dashboard_config(self):
+        """config['...'] = ... must NEVER appear after load_config() in main()."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        # Look for config["..."] = pattern (dict-style item assignment on config)
+        matches = re.findall(r'config\[[\"\'].*[\"\']\]\s*=', source)
+        self.assertEqual(len(matches), 0,
+            f"Found dict-style item assignment on config (DashboardConfig is not a dict): {matches}")
+
+    def test_no_config_get_dict_style(self):
+        """self.config.get('...') must not appear — DashboardConfig has no .get() method."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        matches = re.findall(r'self\.config\.get\(', source)
+        self.assertEqual(len(matches), 0,
+            f"Found self.config.get() calls — DashboardConfig is not a dict: {matches}")
+
+    def test_main_uses_attribute_assignment_for_token(self):
+        """main() must use config.hud_user_token = ... (attribute assignment)."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("config.hud_user_token = _hud_token", source,
+            "main() must set config.hud_user_token via attribute assignment")
+
+    def test_pipeline_uses_getattr_for_token(self):
+        """Pipeline must use getattr(self.config, 'hud_user_token', None) for safe access."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn('getattr(self.config, "hud_user_token"', source,
+            "Pipeline must use getattr for safe hud_user_token access")
+
+    def test_hud_token_passed_explicitly_to_enrichment(self):
+        """build_case_shiller_zip_sheets must receive hud_user_token= explicitly."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("hud_user_token=_hud_tok", source,
+            "enrichment call must pass hud_user_token=_hud_tok explicitly")
+
+    def test_token_diagnostics_no_full_token_leak(self):
+        """Token diagnostics must use masked prefix, never log the full token."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("token_prefix_masked", source,
+            "Diagnostics must include token_prefix_masked (not full token)")
+        # Ensure diagnostics dict doesn't include a raw 'token_value' key
+        self.assertNotIn('"token_value"', source,
+            "Diagnostics must NOT include raw token_value key")
+
+    def test_enrichment_status_codes_are_distinct(self):
+        """All 8 enrichment status codes must be defined and distinct."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        expected = [
+            "SKIPPED_DISABLED", "SKIPPED_NO_TOKEN", "SKIPPED_NO_REQUESTS",
+            "FAILED_TOKEN_AUTH", "FAILED_HTTP", "FAILED_EMPTY_RESPONSE",
+            "SUCCESS_NO_ZIPS", "SUCCESS_WITH_ZIPS",
+        ]
+        for code in expected:
+            self.assertIn(code, source, f"Missing enrichment status code: {code}")
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -244,6 +244,7 @@ class DashboardConfig:
     output_dir: str = "output"
     fdic_api_base: str = "https://banks.data.fdic.gov/api"
     fred_api_base: str = "https://api.stlouisfed.org/fred"
+    hud_user_token: Optional[str] = None
 
 # ==================================================================================
 #  2. GLOBAL DATA DICTIONARIES & CONSTANTS
@@ -6243,7 +6244,7 @@ class BankPerformanceDashboard:
         # Wrapped in try/except so HUD API failures do not crash the pipeline.
         cs_kwargs = {}
         try:
-            _hud_tok = self.config.get("_hud_user_token")
+            _hud_tok = getattr(self.config, "hud_user_token", None)
             cs_zip_sheets = build_case_shiller_zip_sheets(hud_user_token=_hud_tok)
             enrich_status = cs_zip_sheets.pop("enrichment_status", "UNKNOWN")
             tok_diag = cs_zip_sheets.pop("token_diagnostics", {})
@@ -6544,7 +6545,7 @@ def main():
     run_results = {}
     try:
         config = load_config()
-        config["_hud_user_token"] = _hud_token  # pass resolved token to pipeline
+        config.hud_user_token = _hud_token  # pass resolved token to pipeline
         dash = BankPerformanceDashboard(config)
         run_results = dash.run()
         print("\n" + "="*80)
