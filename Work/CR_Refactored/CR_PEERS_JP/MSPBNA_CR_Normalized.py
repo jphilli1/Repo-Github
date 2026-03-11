@@ -337,6 +337,7 @@ def _get_metric_short_name(code: str) -> str:
     """Quick helper: resolve a metric code to its short display name."""
     result = _master_dict.lookup_metric(code)
     if result["Source_of_Truth"] == "Not Found":
+        logging.debug("Display label fallback: no entry for '%s' — using raw code", code)
         return code
     return result["Metric_Name"]
 
@@ -3698,6 +3699,7 @@ class PeerAnalyzer:
             }
 
             # Only iterate through normalized peer groups
+            primary_pct = None
             for group_key, group_info in PEER_GROUPS.items():
                 if not group_info.get('use_normalized', False):
                     continue
@@ -3717,6 +3719,15 @@ class PeerAnalyzer:
                 if pd.notna(subject_value):
                     pct = stats.percentileofscore(group_data, subject_value, kind='rank')
                     record[f"{group_name} Pct"] = pct
+                    # Use Core PB Norm for the performance flag
+                    if group_key == PeerGroupType.CORE_PRIVATE_BANK_NORM:
+                        primary_pct = pct
+
+            # Performance flag — blank for descriptive metrics
+            if primary_pct is not None:
+                record["Performance_Flag"] = self._get_performance_flag(metric, primary_pct)
+            else:
+                record["Performance_Flag"] = ""
 
             comparison_list.append(record)
 
@@ -6123,6 +6134,28 @@ class BankPerformanceDashboard:
                 logging.warning("Case-Shiller ZIP enrichment produced no non-empty sheets")
         except Exception as e:
             logging.warning(f"Case-Shiller ZIP enrichment failed (non-fatal): {e}")
+
+        # --- Diagnostic logging: prove curated tabs match allowlists ---
+        if not peer_comp_df.empty and "Metric Code" in peer_comp_df.columns:
+            logging.info(
+                "Summary_Dashboard: %d rows, first 5 metrics: %s",
+                len(peer_comp_df),
+                peer_comp_df["Metric Code"].head(5).tolist(),
+            )
+        else:
+            logging.warning("Summary_Dashboard is empty — curated peer comparison produced no rows")
+
+        if not norm_comp_df.empty and "Metric Code" in norm_comp_df.columns:
+            logging.info(
+                "Normalized_Comparison: %d rows, first 5 metrics: %s",
+                len(norm_comp_df),
+                norm_comp_df["Metric Code"].head(5).tolist(),
+            )
+            # Hard assert: Norm_Provision_Rate must never leak into presentation
+            if "Norm_Provision_Rate" in norm_comp_df["Metric Code"].values:
+                logging.error("BUG: Norm_Provision_Rate leaked into Normalized_Comparison tab!")
+        else:
+            logging.warning("Normalized_Comparison is empty — curated normalized comparison produced no rows")
 
         self.output_gen.write_excel_output(
             file_path=fname,

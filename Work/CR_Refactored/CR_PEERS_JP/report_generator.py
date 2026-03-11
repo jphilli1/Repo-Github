@@ -18,10 +18,17 @@ Output:
 import os
 import re
 import glob
+import warnings
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+warnings.filterwarnings(
+    "ignore",
+    message="This figure includes Axes that are not compatible with tight_layout",
+    category=UserWarning,
+)
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
@@ -1198,11 +1205,12 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
     try:
         subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
     except IndexError:
-        return None  # Subject bank is required
+        return None  # Subject bank is strictly required
 
-    # Safely handle missing peer composites without aborting table generation
-    peer_cert = 99999 if 99999 in latest_data["CERT"].values else (90003 if 90003 in latest_data["CERT"].values else 90001)
-    peer = latest_data[latest_data["CERT"] == peer_cert].iloc[0] if peer_cert in latest_data["CERT"].values else pd.Series()
+    # Select the appropriate peer composite based on normalized vs standard mode
+    peer_cert = 90006 if is_normalized else (99999 if 99999 in latest_data["CERT"].values else 90003)
+    peer_slice = latest_data[latest_data["CERT"] == peer_cert]
+    peer = peer_slice.iloc[0] if not peer_slice.empty else pd.Series(dtype=float)
 
     # Synthesize _Norm_Total_Past_Due for normalized delinquency row
     if 'Norm_PD30' in latest_data.columns and 'Norm_PD90' in latest_data.columns:
@@ -1215,9 +1223,10 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
     # Re-pick subject/peer after adding synthetic column
     try:
         subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
-        peer = latest_data[latest_data["CERT"] == peer_cert].iloc[0]
     except IndexError:
         return None
+    peer_slice = latest_data[latest_data["CERT"] == peer_cert]
+    peer = peer_slice.iloc[0] if not peer_slice.empty else pd.Series(dtype=float)
 
     # Pre-compute synthetic columns that don't exist in the upstream DataFrame
     # but are needed for the ratio components numerator/denominator display.
