@@ -2629,7 +2629,7 @@ class TestTickerConventionInDocs(unittest.TestCase):
 class TestDeprecatedNormalizedComparison(unittest.TestCase):
     """Tests for deprecated generate_normalized_comparison_table()."""
 
-    def test_function_exists(self):
+    def test_deprecated_stub_exists(self):
         """generate_normalized_comparison_table must still exist as a stub."""
         src = Path(__file__).parent / "report_generator.py"
         source = src.read_text(encoding="utf-8")
@@ -2676,7 +2676,7 @@ class TestValidateCompositeCertRegime(unittest.TestCase):
         src = Path(__file__).parent / "report_generator.py"
         self.source = src.read_text(encoding="utf-8")
 
-    def test_function_exists(self):
+    def test_regime_validator_exists(self):
         """validate_composite_cert_regime must be a proper function definition."""
         self.assertIn("def validate_composite_cert_regime", self.source)
 
