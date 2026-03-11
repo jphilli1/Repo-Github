@@ -21,6 +21,7 @@ The two core scripts are:
 | `fred_transforms.py` | Transforms, spreads, z-scores, regime flags |
 | `fred_ingestion_engine.py` | Async FRED fetcher, validation, sheet routing, Excel output |
 | `test_regression.py` | Regression tests: scatter integrity, peer groups, over-exclusion, validation |
+| `logging_utils.py` | Centralized CSV logging, date-only artifact naming, stdout/stderr tee capture |
 | `case_shiller_zip_mapper.py` | HUD USPS ZIP Crosswalk enrichment for Case-Shiller metros |
 
 ---
@@ -77,7 +78,7 @@ FDIC API + FRED API
 MSPBNA_CR_Normalized.py
         │
         ▼
-output/Bank_Performance_Dashboard_YYYYMMDD_HHMMSS.xlsx
+output/Bank_Performance_Dashboard_YYYYMMDD.xlsx
         │
         ▼
 report_generator.py
@@ -118,25 +119,68 @@ report_generator.py
 
 ### Output File Naming
 
-All output files include the source Excel stem and a datestamp:
-- `{stem}_standard_credit_chart_YYYYMMDD.png`
-- `{stem}_normalized_credit_chart_YYYYMMDD.png`
-- `{stem}_portfolio_mix_YYYYMMDD.png`
-- `{stem}_problem_asset_attribution_YYYYMMDD.png`
-- `{stem}_reserve_risk_allocation_YYYYMMDD.png`
-- `{stem}_migration_ladder_YYYYMMDD.png`
-- `{stem}_scatter_nco_vs_npl_YYYYMMDD.png`
-- `{stem}_scatter_pd_vs_npl_YYYYMMDD.png`
-- `{stem}_scatter_norm_nco_vs_nonaccrual_YYYYMMDD.png`
-- `{stem}_standard_table_YYYYMMDD.html`
-- `{stem}_normalized_table_YYYYMMDD.html`
-- `{stem}_fred_table_YYYYMMDD.html`
-- `{stem}_years_of_reserves_YYYYMMDD.png`
-- `{stem}_growth_vs_deterioration_YYYYMMDD.png`
-- `{stem}_risk_adjusted_return_YYYYMMDD.png`
-- `{stem}_concentration_vs_capital_YYYYMMDD.png`
-- `{stem}_liquidity_overlay_YYYYMMDD.png`
-- `{stem}_macro_overlay_YYYYMMDD.png`
+**Date-only naming** (YYYYMMDD, no HHMMSS). Same-day reruns overwrite previous artifacts. All filenames are built via `build_artifact_filename()` from `logging_utils.py` or use `get_run_date_str()` for the date component.
+
+- Excel dashboard: `Bank_Performance_Dashboard_YYYYMMDD.xlsx`
+- Charts/scatters/tables include source Excel stem and datestamp:
+  - `{stem}_standard_credit_chart_YYYYMMDD.png`
+  - `{stem}_normalized_credit_chart_YYYYMMDD.png`
+  - `{stem}_portfolio_mix_YYYYMMDD.png`
+  - `{stem}_problem_asset_attribution_YYYYMMDD.png`
+  - `{stem}_reserve_risk_allocation_YYYYMMDD.png`
+  - `{stem}_migration_ladder_YYYYMMDD.png`
+  - `{stem}_scatter_nco_vs_npl_YYYYMMDD.png`
+  - `{stem}_scatter_pd_vs_npl_YYYYMMDD.png`
+  - `{stem}_scatter_norm_nco_vs_nonaccrual_YYYYMMDD.png`
+  - `{stem}_standard_table_YYYYMMDD.html`
+  - `{stem}_normalized_table_YYYYMMDD.html`
+  - `{stem}_fred_table_YYYYMMDD.html`
+  - `{stem}_years_of_reserves_YYYYMMDD.png`
+  - `{stem}_growth_vs_deterioration_YYYYMMDD.png`
+  - `{stem}_risk_adjusted_return_YYYYMMDD.png`
+  - `{stem}_concentration_vs_capital_YYYYMMDD.png`
+  - `{stem}_liquidity_overlay_YYYYMMDD.png`
+  - `{stem}_macro_overlay_YYYYMMDD.png`
+
+### CSV Structured Logging
+
+Each script produces its own CSV log file in `logs/`, reset (overwritten) each run:
+
+| Script | Log File |
+|---|---|
+| `MSPBNA_CR_Normalized.py` | `logs/MSPBNA_CR_Normalized_YYYYMMDD_log.csv` |
+| `report_generator.py` | `logs/report_generator_YYYYMMDD_log.csv` |
+
+**CSV Schema (15 columns):**
+
+| Column | Description |
+|---|---|
+| `timestamp` | ISO 8601 with milliseconds |
+| `run_date` | YYYYMMDD date string |
+| `script_name` | Identifies the producing script |
+| `run_id` | Unique 12-char hex ID per run |
+| `level` | INFO, WARNING, ERROR |
+| `phase` | Pipeline stage (startup, data_fetch, processing, output, shutdown, etc.) |
+| `component` | Subsystem (fdic, fred, excel, peer_composite, etc.) |
+| `function` | Function name (optional) |
+| `line_no` | Source line number (optional) |
+| `event_type` | Structured event category (see below) |
+| `message` | Human-readable log message |
+| `exception_type` | Exception class name (for EXCEPTION events) |
+| `exception_message` | Exception string (for EXCEPTION events) |
+| `traceback` | Full traceback (for EXCEPTION events) |
+| `context_json` | JSON-encoded context dict (optional) |
+
+**Event types:** `CONFIG`, `FILE_DISCOVERED`, `FILE_WRITTEN`, `DATAFRAME_SHAPE`, `VALIDATION_WARNING`, `VALIDATION_ERROR`, `EXCEPTION`, `STDOUT`, `STDERR`, `CHART_SKIPPED`, `TABLE_SKIPPED`, `METRIC_SUPPRESSED`, `PRECHECK_FAIL`, `PRECHECK_WARN`
+
+**stdout/stderr mirroring:** All console output (`print()` calls and stderr) is tee'd into the CSV log as `STDOUT`/`STDERR` events via `TeeToLogger`. Console output is preserved — the tee adds CSV rows without suppressing visible output.
+
+**Centralized utilities** in `logging_utils.py`:
+- `get_run_date_str()` — returns YYYYMMDD date string
+- `build_artifact_filename(prefix, suffix, ext, output_dir)` — builds date-stamped filenames
+- `CsvLogger` — structured CSV writer with convenience methods (`info`, `warning`, `error`, `log_exception`, `log_file_written`, `log_df_shape`)
+- `TeeToLogger` — stream wrapper for stdout/stderr capture
+- `setup_csv_logging(script_name)` — one-call setup (creates logger, installs tee, logs startup)
 
 ---
 
@@ -395,6 +439,44 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — Output Naming + CSV Logging Overhaul
+
+**Problem**: Artifact filenames used HHMMSS timestamps causing unnecessary file proliferation. Logging used unstructured text files not suitable for LLM debugging. No stdout/stderr capture.
+
+**Solution**: Date-only artifact naming (YYYYMMDD), per-script CSV structured logs with 15-column schema, stdout/stderr tee capture, centralized utilities.
+
+**Changes by file:**
+
+1. **logging_utils.py** (NEW) — Centralized logging & naming module:
+   - `get_run_date_str()` — returns YYYYMMDD date string
+   - `build_artifact_filename()` — date-stamped filenames
+   - `CsvLogger` — 15-column CSV log writer (reset each run)
+   - `TeeToLogger` — stdout/stderr stream wrapper
+   - `setup_csv_logging()` — one-call setup
+   - Event types: CONFIG, FILE_DISCOVERED, FILE_WRITTEN, DATAFRAME_SHAPE, VALIDATION_WARNING, VALIDATION_ERROR, EXCEPTION, STDOUT, STDERR, CHART_SKIPPED, TABLE_SKIPPED, METRIC_SUPPRESSED, PRECHECK_FAIL, PRECHECK_WARN
+
+2. **MSPBNA_CR_Normalized.py** — Integrated CSV logging:
+   - Dashboard filename: `build_artifact_filename()` (date-only, no HHMMSS)
+   - `setup_logging()` now creates CSV log via `setup_csv_logging("MSPBNA_CR_Normalized")`
+   - Structured log events at: startup (CONFIG), FDIC fetch (DATAFRAME_SHAPE), peer composite (DATAFRAME_SHAPE), 8Q averages (DATAFRAME_SHAPE), workbook write (FILE_WRITTEN), shutdown (CONFIG)
+   - stdout/stderr tee'd into CSV log
+
+3. **report_generator.py** — Integrated CSV logging:
+   - Date stamp: `get_run_date_str()` (centralized, no inline datetime)
+   - CSV log via `setup_csv_logging("report_generator")` at start of `generate_reports()`
+   - Structured log events at: workbook discovery (FILE_DISCOVERED), sheet loads (DATAFRAME_SHAPE), preflight warnings (PRECHECK_WARN), preflight errors (PRECHECK_FAIL), chart/scatter/table writes (FILE_WRITTEN), exception (EXCEPTION), shutdown (CONFIG)
+   - stdout/stderr tee'd into CSV log
+
+4. **test_regression.py** — 19 new tests across 6 test classes:
+   - `TestDateOnlyNaming` (6 tests): date string format, no HHMMSS, suffix/no-suffix, output dir, source checks
+   - `TestCsvLogging` (5 tests): column count, required columns, script name in filename, reset per run, schema headers
+   - `TestStdoutStderrCapture` (2 tests): stdout/stderr captured as STDOUT/STDERR events
+   - `TestFileWriteEvents` (2 tests): FILE_WRITTEN logged in both scripts
+   - `TestPreflightEvents` (2 tests): PRECHECK_WARN and PRECHECK_FAIL events
+   - `TestClaudeMDLogging` (2 tests): CLAUDE.md documents CSV logging and YYYYMMDD naming
+
+5. **CLAUDE.md** — Updated: date-only naming documentation, CSV log schema, event types, per-script log files, stdout/stderr mirroring, `logging_utils.py` in script table
 
 ### 2026-03-11 — County-Level Case-Shiller Geographic Mapping Refactor
 

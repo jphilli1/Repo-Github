@@ -13,6 +13,7 @@ Executable assertions for:
 
 import os
 import sys
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
@@ -2181,6 +2182,231 @@ class TestLabelResolver(unittest.TestCase):
                 self.assertNotIn("msbna_cert = 32992", body_src,
                     "_build_dynamic_peer_html must not hardcode msbna_cert = 32992")
                 break
+
+
+# ==========================================================================
+#  LOGGING & NAMING OVERHAUL TESTS
+# ==========================================================================
+
+
+class TestDateOnlyNaming(unittest.TestCase):
+    """Verify date-only artifact naming (YYYYMMDD, no HHMMSS)."""
+
+    def test_get_run_date_str_format(self):
+        """get_run_date_str returns 8-digit YYYYMMDD string."""
+        from logging_utils import get_run_date_str
+        result = get_run_date_str()
+        self.assertEqual(len(result), 8, "Date string must be 8 chars (YYYYMMDD)")
+        self.assertTrue(result.isdigit(), "Date string must be all digits")
+
+    def test_build_artifact_filename_no_hhmmss(self):
+        """build_artifact_filename must NOT include HHMMSS."""
+        from logging_utils import build_artifact_filename
+        name = build_artifact_filename("Test", "chart", ext=".png")
+        # Should match pattern: Test_chart_YYYYMMDD.png
+        self.assertRegex(name, r"^Test_chart_\d{8}\.png$",
+                         "Filename must be prefix_suffix_YYYYMMDD.ext")
+        # Must NOT contain an underscore-delimited 6-digit time
+        self.assertNotRegex(name, r"\d{8}_\d{6}",
+                            "Filename must NOT contain HHMMSS timestamp")
+
+    def test_build_artifact_filename_no_suffix(self):
+        """build_artifact_filename with empty suffix produces prefix_YYYYMMDD.ext."""
+        from logging_utils import build_artifact_filename
+        name = build_artifact_filename("Dashboard", "", ext=".xlsx")
+        self.assertRegex(name, r"^Dashboard_\d{8}\.xlsx$")
+
+    def test_build_artifact_filename_with_output_dir(self):
+        """build_artifact_filename prepends output directory."""
+        from logging_utils import build_artifact_filename
+        name = build_artifact_filename("Report", "summary", ext=".html", output_dir="output/tables")
+        self.assertTrue(name.startswith("output/tables/"))
+        self.assertTrue(name.endswith(".html"))
+
+    def test_mspbna_no_hhmmss_in_filename(self):
+        """MSPBNA_CR_Normalized.py must not use HHMMSS in dashboard filename."""
+        src_path = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        src = src_path.read_text(encoding="utf-8")
+        # The old pattern: strftime('%Y%m%d_%H%M%S') for the dashboard filename
+        self.assertNotIn("Bank_Performance_Dashboard_{ts}", src,
+                         "Dashboard filename must use build_artifact_filename, not inline ts")
+
+    def test_report_generator_uses_get_run_date_str(self):
+        """report_generator.py must import and use get_run_date_str."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        self.assertIn("get_run_date_str", src,
+                      "report_generator must use get_run_date_str from logging_utils")
+
+
+class TestCsvLogging(unittest.TestCase):
+    """Verify CSV log schema, per-script files, and reset behavior."""
+
+    def test_csv_log_columns_count(self):
+        """CSV log schema must have exactly 16 columns."""
+        from logging_utils import CSV_LOG_COLUMNS
+        self.assertEqual(len(CSV_LOG_COLUMNS), 15,
+                         f"CSV schema must have 15 columns, got {len(CSV_LOG_COLUMNS)}")
+
+    def test_csv_log_required_columns(self):
+        """CSV log must include all required columns."""
+        from logging_utils import CSV_LOG_COLUMNS
+        required = {"timestamp", "run_date", "script_name", "run_id", "level",
+                     "phase", "component", "function", "line_no", "event_type",
+                     "message", "exception_type", "exception_message", "traceback",
+                     "context_json"}
+        self.assertTrue(required.issubset(set(CSV_LOG_COLUMNS)),
+                        f"Missing columns: {required - set(CSV_LOG_COLUMNS)}")
+
+    def test_csv_log_filename_includes_script_name(self):
+        """CSV log filename must include the script name."""
+        from logging_utils import CsvLogger
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = CsvLogger("test_script", log_dir=tmpdir)
+            self.assertIn("test_script", logger.log_filename)
+            self.assertIn("_log.csv", logger.log_filename)
+            logger.close()
+
+    def test_csv_log_reset_per_run(self):
+        """CSV log must reset (overwrite) each run."""
+        from logging_utils import CsvLogger
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # First run: write some data
+            log1 = CsvLogger("reset_test", log_dir=tmpdir)
+            log1.info("first run message")
+            log1.close()
+
+            # Second run: should overwrite
+            log2 = CsvLogger("reset_test", log_dir=tmpdir)
+            log2.info("second run message")
+            log2.close()
+
+            # Read the file — should only have header + second run message
+            log_path = Path(tmpdir) / f"reset_test_{log2.run_date}_log.csv"
+            with open(log_path) as f:
+                lines = f.readlines()
+            # Header + 1 data row = 2 lines
+            self.assertEqual(len(lines), 2,
+                             "CSV log must reset each run (overwrite mode)")
+            self.assertIn("second run message", lines[1])
+
+    def test_csv_log_schema_headers(self):
+        """First line of CSV log must be the schema headers."""
+        from logging_utils import CsvLogger, CSV_LOG_COLUMNS
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = CsvLogger("header_test", log_dir=tmpdir)
+            logger.close()
+            log_path = Path(tmpdir) / f"header_test_{logger.run_date}_log.csv"
+            with open(log_path) as f:
+                header = f.readline().strip()
+            expected = ",".join(CSV_LOG_COLUMNS)
+            self.assertEqual(header, expected, "CSV header must match schema")
+
+
+class TestStdoutStderrCapture(unittest.TestCase):
+    """Verify stdout/stderr tee capture into CSV log."""
+
+    def test_stdout_captured_in_log(self):
+        """print() output must appear in CSV log as STDOUT event."""
+        from logging_utils import CsvLogger, TeeToLogger
+        import tempfile
+        import csv as csv_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = CsvLogger("stdout_test", log_dir=tmpdir)
+            # Save and replace stdout
+            old_stdout = sys.stdout
+            sys.stdout = TeeToLogger(old_stdout, logger, stream_name="STDOUT")
+            print("test capture message")
+            sys.stdout = old_stdout  # Restore
+            logger.close()
+
+            log_path = Path(tmpdir) / f"stdout_test_{logger.run_date}_log.csv"
+            with open(log_path) as f:
+                reader = csv_mod.DictReader(f)
+                rows = list(reader)
+            stdout_rows = [r for r in rows if r["event_type"] == "STDOUT"]
+            messages = [r["message"] for r in stdout_rows]
+            self.assertTrue(any("test capture message" in m for m in messages),
+                            "print() output must be captured as STDOUT event in CSV log")
+
+    def test_stderr_captured_in_log(self):
+        """stderr output must appear in CSV log as STDERR event."""
+        from logging_utils import CsvLogger, TeeToLogger
+        import tempfile
+        import csv as csv_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = CsvLogger("stderr_test", log_dir=tmpdir)
+            old_stderr = sys.stderr
+            sys.stderr = TeeToLogger(old_stderr, logger, stream_name="STDERR")
+            print("stderr test message", file=sys.stderr)
+            sys.stderr = old_stderr  # Restore
+            logger.close()
+
+            log_path = Path(tmpdir) / f"stderr_test_{logger.run_date}_log.csv"
+            with open(log_path) as f:
+                reader = csv_mod.DictReader(f)
+                rows = list(reader)
+            stderr_rows = [r for r in rows if r["event_type"] == "STDERR"]
+            messages = [r["message"] for r in stderr_rows]
+            self.assertTrue(any("stderr test message" in m for m in messages),
+                            "stderr output must be captured as STDERR event in CSV log")
+
+
+class TestFileWriteEvents(unittest.TestCase):
+    """Verify FILE_WRITTEN events are logged."""
+
+    def test_report_generator_logs_file_writes(self):
+        """report_generator.py must call csv_log.log_file_written for chart outputs."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        self.assertIn("csv_log.log_file_written", src,
+                      "report_generator must log FILE_WRITTEN events")
+
+    def test_mspbna_logs_workbook_write(self):
+        """MSPBNA_CR_Normalized.py must log FILE_WRITTEN for workbook."""
+        src_path = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        src = src_path.read_text(encoding="utf-8")
+        self.assertIn("FILE_WRITTEN", src,
+                      "MSPBNA_CR_Normalized must log FILE_WRITTEN events")
+
+
+class TestPreflightEvents(unittest.TestCase):
+    """Verify preflight events are logged."""
+
+    def test_preflight_warnings_logged(self):
+        """Preflight warnings must be logged as PRECHECK_WARN."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        self.assertIn("PRECHECK_WARN", src,
+                      "Preflight warnings must use PRECHECK_WARN event type")
+
+    def test_preflight_errors_logged(self):
+        """Preflight errors must be logged as PRECHECK_FAIL."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        self.assertIn("PRECHECK_FAIL", src,
+                      "Preflight errors must use PRECHECK_FAIL event type")
+
+
+class TestClaudeMDLogging(unittest.TestCase):
+    """Verify CLAUDE.md documents logging and naming conventions."""
+
+    def test_claude_md_mentions_csv_logging(self):
+        """CLAUDE.md must document CSV logging."""
+        md_path = Path(__file__).parent / "CLAUDE.md"
+        md = md_path.read_text(encoding="utf-8")
+        self.assertIn("CSV", md, "CLAUDE.md must document CSV logging")
+
+    def test_claude_md_mentions_date_only_naming(self):
+        """CLAUDE.md must document date-only naming."""
+        md_path = Path(__file__).parent / "CLAUDE.md"
+        md = md_path.read_text(encoding="utf-8")
+        self.assertIn("YYYYMMDD", md, "CLAUDE.md must document date-only naming")
 
 
 if __name__ == '__main__':

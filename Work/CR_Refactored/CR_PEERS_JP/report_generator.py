@@ -2125,6 +2125,9 @@ def generate_reports(
             "Yield Curve (T10Y2Y)",
         ]
 
+    from logging_utils import setup_csv_logging
+    csv_log = setup_csv_logging("report_generator", log_dir="logs")
+
     print("=" * 80)
     print("MSPBNA PERFORMANCE REPORT GENERATOR")
     print("=" * 80)
@@ -2151,8 +2154,12 @@ def generate_reports(
 
     print(f"Found latest file: {excel_file}")
     print(f"File created: {datetime.fromtimestamp(os.path.getmtime(excel_file)).strftime('%Y-%m-%d')}")
+    csv_log.info(f"Source workbook: {excel_file}",
+                 event_type="FILE_DISCOVERED", phase="startup", component="excel_discovery",
+                 context={"excel_file": str(excel_file)})
 
-    stamp = datetime.now().strftime("%Y%m%d")
+    from logging_utils import get_run_date_str
+    stamp = get_run_date_str()
     base = Path(excel_file).stem
 
     try:
@@ -2177,6 +2184,12 @@ def generate_reports(
         if metric_descriptions is not None:
             print(f"Loaded {len(metric_descriptions)} metric descriptions")
         print(f"Loaded FDIC data: {len(proc_df_with_peers)} records across {proc_df_with_peers['CERT'].nunique()} banks")
+        csv_log.log_df_shape("proc_df_with_peers", len(proc_df_with_peers),
+                             len(proc_df_with_peers.columns),
+                             phase="sheet_load", component="FDIC_Data")
+        csv_log.log_df_shape("rolling8q_df", len(rolling8q_df),
+                             len(rolling8q_df.columns),
+                             phase="sheet_load", component="Averages_8Q")
 
         # ------------------------------------------------------------------
         # PREFLIGHT VALIDATION
@@ -2186,10 +2199,12 @@ def generate_reports(
             print(f"\n  PREFLIGHT WARNINGS ({len(preflight['warnings'])}):")
             for w in preflight["warnings"]:
                 print(f"    [!] {w}")
+                csv_log.warning(w, event_type="PRECHECK_WARN", phase="preflight")
         if preflight["errors"]:
             print(f"\n  PREFLIGHT ERRORS ({len(preflight['errors'])}):")
             for e in preflight["errors"]:
                 print(f"    [X] {e}")
+                csv_log.error(e, event_type="PRECHECK_FAIL", phase="preflight")
             print("  Aborting report generation due to preflight errors.")
             return
         suppressed_charts = set(preflight.get("suppressed_charts", []))
@@ -2213,6 +2228,7 @@ def generate_reports(
                 with open(exec_path, "w", encoding="utf-8") as f:
                     f.write(exec_html)
                 print(f"  Executive summary ({norm_str}) saved: {exec_path}")
+                csv_log.log_file_written(str(exec_path), phase="tables", component="executive_summary")
                 if exec_df is not None:
                     print(f"  Table contains {len(exec_df)} credit metrics")
 
@@ -2235,6 +2251,7 @@ def generate_reports(
             save_path=std_chart_path,
         )
         print(f"  Standard chart saved: {std_chart_path}")
+        csv_log.log_file_written(std_chart_path, phase="charts", component="standard_credit_chart")
 
         # ------------------------------------------------------------------
         # NORMALIZED CREDIT DETERIORATION CHART -> charts_dir
@@ -2272,6 +2289,7 @@ def generate_reports(
             save_path=norm_chart_path,
         )
         print(f"  Normalized chart saved: {norm_chart_path}")
+        csv_log.log_file_written(norm_chart_path, phase="charts", component="normalized_credit_chart")
 
         # ------------------------------------------------------------------
         # B5: DUAL SCATTERS (STANDARD + NORMALIZED) -> scatter_dir
@@ -2312,6 +2330,7 @@ def generate_reports(
             save_path=str(s1_path),
         )
         print(f"  Standard scatter (NCO vs NPL) saved: {s1_path}")
+        csv_log.log_file_written(str(s1_path), phase="scatter", component="scatter_nco_vs_npl")
 
         s2_path = scatter_dir / f"{base}_scatter_pd_vs_npl_{stamp}.png"
         plot_scatter_dynamic(
@@ -2337,6 +2356,7 @@ def generate_reports(
             save_path=str(s2_path),
         )
         print(f"  Standard scatter (PD vs NPL) saved: {s2_path}")
+        csv_log.log_file_written(str(s2_path), phase="scatter", component="scatter_pd_vs_npl")
 
         # -- Normalized scatter — use true composite CERTs directly, no alias rows --
         s3_path = scatter_dir / f"{base}_scatter_norm_nco_vs_nonaccrual_{stamp}.png"
@@ -2363,6 +2383,7 @@ def generate_reports(
             save_path=str(s3_path),
         )
         print(f"  Normalized scatter (Norm NCO vs Norm Nonaccrual) saved: {s3_path}")
+        csv_log.log_file_written(str(s3_path), phase="scatter", component="scatter_norm_nco_vs_nonaccrual")
 
         # ------------------------------------------------------------------
         # FRED MACRO TABLE -> tables_dir
@@ -2586,8 +2607,15 @@ def generate_reports(
 
     except Exception as e:
         print(f"ERROR: An unexpected error occurred: {e}")
+        csv_log.log_exception(exc=e, phase="generate_reports", component="main")
     finally:
         plt.close("all")
+        csv_log.info(
+            "Report generation finished",
+            event_type="CONFIG",
+            phase="shutdown",
+        )
+        csv_log.close()
 
 
 def create_credit_deterioration_chart_ppt(
