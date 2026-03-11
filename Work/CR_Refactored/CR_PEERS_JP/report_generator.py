@@ -195,7 +195,7 @@ def resolve_display_label(cert: int, name: Optional[str] = None, *,
 
     Rules:
     - subject bank → "MSPBNA"
-    - MSBNA → "MS"
+    - MSBNA → "MSBNA"
     - individual peers → ticker symbols (GS, UBS, JPM, BAC, C, WFC)
     - active composites → descriptive labels (Wealth Peers, All Peers, MS Combined)
     - unknown individuals → cleaned NAME fallback (not raw CERT)
@@ -203,7 +203,7 @@ def resolve_display_label(cert: int, name: Optional[str] = None, *,
     if cert == subject_cert:
         return "MSPBNA"
     if cert == _MSBNA_CERT:
-        return "MS"
+        return "MSBNA"
 
     # Composite labels
     if cert in _COMPOSITE_LABELS:
@@ -727,7 +727,7 @@ def generate_html_email_table_dynamic(df: pd.DataFrame, report_date: datetime,
             cls = ""
             if c == "Metric": val = f"<b>{val}</b>"; cls = 'class="metric-name"'
             elif c == "MSPBNA": cls = 'class="subject-value"'
-            elif c == "MS": cls = 'class="msbna-value"'
+            elif c == "MSBNA": cls = 'class="msbna-value"'
 
             # Trend Coloring Logic based on original files
             if "Diff" in c and "N/A" not in str(val):

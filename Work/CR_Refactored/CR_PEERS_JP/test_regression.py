@@ -994,9 +994,9 @@ class TestCaseShillerZIP(unittest.TestCase):
             from case_shiller_zip_mapper import build_case_shiller_zip_sheets
             result = build_case_shiller_zip_sheets()
             # Should return audit sheet noting skip
-            self.assertIn('CaseShiller_Metro_Map_Audit', result)
-            audit = result['CaseShiller_Metro_Map_Audit']
-            # The HUD version returns the full metro map with SKIPPED comments
+            self.assertIn('CaseShiller_County_Map_Audit', result)
+            audit = result['CaseShiller_County_Map_Audit']
+            # The county map version returns the full county map with SKIPPED comments
             has_skipped = any(
                 'SKIPPED' in str(v)
                 for v in audit.values.flatten()
@@ -1020,6 +1020,51 @@ class TestCaseShillerZIP(unittest.TestCase):
         """Coverage output should have exactly 20 Case-Shiller metros."""
         from case_shiller_zip_mapper import CASE_SHILLER_METROS
         self.assertEqual(len(CASE_SHILLER_METROS), 20)
+
+    def test_county_map_has_20_regions(self):
+        """CASE_SHILLER_COUNTY_MAP must cover exactly 20 regions."""
+        from case_shiller_zip_mapper import CASE_SHILLER_COUNTY_MAP, VALID_CS_METROS
+        self.assertEqual(len(VALID_CS_METROS), 20)
+        regions = {m["case_shiller_region"] for m in CASE_SHILLER_COUNTY_MAP}
+        self.assertEqual(len(regions), 20)
+
+    def test_county_map_fips_are_5_digit(self):
+        """All FIPS codes in county map must be 5-digit zero-padded strings."""
+        from case_shiller_zip_mapper import CASE_SHILLER_COUNTY_MAP
+        for entry in CASE_SHILLER_COUNTY_MAP:
+            fips = entry["fips"]
+            self.assertEqual(len(fips), 5, f"FIPS {fips} for {entry['county']} is not 5 chars")
+            self.assertTrue(fips.isdigit(), f"FIPS {fips} contains non-digit chars")
+
+    def test_county_map_has_required_fields(self):
+        """Each county map entry must have case_shiller_region, fips, county, state."""
+        from case_shiller_zip_mapper import CASE_SHILLER_COUNTY_MAP
+        required = {"case_shiller_region", "fips", "county", "state"}
+        for entry in CASE_SHILLER_COUNTY_MAP:
+            self.assertTrue(required.issubset(entry.keys()),
+                f"Missing keys in entry: {required - set(entry.keys())}")
+
+    def test_hud_type_is_county_zip(self):
+        """HUD API must use type=7 (county-to-ZIP), not type=8/9."""
+        from case_shiller_zip_mapper import _HUD_TYPE_COUNTY_ZIP
+        self.assertEqual(_HUD_TYPE_COUNTY_ZIP, 7)
+
+    def test_no_cbsa_references_in_coverage_builder(self):
+        """build_case_shiller_zip_coverage must not reference CBSA columns."""
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        mapper_path = os.path.join(project_dir, "case_shiller_zip_mapper.py")
+        with open(mapper_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        import ast
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "build_case_shiller_zip_coverage":
+                body_src = ast.get_source_segment(source, node)
+                self.assertNotIn("cbsa_code", body_src,
+                    "Coverage builder must not reference cbsa_code columns")
+                self.assertNotIn("cbsadiv", body_src,
+                    "Coverage builder must not reference cbsadiv columns")
+                break
 
     def test_map_zip_to_metro_basics(self):
         """map_zip_to_metro should correctly map ZIP prefixes to metros."""
@@ -1326,7 +1371,7 @@ class TestCaseShillerZIPPersistence(unittest.TestCase):
         try:
             from case_shiller_zip_mapper import build_case_shiller_zip_sheets
             result = build_case_shiller_zip_sheets()
-            audit = result.get('CaseShiller_Metro_Map_Audit')
+            audit = result.get('CaseShiller_County_Map_Audit')
             self.assertIsNotNone(audit, "Audit sheet should always be returned")
             self.assertFalse(audit.empty, "Audit sheet should not be empty even when disabled")
         finally:
@@ -2117,9 +2162,9 @@ class TestLabelResolver(unittest.TestCase):
     # ------------------------------------------------------------------
     # 10. MSBNA cert resolves to MS
     # ------------------------------------------------------------------
-    def test_msbna_label_is_ms(self):
-        """resolve_display_label for MSBNA cert must return MS."""
-        self.assertIn('return "MS"', self.rg_source)
+    def test_msbna_label_is_msbna(self):
+        """resolve_display_label for MSBNA cert must return MSBNA."""
+        self.assertIn('return "MSBNA"', self.rg_source)
 
     # ------------------------------------------------------------------
     # 11. _build_dynamic_peer_html uses _MSBNA_CERT constant

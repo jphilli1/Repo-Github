@@ -6160,7 +6160,7 @@ class BankPerformanceDashboard:
 
         # --- Case-Shiller ZIP Enrichment (standalone sheets) ---
         # Produces up to 3 sheets: CaseShiller_Zip_Coverage, CaseShiller_Zip_Summary,
-        # CaseShiller_Metro_Map_Audit. Wrapped in try/except so HUD API failures
+        # CaseShiller_County_Map_Audit. Wrapped in try/except so HUD API failures
         # do not crash the pipeline.
         cs_kwargs = {}
         try:
