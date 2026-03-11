@@ -479,6 +479,60 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-11 — Coverage/Share Semantics & HUD Token Discovery (Directive 7)
+
+**8-part directive**: Fix coverage vs share label semantics, metric formatting, and HUD token discovery/diagnostics.
+
+**Coverage vs Share Rule (non-negotiable):**
+- **"Coverage"** = ACL or reserve divided by an **exposure base** (loans, cost basis, nonaccrual)
+  - Examples: `Total_ACL / Gross_Loans`, `RIC_CRE_ACL / RIC_CRE_Cost`, `Norm_ACL_Balance / Norm_Gross_Loans`
+- **"Share" or "% of ACL"** = segment reserve divided by **ACL pool**
+  - Examples: `RIC_CRE_ACL / Total_ACL`, `RIC_CRE_ACL / Norm_ACL_Balance`
+- If denominator is `Total_ACL` or `Norm_ACL_Balance`, the metric **must NOT** be labeled "Coverage"
+
+**Metric Format Types:**
+| Type | Display | Typical Range | Examples |
+|---|---|---|---|
+| Loan coverage | % | 0.5%-3% | ACL/Loans, Risk-Adj ACL, Norm ACL Coverage |
+| NPL coverage | x-multiple | 0.5x-5x | CRE ACL/CRE NPL, Resi ACL/Resi NPL |
+| Share/composition | % | 5%-50% | CRE % of ACL, Resi % of ACL |
+
+Formatting is now driven by `_METRIC_FORMAT_TYPE` dict in `report_generator.py` (keyed by metric code), not fragile keyword matching. Only NPL coverage metrics (`RIC_CRE_Risk_Adj_Coverage`, `RIC_Resi_Risk_Adj_Coverage`) use x-format. Everything else defaults to percent.
+
+**HUD Token Discovery:**
+
+`resolve_hud_token(explicit_token, script_dir)` in `case_shiller_zip_mapper.py` is the single token resolver. Resolution order:
+1. Explicit function argument (if provided)
+2. `os.getenv("HUD_USER_TOKEN")`
+3. `.env` in script directory
+4. `.env` in current working directory
+
+Returns `(token, diagnostics_dict)` where diagnostics includes: `token_found`, `source_used`, `token_length`, `token_prefix_masked` (first 6 chars only), `dotenv_available`, `paths_checked`, `current_working_directory`, `script_directory`, `process_executable`, `process_pid`. The full token is **never** logged or printed.
+
+**Enrichment Status Codes:**
+| Status | Meaning |
+|---|---|
+| `SKIPPED_DISABLED` | `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT=false` |
+| `SKIPPED_NO_TOKEN` | Token not visible to current Python process |
+| `SKIPPED_NO_REQUESTS` | `requests` library not installed |
+| `FAILED_TOKEN_AUTH` | HTTP 401/403 from HUD API |
+| `FAILED_HTTP` | Non-auth HTTP failures |
+| `FAILED_EMPTY_RESPONSE` | API responded but all counties returned empty |
+| `SUCCESS_NO_ZIPS` | Enrichment ran but produced zero ZIP rows |
+| `SUCCESS_WITH_ZIPS` | Normal success |
+
+**Changes:**
+1. **MSPBNA_CR_Normalized.py** — `_validate_runtime_env()` uses `resolve_hud_token()` for multi-source discovery with full diagnostics; returns resolved token. `main()` passes token to pipeline via config. Enrichment call passes `hud_user_token=` explicitly. Fixed `Norm_CRE_ACL_Coverage` display label from "CRE Reserve % of Norm ACL" to "CRE ACL Coverage (% of CRE Loans)".
+2. **case_shiller_zip_mapper.py** — Added `resolve_hud_token()` with 4-source resolution and diagnostics dict. Added 8 enrichment status constants. `build_case_shiller_zip_sheets()` now accepts `hud_user_token` parameter, returns `enrichment_status` and `token_diagnostics` keys, and distinguishes auth failure / HTTP failure / empty response / success.
+3. **report_generator.py** — Added `_METRIC_FORMAT_TYPE` dict for semantic formatting. Replaced `_COVERAGE_KEYWORDS` substring matching with `_METRIC_FORMAT_TYPE.get(rat_col, "pct")` lookup. NPL coverage → x-multiples, all other metrics → percent.
+4. **test_regression.py** — 16 new tests across 3 classes + 2 updated tests:
+   - `TestCoverageVsShareSemantics` (6): share rows not labeled coverage, exposure coverage has correct denominator, Norm_ACL_Coverage uses Norm_Gross_Loans, NPL format is x, loan coverage format is %, display label corrected
+   - `TestHUDTokenDiscovery` (6): resolver exists, explicit overrides, diagnostics keys, token never logged in full, env var resolution, missing token diagnostics
+   - `TestEnrichmentStatusCodes` (4): status codes defined, build returns status/diagnostics, hud_user_token param, token passed explicitly from main
+   - Updated `TestCoverageMetricFormatting` (2): _METRIC_FORMAT_TYPE replaces _COVERAGE_KEYWORDS
+
+**Test baseline**: 196 tests — 184 passing, 0 failures, 10 pre-existing errors (missing matplotlib/aiohttp), 2 skipped.
+
 ### 2026-03-11 — Output Quality Fixes (Directive 6)
 
 **8-part directive** covering FDIC history, chart quality, formatting, logging, and label accuracy.
@@ -1233,12 +1287,14 @@ The `CASE_SHILLER_COUNTY_MAP` list contains the official county-level definition
    ```bash
    export HUD_USER_TOKEN='eyJ...'
    ```
-   Or add to `.env`: `HUD_USER_TOKEN=eyJ...`
+   Or add to `.env` in the script directory: `HUD_USER_TOKEN=eyJ...`
 4. The token is a Bearer token used in the `Authorization` header
+
+**Token discovery** uses `resolve_hud_token()` from `case_shiller_zip_mapper.py` with multi-source resolution: explicit argument → `os.getenv` → `.env` in script dir → `.env` in cwd. The resolver returns `(token, diagnostics)` — diagnostics include `source_used`, masked prefix, paths checked, cwd, executable, and PID. The full token is never logged. If the token exists in the shell but is not visible to the Python process, diagnostics clearly distinguish "token not visible to current process" from "token missing from machine".
 
 ### Integration
 
-ZIP enrichment runs automatically within `run_expansion_pipeline_async()` in `fred_ingestion_engine.py`, after FRED data fetch and Case-Shiller discovery. It is controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`). If the HUD token is missing, the enrichment is skipped gracefully with a warning.
+ZIP enrichment runs automatically as part of the MSPBNA_CR_Normalized pipeline. Token is resolved once at startup via `_validate_runtime_env()` and passed explicitly to `build_case_shiller_zip_sheets(hud_user_token=...)`. Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`). Returns structured status codes (`SKIPPED_NO_TOKEN`, `FAILED_TOKEN_AUTH`, `FAILED_HTTP`, `FAILED_EMPTY_RESPONSE`, `SUCCESS_NO_ZIPS`, `SUCCESS_WITH_ZIPS`) to distinguish skip vs failure vs empty vs success.
 
 ### HUD API: County-to-ZIP (Type 7)
 

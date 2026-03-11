@@ -24,7 +24,9 @@ Environment variables:
 
 import logging
 import os
+import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -36,13 +38,109 @@ try:
 except ImportError:
     _HAS_REQUESTS = False
 
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _HAS_DOTENV = True
+except ImportError:
+    _load_dotenv = None
+    _HAS_DOTENV = False
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Enrichment status codes — distinguish skipped vs failed vs success
+# ---------------------------------------------------------------------------
+ENRICH_SKIPPED_DISABLED = "SKIPPED_DISABLED"
+ENRICH_SKIPPED_NO_TOKEN = "SKIPPED_NO_TOKEN"
+ENRICH_SKIPPED_NO_REQUESTS = "SKIPPED_NO_REQUESTS"
+ENRICH_FAILED_TOKEN_AUTH = "FAILED_TOKEN_AUTH"
+ENRICH_FAILED_HTTP = "FAILED_HTTP"
+ENRICH_FAILED_EMPTY_RESPONSE = "FAILED_EMPTY_RESPONSE"
+ENRICH_SUCCESS_NO_ZIPS = "SUCCESS_NO_ZIPS"
+ENRICH_SUCCESS_WITH_ZIPS = "SUCCESS_WITH_ZIPS"
 
 
 def is_zip_enrichment_enabled() -> bool:
     """Check whether Case-Shiller ZIP enrichment is enabled via env flag."""
     val = os.getenv("ENABLE_CASE_SHILLER_ZIP_ENRICHMENT", "true").strip().lower()
     return val in {"1", "true", "yes", "y"}
+
+
+# ---------------------------------------------------------------------------
+# HUD token resolver — multi-source with diagnostics
+# ---------------------------------------------------------------------------
+def resolve_hud_token(
+    explicit_token: Optional[str] = None,
+    script_dir: Optional[str] = None,
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Resolve HUD_USER_TOKEN from multiple sources with diagnostics.
+
+    Resolution order:
+        1. explicit_token argument (if provided)
+        2. os.getenv("HUD_USER_TOKEN")
+        3. .env in script_dir
+        4. .env in current working directory
+
+    Returns
+    -------
+    (token_or_none, diagnostics_dict)
+
+    The diagnostics dict includes:
+        token_found, source_used, token_length, token_prefix_masked,
+        dotenv_available, paths_checked, current_working_directory,
+        script_directory, process_executable, process_pid
+    """
+    paths_checked: List[str] = []
+    source_used = "missing"
+    token: Optional[str] = None
+    cwd = os.getcwd()
+    s_dir = script_dir or str(Path(__file__).parent)
+
+    # 1. Explicit argument
+    if explicit_token:
+        token = explicit_token
+        source_used = "explicit_argument"
+    else:
+        # 2. Environment variable
+        env_tok = os.getenv("HUD_USER_TOKEN")
+        paths_checked.append("os.getenv('HUD_USER_TOKEN')")
+        if env_tok:
+            token = env_tok
+            source_used = "environment_variable"
+        else:
+            # 3. .env in script directory
+            env_script = Path(s_dir) / ".env"
+            paths_checked.append(str(env_script))
+            if _HAS_DOTENV and env_script.exists():
+                _load_dotenv(str(env_script), override=False)
+                env_tok = os.getenv("HUD_USER_TOKEN")
+                if env_tok:
+                    token = env_tok
+                    source_used = "dotenv_script_dir"
+            # 4. .env in cwd (if different)
+            env_cwd = Path(cwd) / ".env"
+            if str(env_cwd) != str(env_script):
+                paths_checked.append(str(env_cwd))
+                if not token and _HAS_DOTENV and env_cwd.exists():
+                    _load_dotenv(str(env_cwd), override=False)
+                    env_tok = os.getenv("HUD_USER_TOKEN")
+                    if env_tok:
+                        token = env_tok
+                        source_used = "dotenv_cwd"
+
+    diag: Dict[str, Any] = {
+        "token_found": token is not None,
+        "source_used": source_used,
+        "token_length": len(token) if token else 0,
+        "token_prefix_masked": (token[:6] + "***") if token and len(token) >= 6 else ("***" if token else None),
+        "dotenv_available": _HAS_DOTENV,
+        "paths_checked": paths_checked,
+        "current_working_directory": cwd,
+        "script_directory": s_dir,
+        "process_executable": sys.executable,
+        "process_pid": os.getpid(),
+    }
+    return token, diag
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CASE-SHILLER COUNTY-LEVEL FIPS MAP (S&P CoreLogic Methodology)
@@ -646,21 +744,30 @@ def validate_zip_coverage(
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_case_shiller_zip_sheets(
-    token: Optional[str] = None,
+    hud_user_token: Optional[str] = None,
     year: Optional[int] = None,
     quarter: Optional[int] = None,
-) -> Dict[str, pd.DataFrame]:
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
     """Top-level function that fetches HUD data and produces the 3 output sheets.
+
+    Parameters
+    ----------
+    hud_user_token : str, optional
+        Explicit HUD API token.  Takes precedence over env / .env discovery.
+    year, quarter : int, optional
+        HUD crosswalk vintage.  Defaults to env vars or latest.
+    token : str, optional
+        Backward-compatible alias for ``hud_user_token``.
 
     Returns
     -------
     dict with keys:
-        "CaseShiller_Zip_Coverage"
-        "CaseShiller_Zip_Summary"
-        "CaseShiller_County_Map_Audit"
-
-    If the HUD token is missing or fetches fail, returns dict with empty DataFrames
-    and logs appropriate warnings.
+        "CaseShiller_Zip_Coverage"   — pd.DataFrame
+        "CaseShiller_Zip_Summary"    — pd.DataFrame
+        "CaseShiller_County_Map_Audit" — pd.DataFrame
+        "enrichment_status"          — str (one of ENRICH_* constants)
+        "token_diagnostics"          — dict from resolve_hud_token()
     """
     county_map_df = build_case_shiller_county_map()
 
@@ -669,19 +776,50 @@ def build_case_shiller_zip_sheets(
     audit_df["included_in_zip_output"] = False
     audit_df["comments"] = "S&P CoreLogic official county definition"
 
-    empty_result = {
-        "CaseShiller_Zip_Coverage": pd.DataFrame(),
-        "CaseShiller_Zip_Summary": pd.DataFrame(),
-        "CaseShiller_County_Map_Audit": audit_df,
-    }
+    def _result(status: str, cov=pd.DataFrame(), summ=pd.DataFrame(),
+                diag: Optional[Dict] = None) -> Dict[str, Any]:
+        return {
+            "CaseShiller_Zip_Coverage": cov,
+            "CaseShiller_Zip_Summary": summ,
+            "CaseShiller_County_Map_Audit": audit_df,
+            "enrichment_status": status,
+            "token_diagnostics": diag or {},
+        }
 
     # --- ENV TOGGLE CHECK ---
     if not is_zip_enrichment_enabled():
         logger.info("Case-Shiller ZIP enrichment disabled by env flag.")
         audit_df["comments"] = audit_df["comments"] + " | SKIPPED: disabled by env flag"
-        return empty_result
+        return _result(ENRICH_SKIPPED_DISABLED)
 
-    tok = token or _get_hud_token()
+    # --- TOKEN RESOLUTION ---
+    explicit = hud_user_token or token  # backward compat
+    tok, diag = resolve_hud_token(explicit_token=explicit)
+
+    if diag["token_found"]:
+        logger.info(
+            f"HUD token resolved: source={diag['source_used']}, "
+            f"length={diag['token_length']}, prefix={diag['token_prefix_masked']}"
+        )
+    else:
+        logger.warning(
+            "HUD_USER_TOKEN not visible to current Python process — "
+            "skipping Case-Shiller ZIP enrichment. "
+            f"source_used={diag['source_used']}, "
+            f"paths_checked={diag['paths_checked']}, "
+            f"cwd={diag['current_working_directory']}, "
+            f"script_dir={diag['script_directory']}, "
+            f"executable={diag['process_executable']}, "
+            f"pid={diag['process_pid']}. "
+            "Register at https://www.huduser.gov/hudapi/public/register"
+        )
+        audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_SKIPPED_NO_TOKEN}"
+        return _result(ENRICH_SKIPPED_NO_TOKEN, diag=diag)
+
+    if not _HAS_REQUESTS:
+        logger.warning("'requests' library not installed — skipping HUD API calls")
+        audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_SKIPPED_NO_REQUESTS}"
+        return _result(ENRICH_SKIPPED_NO_REQUESTS, diag=diag)
 
     # Config from env
     if year is None:
@@ -691,36 +829,51 @@ def build_case_shiller_zip_sheets(
         env_qtr = os.getenv("HUD_CROSSWALK_QUARTER")
         quarter = int(env_qtr) if env_qtr else None
 
-    if not tok:
-        logger.warning(
-            "HUD_USER_TOKEN not set — skipping Case-Shiller ZIP enrichment. "
-            "Register at https://www.huduser.gov/hudapi/public/register"
-        )
-        audit_df["comments"] = audit_df["comments"] + " | SKIPPED: no HUD token"
-        return empty_result
-
-    if not _HAS_REQUESTS:
-        logger.warning("'requests' library not installed — skipping HUD API calls")
-        audit_df["comments"] = audit_df["comments"] + " | SKIPPED: requests not installed"
-        return empty_result
-
     # Fetch county-to-ZIP crosswalk for each unique FIPS code
     unique_fips = sorted(set(county_map_df["fips"].values))
     logger.info(f"Fetching HUD county-ZIP crosswalk (type=7) for {len(unique_fips)} counties...")
 
     all_xwalk_frames = []
+    http_errors = []
+    auth_failed = False
     for fips_code in unique_fips:
-        xwalk = fetch_hud_crosswalk(
-            query=fips_code, crosswalk_type=_HUD_TYPE_COUNTY_ZIP,
-            year=year, quarter=quarter, token=tok,
+        try:
+            xwalk = fetch_hud_crosswalk(
+                query=fips_code, crosswalk_type=_HUD_TYPE_COUNTY_ZIP,
+                year=year, quarter=quarter, token=tok,
+            )
+            if not xwalk.empty:
+                all_xwalk_frames.append(xwalk)
+        except EnvironmentError:
+            raise  # token missing — should not happen since we checked above
+        except Exception as e:
+            err_str = str(e).lower()
+            if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
+                auth_failed = True
+                logger.error(f"HUD API auth failure for FIPS {fips_code}: {e}")
+                break
+            http_errors.append((fips_code, str(e)))
+
+    if auth_failed:
+        logger.error(
+            f"HUD API token authentication failed (source={diag['source_used']}, "
+            f"prefix={diag['token_prefix_masked']}). Token may be expired or invalid."
         )
-        if not xwalk.empty:
-            all_xwalk_frames.append(xwalk)
+        audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_TOKEN_AUTH}"
+        return _result(ENRICH_FAILED_TOKEN_AUTH, diag=diag)
+
+    if http_errors and not all_xwalk_frames:
+        logger.error(
+            f"All HUD API calls failed ({len(http_errors)} errors). "
+            f"First error: {http_errors[0][1]}"
+        )
+        audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_HTTP}"
+        return _result(ENRICH_FAILED_HTTP, diag=diag)
 
     if not all_xwalk_frames:
         logger.error("All HUD county-ZIP crosswalk fetches returned empty — cannot build ZIP coverage")
-        audit_df["comments"] = audit_df["comments"] + " | SKIPPED: HUD API returned empty"
-        return empty_result
+        audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_EMPTY_RESPONSE}"
+        return _result(ENRICH_FAILED_EMPTY_RESPONSE, diag=diag)
 
     combined_xwalk = pd.concat(all_xwalk_frames, ignore_index=True)
     logger.info(f"Combined HUD crosswalk: {len(combined_xwalk)} total rows from {len(all_xwalk_frames)} counties")
@@ -741,18 +894,20 @@ def build_case_shiller_zip_sheets(
         else:
             logger.warning(issue)
 
-    logger.info(
-        f"Case-Shiller ZIP coverage complete: "
-        f"{len(coverage_df)} coverage rows, "
-        f"{len(summary_df)} metros, "
-        f"{len(issues)} validation issues"
-    )
+    # Determine final status
+    if coverage_df.empty:
+        status = ENRICH_SUCCESS_NO_ZIPS
+        logger.warning("HUD API responded but produced zero ZIP coverage rows")
+    else:
+        status = ENRICH_SUCCESS_WITH_ZIPS
+        logger.info(
+            f"Case-Shiller ZIP coverage complete: "
+            f"{len(coverage_df)} coverage rows, "
+            f"{len(summary_df)} metros, "
+            f"{len(issues)} validation issues"
+        )
 
-    return {
-        "CaseShiller_Zip_Coverage": coverage_df,
-        "CaseShiller_Zip_Summary": summary_df,
-        "CaseShiller_County_Map_Audit": audit_df,
-    }
+    return _result(status, cov=coverage_df, summ=summary_df, diag=diag)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
