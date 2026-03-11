@@ -3111,6 +3111,22 @@ class TestCoverageMetricFormatting(unittest.TestCase):
         self.assertIn('"RIC_Resi_Risk_Adj_Coverage": "x"', source,
             "Resi NPL coverage must be formatted as x-multiple")
 
+    def test_metric_format_type_registry_explicit_npl_policy(self):
+        """_METRIC_FORMAT_TYPE must document that new x-style metrics must be added explicitly."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        # Must have a maintenance comment explaining the policy
+        self.assertIn("MAINTENANCE RULE", source,
+            "_METRIC_FORMAT_TYPE must have a MAINTENANCE RULE comment")
+        self.assertIn("MUST be added here explicitly", source,
+            "_METRIC_FORMAT_TYPE must explain that new NPL metrics must be registered explicitly")
+        # Loan coverage metrics must NOT be registered as "x"
+        for loan_cov in ["Allowance_to_Gross_Loans_Rate", "Norm_ACL_Coverage",
+                          "Risk_Adj_Allowance_Coverage", "RIC_CRE_ACL_Coverage",
+                          "RIC_Resi_ACL_Coverage"]:
+            self.assertNotIn(f'"{loan_cov}": "x"', source,
+                f"Loan coverage metric {loan_cov} must not be formatted as x-multiple")
+
 
 class TestNormalizedRatioLabels(unittest.TestCase):
     """Normalized ratio-components labels must match their denominators."""

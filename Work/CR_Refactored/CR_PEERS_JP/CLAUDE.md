@@ -547,7 +547,7 @@ Returns `(token, diagnostics_dict)` where diagnostics includes: `token_found`, `
 
 4. **Low-coverage bar series suppression (report_generator.py)**: `create_credit_deterioration_chart_ppt()` now checks `vals.isna().all()` for each bar entity. All-NaN series are excluded from the chart and tracked in `suppressed_series`. A footnote ("Suppressed (low coverage): ...") is added when series are suppressed.
 
-5. **Coverage metric x-format (report_generator.py)**: `generate_ratio_components_table()` now detects coverage metrics via `_COVERAGE_KEYWORDS` ("Coverage", "ACL Ratio", "Risk-Adj ACL") and formats them as x-multiples (0.62x) via `_fmt_multiple()` instead of percentages (61.71%).
+5. **Coverage metric x-format (report_generator.py)**: `generate_ratio_components_table()` now uses `_METRIC_FORMAT_TYPE` dict for semantic formatting — NPL coverage metrics (ACL/NPL) display as x-multiples (0.62x), loan coverage and share metrics display as percentages. Superseded the fragile `_COVERAGE_KEYWORDS` substring approach.
 
 6. **Normalized CRE label fix (report_generator.py)**: "Norm CRE ACL Coverage" renamed to "Norm CRE % of ACL" — the metric is `Norm_CRE_ACL_Share` (share of ACL allocated to CRE), not a coverage ratio.
 
@@ -560,7 +560,7 @@ Returns `(token, diagnostics_dict)` where diagnostics includes: `token_found`, `
 - `TestScatterTickerLabels` (2): resolve_display_label in scatter annotations
 - `TestMigrationLadderComparative` (2): ACTIVE_STANDARD_COMPOSITES usage, title mentions Peers
 - `TestLowCoverageChartSuppression` (2): suppressed_series tracking, footnote annotation
-- `TestCoverageMetricFormatting` (2): _fmt_multiple usage, _COVERAGE_KEYWORDS presence
+- `TestCoverageMetricFormatting` (3): _fmt_multiple usage, _METRIC_FORMAT_TYPE registry, explicit NPL policy
 - `TestNormalizedRatioLabels` (1): CRE ACL share not labeled "Coverage"
 - `TestCsvLogSeverityClassification` (3): _classify_level heuristics, no blind ERROR, progress pattern detection
 - `TestNoDoubleDateArtifactPaths` (1): no {stamp} variable in report_generator.py
