@@ -1,10 +1,14 @@
 """
-Case-Shiller ZIP Code Mapper — HUD USPS Crosswalk Enrichment
-==============================================================
+Case-Shiller ZIP Code Mapper — County-Level FIPS to ZIP Enrichment
+==================================================================
 
-Maps the 20 regional Case-Shiller metro indexes to ZIP codes using the
-HUD USPS ZIP Code Crosswalk API.  Produces standalone Excel reference
-sheets that can be used to map internal loan data to Case-Shiller regions.
+Maps the 20 regional Case-Shiller metro indexes to ZIP codes using
+county-level FIPS codes (per S&P CoreLogic methodology) joined to the
+HUD USPS County-to-ZIP Crosswalk API (type=7).
+
+The county definitions are hardcoded from the official S&P Case-Shiller
+"Index Geography" table, ensuring mathematically exact region boundaries
+rather than CBSA/CBSA-Division approximations.
 
 Explicitly EXCLUDES:
   - U.S. National
@@ -41,218 +45,229 @@ def is_zip_enrichment_enabled() -> bool:
     return val in {"1", "true", "yes", "y"}
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CASE-SHILLER METRO → CBSA / CBSA-DIV MAPPING TABLE
+# CASE-SHILLER COUNTY-LEVEL FIPS MAP (S&P CoreLogic Methodology)
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# Each entry maps a Case-Shiller regional metro to its official CBSA code
-# and, where the metro is defined at the division level, a CBSA Division
-# code.  Judgment calls are documented in the comments column.
+# Each entry maps a Case-Shiller regional metro to its constituent counties
+# using official 5-digit US FIPS codes.  Sourced from the "Index Geography"
+# table of the S&P CoreLogic Case-Shiller Home Price Indices Methodology PDF.
 #
-# Sources:
-#   OMB Bulletin 23-01 (CBSA Delineations, July 2023)
-#   HUD USPS Crosswalk documentation
-#
-# Key judgment calls:
-#   - New York:   CBSA 35620 covers the full metro; CBSA Div 35614
-#                 (NY-Jersey City-White Plains) is the best match for the
-#                 S&P CoreLogic index which focuses on the NY metro division.
-#   - Los Angeles: CBSA 31080; Div 31084 (LA-Long Beach-Glendale).
-#   - Washington:  CBSA 47900; Div 47894 (Washington-Arlington-Alexandria).
-#   - Chicago:     CBSA 16980; Div 16974 (Chicago-Naperville-Evanston).
-#   - Miami:       CBSA 33100; Div 33124 (Miami-Miami Beach-Kendall).
-#   - Detroit:     CBSA 19820; Div 19804 (Detroit-Dearborn-Livonia).
-#   - Seattle:     CBSA 42660; Div 42644 (Seattle-Bellevue-Kent).
-#
-# Metros without divisions use CBSA-level mapping only.
+# This replaces the former CBSA/CBSA-Division approximation approach with
+# exact county-level definitions as specified by S&P.
 
-CASE_SHILLER_METRO_MAP: List[Dict[str, Any]] = [
-    {
-        "case_shiller_region": "Atlanta",
-        "cbsa_code": "12060",
-        "cbsa_name": "Atlanta-Sandy Springs-Alpharetta, GA",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "Boston",
-        "cbsa_code": "14460",
-        "cbsa_name": "Boston-Cambridge-Newton, MA-NH",
-        "cbsadiv_code": "14454",
-        "cbsadiv_name": "Boston, MA",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 14454 best matches S&P index focus area",
-    },
-    {
-        "case_shiller_region": "Charlotte",
-        "cbsa_code": "16740",
-        "cbsa_name": "Charlotte-Concord-Gastonia, NC-SC",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "Chicago",
-        "cbsa_code": "16980",
-        "cbsa_name": "Chicago-Naperville-Elgin, IL-IN-WI",
-        "cbsadiv_code": "16974",
-        "cbsadiv_name": "Chicago-Naperville-Evanston, IL",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 16974 is core Chicago metro",
-    },
-    {
-        "case_shiller_region": "Cleveland",
-        "cbsa_code": "17460",
-        "cbsa_name": "Cleveland-Elyria, OH",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "Dallas",
-        "cbsa_code": "19100",
-        "cbsa_name": "Dallas-Fort Worth-Arlington, TX",
-        "cbsadiv_code": "19124",
-        "cbsadiv_name": "Dallas-Plano-Irving, TX",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 19124 matches S&P Dallas index",
-    },
-    {
-        "case_shiller_region": "Denver",
-        "cbsa_code": "19740",
-        "cbsa_name": "Denver-Aurora-Lakewood, CO",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "Detroit",
-        "cbsa_code": "19820",
-        "cbsa_name": "Detroit-Warren-Dearborn, MI",
-        "cbsadiv_code": "19804",
-        "cbsadiv_name": "Detroit-Dearborn-Livonia, MI",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 19804 is core Detroit metro",
-    },
-    {
-        "case_shiller_region": "Las Vegas",
-        "cbsa_code": "29820",
-        "cbsa_name": "Las Vegas-Henderson-Paradise, NV",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "Los Angeles",
-        "cbsa_code": "31080",
-        "cbsa_name": "Los Angeles-Long Beach-Anaheim, CA",
-        "cbsadiv_code": "31084",
-        "cbsadiv_name": "Los Angeles-Long Beach-Glendale, CA",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 31084 excludes Orange County (Anaheim); matches S&P LA index",
-    },
-    {
-        "case_shiller_region": "Miami",
-        "cbsa_code": "33100",
-        "cbsa_name": "Miami-Fort Lauderdale-Pompano Beach, FL",
-        "cbsadiv_code": "33124",
-        "cbsadiv_name": "Miami-Miami Beach-Kendall, FL",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 33124 is Miami-Dade focus",
-    },
-    {
-        "case_shiller_region": "Minneapolis",
-        "cbsa_code": "33460",
-        "cbsa_name": "Minneapolis-St. Paul-Bloomington, MN-WI",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "New York",
-        "cbsa_code": "35620",
-        "cbsa_name": "New York-Newark-Jersey City, NY-NJ-PA",
-        "cbsadiv_code": "35614",
-        "cbsadiv_name": "New York-Jersey City-White Plains, NY-NJ",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 35614 covers the core NY metro area the S&P index tracks",
-    },
-    {
-        "case_shiller_region": "Phoenix",
-        "cbsa_code": "38060",
-        "cbsa_name": "Phoenix-Mesa-Chandler, AZ",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "Portland",
-        "cbsa_code": "38900",
-        "cbsa_name": "Portland-Vancouver-Hillsboro, OR-WA",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "San Diego",
-        "cbsa_code": "41740",
-        "cbsa_name": "San Diego-Chula Vista-Carlsbad, CA",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "San Francisco",
-        "cbsa_code": "41860",
-        "cbsa_name": "San Francisco-Oakland-Berkeley, CA",
-        "cbsadiv_code": "41884",
-        "cbsadiv_name": "San Francisco-San Mateo-Redwood City, CA",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 41884 is core SF area; S&P index tracks broader metro",
-    },
-    {
-        "case_shiller_region": "Seattle",
-        "cbsa_code": "42660",
-        "cbsa_name": "Seattle-Tacoma-Bellevue, WA",
-        "cbsadiv_code": "42644",
-        "cbsadiv_name": "Seattle-Bellevue-Kent, WA",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 42644 is core Seattle area",
-    },
-    {
-        "case_shiller_region": "Tampa",
-        "cbsa_code": "45300",
-        "cbsa_name": "Tampa-St. Petersburg-Clearwater, FL",
-        "cbsadiv_code": None,
-        "cbsadiv_name": None,
-        "mapping_type": "cbsa",
-        "comments": "Single CBSA, no divisions",
-    },
-    {
-        "case_shiller_region": "Washington",
-        "cbsa_code": "47900",
-        "cbsa_name": "Washington-Arlington-Alexandria, DC-VA-MD-WV",
-        "cbsadiv_code": "47894",
-        "cbsadiv_name": "Washington-Arlington-Alexandria, DC-VA-MD-WV",
-        "mapping_type": "cbsadiv",
-        "comments": "Division 47894 is core DC metro",
-    },
+CASE_SHILLER_COUNTY_MAP: List[Dict[str, str]] = [
+    # ── Composite 10 ──────────────────────────────────────────────────────
+    # Boston
+    {"case_shiller_region": "Boston", "fips": "25005", "county": "Bristol", "state": "MA"},
+    {"case_shiller_region": "Boston", "fips": "25009", "county": "Essex", "state": "MA"},
+    {"case_shiller_region": "Boston", "fips": "25017", "county": "Middlesex", "state": "MA"},
+    {"case_shiller_region": "Boston", "fips": "25021", "county": "Norfolk", "state": "MA"},
+    {"case_shiller_region": "Boston", "fips": "25023", "county": "Plymouth", "state": "MA"},
+    {"case_shiller_region": "Boston", "fips": "25025", "county": "Suffolk", "state": "MA"},
+    {"case_shiller_region": "Boston", "fips": "25027", "county": "Worcester", "state": "MA"},
+    {"case_shiller_region": "Boston", "fips": "33011", "county": "Hillsborough", "state": "NH"},
+    {"case_shiller_region": "Boston", "fips": "33015", "county": "Rockingham", "state": "NH"},
+    {"case_shiller_region": "Boston", "fips": "33017", "county": "Strafford", "state": "NH"},
+    # Chicago
+    {"case_shiller_region": "Chicago", "fips": "17031", "county": "Cook", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17037", "county": "DeKalb", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17043", "county": "DuPage", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17063", "county": "Grundy", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17089", "county": "Kane", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17093", "county": "Kendall", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17097", "county": "Lake", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17111", "county": "McHenry", "state": "IL"},
+    {"case_shiller_region": "Chicago", "fips": "17197", "county": "Will", "state": "IL"},
+    # Denver
+    {"case_shiller_region": "Denver", "fips": "08001", "county": "Adams", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08005", "county": "Arapahoe", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08014", "county": "Broomfield", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08019", "county": "Clear Creek", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08031", "county": "Denver", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08035", "county": "Douglas", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08039", "county": "Elbert", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08047", "county": "Gilpin", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08059", "county": "Jefferson", "state": "CO"},
+    {"case_shiller_region": "Denver", "fips": "08093", "county": "Park", "state": "CO"},
+    # Las Vegas
+    {"case_shiller_region": "Las Vegas", "fips": "32003", "county": "Clark", "state": "NV"},
+    # Los Angeles
+    {"case_shiller_region": "Los Angeles", "fips": "06037", "county": "Los Angeles", "state": "CA"},
+    {"case_shiller_region": "Los Angeles", "fips": "06059", "county": "Orange", "state": "CA"},
+    # Miami
+    {"case_shiller_region": "Miami", "fips": "12011", "county": "Broward", "state": "FL"},
+    {"case_shiller_region": "Miami", "fips": "12086", "county": "Miami-Dade", "state": "FL"},
+    {"case_shiller_region": "Miami", "fips": "12099", "county": "Palm Beach", "state": "FL"},
+    # New York
+    {"case_shiller_region": "New York", "fips": "36005", "county": "Bronx", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36027", "county": "Dutchess", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36047", "county": "Kings", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36059", "county": "Nassau", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36061", "county": "New York", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36071", "county": "Orange", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36079", "county": "Putnam", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36081", "county": "Queens", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36085", "county": "Richmond", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36087", "county": "Rockland", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36103", "county": "Suffolk", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "36119", "county": "Westchester", "state": "NY"},
+    {"case_shiller_region": "New York", "fips": "34003", "county": "Bergen", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34013", "county": "Essex", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34017", "county": "Hudson", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34019", "county": "Hunterdon", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34023", "county": "Middlesex", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34025", "county": "Monmouth", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34027", "county": "Morris", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34029", "county": "Ocean", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34031", "county": "Passaic", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34035", "county": "Somerset", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34037", "county": "Sussex", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "34039", "county": "Union", "state": "NJ"},
+    {"case_shiller_region": "New York", "fips": "42103", "county": "Pike", "state": "PA"},
+    # San Diego
+    {"case_shiller_region": "San Diego", "fips": "06073", "county": "San Diego", "state": "CA"},
+    # San Francisco
+    {"case_shiller_region": "San Francisco", "fips": "06001", "county": "Alameda", "state": "CA"},
+    {"case_shiller_region": "San Francisco", "fips": "06013", "county": "Contra Costa", "state": "CA"},
+    {"case_shiller_region": "San Francisco", "fips": "06041", "county": "Marin", "state": "CA"},
+    {"case_shiller_region": "San Francisco", "fips": "06075", "county": "San Francisco", "state": "CA"},
+    {"case_shiller_region": "San Francisco", "fips": "06081", "county": "San Mateo", "state": "CA"},
+    # Washington
+    {"case_shiller_region": "Washington", "fips": "11001", "county": "District of Columbia", "state": "DC"},
+    {"case_shiller_region": "Washington", "fips": "24009", "county": "Calvert", "state": "MD"},
+    {"case_shiller_region": "Washington", "fips": "24017", "county": "Charles", "state": "MD"},
+    {"case_shiller_region": "Washington", "fips": "24021", "county": "Frederick", "state": "MD"},
+    {"case_shiller_region": "Washington", "fips": "24031", "county": "Montgomery", "state": "MD"},
+    {"case_shiller_region": "Washington", "fips": "24033", "county": "Prince George's", "state": "MD"},
+    {"case_shiller_region": "Washington", "fips": "51013", "county": "Arlington", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51043", "county": "Clarke", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51047", "county": "Culpeper", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51059", "county": "Fairfax", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51061", "county": "Fauquier", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51107", "county": "Loudoun", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51153", "county": "Prince William", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51157", "county": "Rappahannock", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51177", "county": "Spotsylvania", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51179", "county": "Stafford", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51187", "county": "Warren", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51510", "county": "Alexandria City", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51600", "county": "Fairfax City", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51610", "county": "Falls Church City", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51630", "county": "Fredericksburg City", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51683", "county": "Manassas City", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "51685", "county": "Manassas Park City", "state": "VA"},
+    {"case_shiller_region": "Washington", "fips": "54037", "county": "Jefferson", "state": "WV"},
+
+    # ── Composite 20 (additional 10 metros) ───────────────────────────────
+    # Atlanta
+    {"case_shiller_region": "Atlanta", "fips": "13013", "county": "Barrow", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13015", "county": "Bartow", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13045", "county": "Carroll", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13057", "county": "Cherokee", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13063", "county": "Clayton", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13067", "county": "Cobb", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13077", "county": "Coweta", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13085", "county": "Dawson", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13089", "county": "DeKalb", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13097", "county": "Douglas", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13113", "county": "Fayette", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13117", "county": "Forsyth", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13121", "county": "Fulton", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13135", "county": "Gwinnett", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13143", "county": "Haralson", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13149", "county": "Heard", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13151", "county": "Henry", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13159", "county": "Jasper", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13171", "county": "Lamar", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13199", "county": "Meriwether", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13217", "county": "Newton", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13223", "county": "Paulding", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13227", "county": "Pickens", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13231", "county": "Pike", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13247", "county": "Rockdale", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13255", "county": "Spalding", "state": "GA"},
+    {"case_shiller_region": "Atlanta", "fips": "13297", "county": "Walton", "state": "GA"},
+    # Charlotte
+    {"case_shiller_region": "Charlotte", "fips": "37025", "county": "Cabarrus", "state": "NC"},
+    {"case_shiller_region": "Charlotte", "fips": "37071", "county": "Gaston", "state": "NC"},
+    {"case_shiller_region": "Charlotte", "fips": "37097", "county": "Iredell", "state": "NC"},
+    {"case_shiller_region": "Charlotte", "fips": "37109", "county": "Lincoln", "state": "NC"},
+    {"case_shiller_region": "Charlotte", "fips": "37119", "county": "Mecklenburg", "state": "NC"},
+    {"case_shiller_region": "Charlotte", "fips": "37159", "county": "Rowan", "state": "NC"},
+    {"case_shiller_region": "Charlotte", "fips": "37179", "county": "Union", "state": "NC"},
+    {"case_shiller_region": "Charlotte", "fips": "45023", "county": "Chester", "state": "SC"},
+    {"case_shiller_region": "Charlotte", "fips": "45057", "county": "Lancaster", "state": "SC"},
+    {"case_shiller_region": "Charlotte", "fips": "45091", "county": "York", "state": "SC"},
+    # Cleveland
+    {"case_shiller_region": "Cleveland", "fips": "39035", "county": "Cuyahoga", "state": "OH"},
+    {"case_shiller_region": "Cleveland", "fips": "39055", "county": "Geauga", "state": "OH"},
+    {"case_shiller_region": "Cleveland", "fips": "39085", "county": "Lake", "state": "OH"},
+    {"case_shiller_region": "Cleveland", "fips": "39093", "county": "Lorain", "state": "OH"},
+    {"case_shiller_region": "Cleveland", "fips": "39103", "county": "Medina", "state": "OH"},
+    # Dallas
+    {"case_shiller_region": "Dallas", "fips": "48085", "county": "Collin", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48113", "county": "Dallas", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48119", "county": "Delta", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48121", "county": "Denton", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48139", "county": "Ellis", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48231", "county": "Hunt", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48251", "county": "Johnson", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48257", "county": "Kaufman", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48367", "county": "Parker", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48397", "county": "Rockwall", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48439", "county": "Tarrant", "state": "TX"},
+    {"case_shiller_region": "Dallas", "fips": "48497", "county": "Wise", "state": "TX"},
+    # Detroit
+    {"case_shiller_region": "Detroit", "fips": "26087", "county": "Lapeer", "state": "MI"},
+    {"case_shiller_region": "Detroit", "fips": "26093", "county": "Livingston", "state": "MI"},
+    {"case_shiller_region": "Detroit", "fips": "26099", "county": "Macomb", "state": "MI"},
+    {"case_shiller_region": "Detroit", "fips": "26125", "county": "Oakland", "state": "MI"},
+    {"case_shiller_region": "Detroit", "fips": "26147", "county": "St. Clair", "state": "MI"},
+    {"case_shiller_region": "Detroit", "fips": "26163", "county": "Wayne", "state": "MI"},
+    # Minneapolis
+    {"case_shiller_region": "Minneapolis", "fips": "27003", "county": "Anoka", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27019", "county": "Carver", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27025", "county": "Chisago", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27037", "county": "Dakota", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27053", "county": "Hennepin", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27059", "county": "Isanti", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27123", "county": "Ramsey", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27139", "county": "Scott", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27141", "county": "Sherburne", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27163", "county": "Washington", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "27171", "county": "Wright", "state": "MN"},
+    {"case_shiller_region": "Minneapolis", "fips": "55093", "county": "Pierce", "state": "WI"},
+    {"case_shiller_region": "Minneapolis", "fips": "55109", "county": "St. Croix", "state": "WI"},
+    # Phoenix
+    {"case_shiller_region": "Phoenix", "fips": "04013", "county": "Maricopa", "state": "AZ"},
+    {"case_shiller_region": "Phoenix", "fips": "04021", "county": "Pinal", "state": "AZ"},
+    # Portland
+    {"case_shiller_region": "Portland", "fips": "41005", "county": "Clackamas", "state": "OR"},
+    {"case_shiller_region": "Portland", "fips": "41009", "county": "Columbia", "state": "OR"},
+    {"case_shiller_region": "Portland", "fips": "41051", "county": "Multnomah", "state": "OR"},
+    {"case_shiller_region": "Portland", "fips": "41067", "county": "Washington", "state": "OR"},
+    {"case_shiller_region": "Portland", "fips": "41071", "county": "Yamhill", "state": "OR"},
+    {"case_shiller_region": "Portland", "fips": "53011", "county": "Clark", "state": "WA"},
+    {"case_shiller_region": "Portland", "fips": "53059", "county": "Skamania", "state": "WA"},
+    # Seattle
+    {"case_shiller_region": "Seattle", "fips": "53033", "county": "King", "state": "WA"},
+    {"case_shiller_region": "Seattle", "fips": "53053", "county": "Pierce", "state": "WA"},
+    {"case_shiller_region": "Seattle", "fips": "53061", "county": "Snohomish", "state": "WA"},
+    # Tampa
+    {"case_shiller_region": "Tampa", "fips": "12053", "county": "Hernando", "state": "FL"},
+    {"case_shiller_region": "Tampa", "fips": "12057", "county": "Hillsborough", "state": "FL"},
+    {"case_shiller_region": "Tampa", "fips": "12101", "county": "Pasco", "state": "FL"},
+    {"case_shiller_region": "Tampa", "fips": "12103", "county": "Pinellas", "state": "FL"},
 ]
 
 # Excluded index types — never in ZIP output
 _EXCLUDED_INDEX_TYPES = {"U.S. National", "Composite-10", "Composite-20"}
 
-# The 20 valid regional metro names
-VALID_CS_METROS = {m["case_shiller_region"] for m in CASE_SHILLER_METRO_MAP}
+# The 20 valid regional metro names (derived from county map)
+VALID_CS_METROS = {m["case_shiller_region"] for m in CASE_SHILLER_COUNTY_MAP}
+
+# Lookup: FIPS → county map entry (for fast joins)
+_FIPS_TO_COUNTY = {m["fips"]: m for m in CASE_SHILLER_COUNTY_MAP}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -261,9 +276,8 @@ VALID_CS_METROS = {m["case_shiller_region"] for m in CASE_SHILLER_METRO_MAP}
 
 HUD_API_BASE = "https://www.huduser.gov/hudapi/public/usps"
 
-# type=8 → cbsa-zip, type=9 → cbsadiv-zip
-_HUD_TYPE_CBSA = 8
-_HUD_TYPE_CBSADIV = 9
+# type=7 → county-zip crosswalk
+_HUD_TYPE_COUNTY_ZIP = 7
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = [2, 4, 8]
@@ -276,7 +290,7 @@ def _get_hud_token() -> Optional[str]:
 
 def fetch_hud_crosswalk(
     query: str = "All",
-    crosswalk_type: int = _HUD_TYPE_CBSA,
+    crosswalk_type: int = _HUD_TYPE_COUNTY_ZIP,
     year: Optional[int] = None,
     quarter: Optional[int] = None,
     token: Optional[str] = None,
@@ -286,9 +300,9 @@ def fetch_hud_crosswalk(
     Parameters
     ----------
     query : str
-        Geography query.  "All" for full file.
+        Geography query — a 5-digit county FIPS code or "All".
     crosswalk_type : int
-        8 = cbsa-zip, 9 = cbsadiv-zip
+        7 = county-zip (default).
     year, quarter : optional ints
         Crosswalk vintage.  Omit for latest available.
     token : str or None
@@ -316,8 +330,7 @@ def fetch_hud_crosswalk(
         params["quarter"] = quarter
 
     headers = {"Authorization": f"Bearer {tok}"}
-    type_label = "cbsa-zip" if crosswalk_type == _HUD_TYPE_CBSA else "cbsadiv-zip"
-    logger.info(f"Fetching HUD crosswalk: type={type_label}, query={query}, year={year}, quarter={quarter}")
+    logger.info(f"Fetching HUD crosswalk: type=county-zip(7), query={query}, year={year}, quarter={quarter}")
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
@@ -334,12 +347,12 @@ def fetch_hud_crosswalk(
                     records = data.get("data", data) if isinstance(data, dict) else []
 
                 if not records:
-                    logger.warning(f"HUD API returned empty result for type={type_label}")
+                    logger.warning(f"HUD API returned empty result for query={query}")
                     return pd.DataFrame()
 
                 df = pd.DataFrame(records)
                 df.columns = [c.lower().strip() for c in df.columns]
-                logger.info(f"HUD crosswalk fetched: {len(df)} rows, type={type_label}")
+                logger.info(f"HUD crosswalk fetched: {len(df)} rows for query={query}")
                 return df
 
             if resp.status_code in (429, 500, 502, 503, 504):
@@ -363,16 +376,12 @@ def fetch_hud_crosswalk(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# METRO MAP BUILDER
+# COUNTY MAP BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_case_shiller_metro_map() -> pd.DataFrame:
-    """Return the metro mapping table as a DataFrame."""
-    df = pd.DataFrame(CASE_SHILLER_METRO_MAP)
-    # Ensure string types for codes
-    for col in ["cbsa_code", "cbsadiv_code"]:
-        df[col] = df[col].where(df[col].notna(), None)
-    return df
+def build_case_shiller_county_map() -> pd.DataFrame:
+    """Return the county-level FIPS mapping table as a DataFrame."""
+    return pd.DataFrame(CASE_SHILLER_COUNTY_MAP)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -398,12 +407,9 @@ def _find_zip_col(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def _find_geo_code_col(df: pd.DataFrame, crosswalk_type: int) -> Optional[str]:
-    """Find the geography code column (cbsa or cbsadiv) in a HUD crosswalk DF."""
-    if crosswalk_type == _HUD_TYPE_CBSA:
-        candidates = ["cbsa", "cbsa_code", "geoid", "cbsacode"]
-    else:
-        candidates = ["cbsadiv", "cbsadiv_code", "cbsa_div", "cbsadivcode", "geoid"]
+def _find_county_fips_col(df: pd.DataFrame) -> Optional[str]:
+    """Find the county FIPS code column in a HUD type=7 crosswalk DF."""
+    candidates = ["county", "geoid", "county_fips", "countyfips", "fips"]
     for c in candidates:
         if c in df.columns:
             return c
@@ -438,106 +444,105 @@ def _extract_year_quarter(row: pd.Series) -> Tuple[Optional[int], Optional[int]]
 
 
 def build_case_shiller_zip_coverage(
-    cbsa_xwalk: pd.DataFrame,
-    cbsadiv_xwalk: pd.DataFrame,
-    metro_map: Optional[pd.DataFrame] = None,
+    county_xwalk: pd.DataFrame,
+    county_map_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """Join metro mapping to HUD crosswalk data to produce one row per
-    (case_shiller_region, zip_code, geography).
+    """Join the S&P county FIPS map to HUD county-to-ZIP crosswalk data.
+
+    Produces one row per (case_shiller_region, zip_code, county_fips).
 
     Parameters
     ----------
-    cbsa_xwalk : DataFrame
-        HUD crosswalk type=8 (cbsa-zip)
-    cbsadiv_xwalk : DataFrame
-        HUD crosswalk type=9 (cbsadiv-zip)
-    metro_map : DataFrame or None
-        Metro mapping table; defaults to built-in CASE_SHILLER_METRO_MAP.
+    county_xwalk : DataFrame
+        HUD crosswalk type=7 (county-zip) — combined results for all
+        relevant county FIPS codes.
+    county_map_df : DataFrame or None
+        County-level FIPS mapping; defaults to built-in CASE_SHILLER_COUNTY_MAP.
 
     Returns
     -------
-    DataFrame with columns per Part 4 spec.
+    DataFrame with columns: case_shiller_region, zip_code, county_fips,
+        county_name, state, tot_ratio, res_ratio, bus_ratio, oth_ratio,
+        year, quarter, source_system.
     """
-    if metro_map is None:
-        metro_map = build_case_shiller_metro_map()
+    if county_map_df is None:
+        county_map_df = build_case_shiller_county_map()
+
+    if county_xwalk.empty:
+        logger.warning("County crosswalk DataFrame is empty — no ZIP coverage")
+        return pd.DataFrame()
+
+    # Find the county FIPS and ZIP columns in the HUD data
+    fips_col = _find_county_fips_col(county_xwalk)
+    zip_col = _find_zip_col(county_xwalk)
+
+    if not fips_col or not zip_col:
+        logger.error(
+            f"Cannot find required columns in HUD data. "
+            f"Available: {list(county_xwalk.columns)}. "
+            f"Need county FIPS col (found: {fips_col}) and ZIP col (found: {zip_col})"
+        )
+        return pd.DataFrame()
+
+    # Normalize the FIPS codes in the HUD data to 5-digit zero-padded strings
+    county_xwalk = county_xwalk.copy()
+    county_xwalk["_fips_norm"] = (
+        county_xwalk[fips_col]
+        .astype(str)
+        .str.strip()
+        .str.split(".", n=1).str[0]
+        .str.zfill(5)
+    )
+
+    # Build lookup set of FIPS codes from our county map
+    map_fips_set = set(county_map_df["fips"].values)
+
+    # Filter HUD data to only rows matching our county FIPS codes
+    matched_xwalk = county_xwalk[county_xwalk["_fips_norm"].isin(map_fips_set)].copy()
+
+    if matched_xwalk.empty:
+        logger.warning("No HUD crosswalk rows matched any S&P county FIPS codes")
+        return pd.DataFrame()
+
+    # Build FIPS → county map info lookup
+    fips_info = {}
+    for _, row in county_map_df.iterrows():
+        fips_info[row["fips"]] = {
+            "case_shiller_region": row["case_shiller_region"],
+            "county_name": row["county"],
+            "state": row["state"],
+        }
 
     rows: List[Dict[str, Any]] = []
+    for _, xrow in matched_xwalk.iterrows():
+        fips_code = xrow["_fips_norm"]
+        info = fips_info.get(fips_code)
+        if not info:
+            continue
 
-    for _, metro in metro_map.iterrows():
-        region = metro["case_shiller_region"]
-        use_div = metro["mapping_type"] == "cbsadiv" and pd.notna(metro.get("cbsadiv_code"))
+        ratios = _extract_ratios(xrow)
+        yr, qtr = _extract_year_quarter(xrow)
 
-        if use_div and not cbsadiv_xwalk.empty:
-            # Use CBSA Division crosswalk
-            geo_col = _find_geo_code_col(cbsadiv_xwalk, _HUD_TYPE_CBSADIV)
-            zip_col = _find_zip_col(cbsadiv_xwalk)
-            if geo_col and zip_col:
-                target_code = str(metro["cbsadiv_code"]).strip()
-                matched = cbsadiv_xwalk[
-                    cbsadiv_xwalk[geo_col].astype(str).str.strip() == target_code
-                ]
-                for _, xrow in matched.iterrows():
-                    ratios = _extract_ratios(xrow)
-                    yr, qtr = _extract_year_quarter(xrow)
-                    rows.append({
-                        "case_shiller_region": region,
-                        "tier_applicability": "All tiers (High/Middle/Low inherit metro ZIP universe)",
-                        "geography_level_used": "cbsadiv",
-                        "cbsa_code": metro["cbsa_code"],
-                        "cbsa_name": metro["cbsa_name"],
-                        "cbsadiv_code": metro["cbsadiv_code"],
-                        "cbsadiv_name": metro["cbsadiv_name"],
-                        "zip_code": _normalize_zip(xrow[zip_col]),
-                        **ratios,
-                        "year": yr,
-                        "quarter": qtr,
-                        "hud_crosswalk_type": "cbsadiv-zip (type=9)",
-                        "source_system": "HUD USPS ZIP Crosswalk",
-                        "mapping_status": "matched",
-                        "notes": metro.get("comments", ""),
-                    })
-
-        # If no div mapping or div returned empty, fall back to CBSA
-        if not rows or rows[-1].get("case_shiller_region") != region:
-            if cbsa_xwalk.empty:
-                continue
-            geo_col = _find_geo_code_col(cbsa_xwalk, _HUD_TYPE_CBSA)
-            zip_col = _find_zip_col(cbsa_xwalk)
-            if not geo_col or not zip_col:
-                continue
-            target_code = str(metro["cbsa_code"]).strip()
-            matched = cbsa_xwalk[
-                cbsa_xwalk[geo_col].astype(str).str.strip() == target_code
-            ]
-            for _, xrow in matched.iterrows():
-                ratios = _extract_ratios(xrow)
-                yr, qtr = _extract_year_quarter(xrow)
-                rows.append({
-                    "case_shiller_region": region,
-                    "tier_applicability": "All tiers (High/Middle/Low inherit metro ZIP universe)",
-                    "geography_level_used": "cbsa",
-                    "cbsa_code": metro["cbsa_code"],
-                    "cbsa_name": metro["cbsa_name"],
-                    "cbsadiv_code": metro.get("cbsadiv_code"),
-                    "cbsadiv_name": metro.get("cbsadiv_name"),
-                    "zip_code": _normalize_zip(xrow[zip_col]),
-                    **ratios,
-                    "year": yr,
-                    "quarter": qtr,
-                    "hud_crosswalk_type": "cbsa-zip (type=8)",
-                    "source_system": "HUD USPS ZIP Crosswalk",
-                    "mapping_status": "matched",
-                    "notes": metro.get("comments", ""),
-                })
+        rows.append({
+            "case_shiller_region": info["case_shiller_region"],
+            "zip_code": _normalize_zip(xrow[zip_col]),
+            "county_fips": fips_code,
+            "county_name": info["county_name"],
+            "state": info["state"],
+            **ratios,
+            "year": yr,
+            "quarter": qtr,
+            "source_system": "HUD USPS County-ZIP Crosswalk (type=7)",
+        })
 
     if not rows:
-        logger.warning("No ZIP coverage rows produced — check HUD crosswalk data")
+        logger.warning("No ZIP coverage rows produced after join")
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
 
     # Deduplication
-    dedup_cols = ["case_shiller_region", "zip_code", "cbsa_code", "cbsadiv_code", "year", "quarter"]
+    dedup_cols = ["case_shiller_region", "zip_code", "county_fips", "year", "quarter"]
     existing_dedup = [c for c in dedup_cols if c in df.columns]
     df = df.drop_duplicates(subset=existing_dedup, keep="first")
 
@@ -549,7 +554,7 @@ def build_case_shiller_zip_coverage(
 # ═══════════════════════════════════════════════════════════════════════════
 
 def summarize_case_shiller_zip_coverage(coverage_df: pd.DataFrame) -> pd.DataFrame:
-    """One row per region with aggregate counts."""
+    """One row per region with aggregate ZIP and county counts."""
     if coverage_df.empty:
         return pd.DataFrame()
 
@@ -558,10 +563,9 @@ def summarize_case_shiller_zip_coverage(coverage_df: pd.DataFrame) -> pd.DataFra
         rows.append({
             "case_shiller_region": region,
             "zip_count": grp["zip_code"].nunique(),
-            "unique_cbsa_count": grp["cbsa_code"].nunique(),
-            "unique_cbsadiv_count": grp["cbsadiv_code"].dropna().nunique(),
-            "used_cbsa_mapping": (grp["geography_level_used"] == "cbsa").any(),
-            "used_cbsadiv_mapping": (grp["geography_level_used"] == "cbsadiv").any(),
+            "unique_county_count": grp["county_fips"].nunique(),
+            "counties": ", ".join(sorted(grp["county_name"].unique())),
+            "states": ", ".join(sorted(grp["state"].unique())),
             "year": grp["year"].max(),
             "quarter": grp["quarter"].max(),
         })
@@ -575,7 +579,7 @@ def summarize_case_shiller_zip_coverage(coverage_df: pd.DataFrame) -> pd.DataFra
 def validate_zip_coverage(
     coverage_df: pd.DataFrame,
     summary_df: pd.DataFrame,
-    metro_map_df: pd.DataFrame,
+    county_map_df: pd.DataFrame,
 ) -> List[str]:
     """Run validation checks on the ZIP coverage output.
 
@@ -615,11 +619,10 @@ def validate_zip_coverage(
                     f"!= detail distinct count={detail_count}"
                 )
 
-    # 5. No duplicate region definitions in metro map
-    dup_regions = metro_map_df["case_shiller_region"].duplicated()
-    if dup_regions.any():
-        issues.append(f"ERROR: Duplicate regions in metro map: "
-                      f"{metro_map_df.loc[dup_regions, 'case_shiller_region'].tolist()}")
+    # 5. All FIPS codes in county map should be valid 5-digit strings
+    bad_fips = county_map_df["fips"].astype(str).str.len() != 5
+    if bad_fips.any():
+        issues.append(f"ERROR: {bad_fips.sum()} FIPS codes in county map are not 5 characters")
 
     # 6. Warn if any metro has zero ZIPs
     for region in VALID_CS_METROS:
@@ -654,23 +657,29 @@ def build_case_shiller_zip_sheets(
     dict with keys:
         "CaseShiller_Zip_Coverage"
         "CaseShiller_Zip_Summary"
-        "CaseShiller_Metro_Map_Audit"
+        "CaseShiller_County_Map_Audit"
 
     If the HUD token is missing or fetches fail, returns dict with empty DataFrames
     and logs appropriate warnings.
     """
+    county_map_df = build_case_shiller_county_map()
+
+    # Build audit sheet from county map
+    audit_df = county_map_df.copy()
+    audit_df["included_in_zip_output"] = False
+    audit_df["comments"] = "S&P CoreLogic official county definition"
+
+    empty_result = {
+        "CaseShiller_Zip_Coverage": pd.DataFrame(),
+        "CaseShiller_Zip_Summary": pd.DataFrame(),
+        "CaseShiller_County_Map_Audit": audit_df,
+    }
+
     # --- ENV TOGGLE CHECK ---
     if not is_zip_enrichment_enabled():
         logger.info("Case-Shiller ZIP enrichment disabled by env flag.")
-        metro_map_df = build_case_shiller_metro_map()
-        audit_df = metro_map_df.copy()
-        audit_df["included_in_zip_output"] = False
-        audit_df["comments"] = audit_df["comments"].astype(str) + " | SKIPPED: disabled by env flag"
-        return {
-            "CaseShiller_Zip_Coverage": pd.DataFrame(),
-            "CaseShiller_Zip_Summary": pd.DataFrame(),
-            "CaseShiller_Metro_Map_Audit": audit_df,
-        }
+        audit_df["comments"] = audit_df["comments"] + " | SKIPPED: disabled by env flag"
+        return empty_result
 
     tok = token or _get_hud_token()
 
@@ -682,59 +691,50 @@ def build_case_shiller_zip_sheets(
         env_qtr = os.getenv("HUD_CROSSWALK_QUARTER")
         quarter = int(env_qtr) if env_qtr else None
 
-    metro_map_df = build_case_shiller_metro_map()
-
-    # Build audit sheet regardless of API availability
-    audit_df = metro_map_df.copy()
-    audit_df["included_in_zip_output"] = False
-
-    empty_result = {
-        "CaseShiller_Zip_Coverage": pd.DataFrame(),
-        "CaseShiller_Zip_Summary": pd.DataFrame(),
-        "CaseShiller_Metro_Map_Audit": audit_df,
-    }
-
     if not tok:
         logger.warning(
             "HUD_USER_TOKEN not set — skipping Case-Shiller ZIP enrichment. "
             "Register at https://www.huduser.gov/hudapi/public/register"
         )
-        audit_df["comments"] = audit_df["comments"].astype(str) + " | SKIPPED: no HUD token"
+        audit_df["comments"] = audit_df["comments"] + " | SKIPPED: no HUD token"
         return empty_result
 
     if not _HAS_REQUESTS:
         logger.warning("'requests' library not installed — skipping HUD API calls")
-        audit_df["comments"] = audit_df["comments"].astype(str) + " | SKIPPED: requests not installed"
+        audit_df["comments"] = audit_df["comments"] + " | SKIPPED: requests not installed"
         return empty_result
 
-    # Fetch both crosswalk types
-    logger.info("Fetching HUD CBSA-ZIP crosswalk (type=8)...")
-    cbsa_xwalk = fetch_hud_crosswalk(
-        query="All", crosswalk_type=_HUD_TYPE_CBSA,
-        year=year, quarter=quarter, token=tok,
-    )
+    # Fetch county-to-ZIP crosswalk for each unique FIPS code
+    unique_fips = sorted(set(county_map_df["fips"].values))
+    logger.info(f"Fetching HUD county-ZIP crosswalk (type=7) for {len(unique_fips)} counties...")
 
-    logger.info("Fetching HUD CBSADIV-ZIP crosswalk (type=9)...")
-    cbsadiv_xwalk = fetch_hud_crosswalk(
-        query="All", crosswalk_type=_HUD_TYPE_CBSADIV,
-        year=year, quarter=quarter, token=tok,
-    )
+    all_xwalk_frames = []
+    for fips_code in unique_fips:
+        xwalk = fetch_hud_crosswalk(
+            query=fips_code, crosswalk_type=_HUD_TYPE_COUNTY_ZIP,
+            year=year, quarter=quarter, token=tok,
+        )
+        if not xwalk.empty:
+            all_xwalk_frames.append(xwalk)
 
-    if cbsa_xwalk.empty and cbsadiv_xwalk.empty:
-        logger.error("Both HUD crosswalk fetches returned empty — cannot build ZIP coverage")
-        audit_df["comments"] = audit_df["comments"].astype(str) + " | SKIPPED: HUD API returned empty"
+    if not all_xwalk_frames:
+        logger.error("All HUD county-ZIP crosswalk fetches returned empty — cannot build ZIP coverage")
+        audit_df["comments"] = audit_df["comments"] + " | SKIPPED: HUD API returned empty"
         return empty_result
+
+    combined_xwalk = pd.concat(all_xwalk_frames, ignore_index=True)
+    logger.info(f"Combined HUD crosswalk: {len(combined_xwalk)} total rows from {len(all_xwalk_frames)} counties")
 
     # Build coverage
-    coverage_df = build_case_shiller_zip_coverage(cbsa_xwalk, cbsadiv_xwalk, metro_map_df)
+    coverage_df = build_case_shiller_zip_coverage(combined_xwalk, county_map_df)
     summary_df = summarize_case_shiller_zip_coverage(coverage_df)
 
     # Update audit
-    covered_regions = set(coverage_df["case_shiller_region"].unique()) if not coverage_df.empty else set()
-    audit_df["included_in_zip_output"] = audit_df["case_shiller_region"].isin(covered_regions)
+    covered_fips = set(coverage_df["county_fips"].unique()) if not coverage_df.empty else set()
+    audit_df["included_in_zip_output"] = audit_df["fips"].isin(covered_fips)
 
     # Validate
-    issues = validate_zip_coverage(coverage_df, summary_df, metro_map_df)
+    issues = validate_zip_coverage(coverage_df, summary_df, county_map_df)
     for issue in issues:
         if issue.startswith("ERROR"):
             logger.error(issue)
@@ -751,7 +751,7 @@ def build_case_shiller_zip_sheets(
     return {
         "CaseShiller_Zip_Coverage": coverage_df,
         "CaseShiller_Zip_Summary": summary_df,
-        "CaseShiller_Metro_Map_Audit": audit_df,
+        "CaseShiller_County_Map_Audit": audit_df,
     }
 
 
@@ -822,4 +822,3 @@ def map_zip_to_metro(zip_code: str) -> Optional[str]:
         if prefix in info["prefix"]:
             return metro
     return None
-

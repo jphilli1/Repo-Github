@@ -114,7 +114,7 @@ report_generator.py
 | `Composite_Coverage_Audit` | Per-group/metric contributor counts, coverage %, NaN-out decisions for normalized composites |
 | `CaseShiller_Zip_Coverage` | One row per (Case-Shiller region, ZIP code) with HUD crosswalk ratios |
 | `CaseShiller_Zip_Summary` | One row per metro with aggregate ZIP counts and mapping metadata |
-| `CaseShiller_Metro_Map_Audit` | 20-entry metro → CBSA/CBSA-Div mapping table with judgment call notes |
+| `CaseShiller_County_Map_Audit` | County-level FIPS mapping rules per S&P CoreLogic methodology |
 
 ### Output File Naming
 
@@ -214,7 +214,7 @@ All table headers, chart legends, and HTML output must use **`resolve_display_la
 | Entity | Display Label | Rule |
 |---|---|---|
 | Subject bank (CERT 34221) | `MSPBNA` | Subject cert → fixed label |
-| MSBNA (CERT 32992) | `MS` | Secondary cert → ticker |
+| MSBNA (CERT 32992) | `MSBNA` | Secondary cert → fixed label |
 | Goldman Sachs | `GS` | `_TICKER_MAP` lookup |
 | UBS | `UBS` | `_TICKER_MAP` lookup |
 | JPMorgan Chase | `JPM` | `_TICKER_MAP` lookup |
@@ -368,7 +368,7 @@ Normalized composites (90004/90006) must have ≥50% non-NaN contributor share p
 
 ### Case-Shiller ZIP Enrichment
 
-Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` env var (default `true`). When disabled, `build_case_shiller_zip_sheets()` returns a single audit row with status `SKIPPED`. Maps 5-digit ZIP codes to 20 regional Case-Shiller metros.
+Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` env var (default `true`). When disabled, `build_case_shiller_zip_sheets()` returns audit with `SKIPPED` status. Uses county-level FIPS codes (S&P CoreLogic methodology) joined to HUD County-to-ZIP crosswalk (type=7) for exact geographic mapping. Maps 5-digit ZIP codes to 20 regional Case-Shiller metros via ~160 constituent counties.
 
 ### IDB Label Convention
 
@@ -395,6 +395,36 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — County-Level Case-Shiller Geographic Mapping Refactor
+
+**Problem**: Case-Shiller ZIP mapping used CBSA/CBSA-Division approximations (HUD type 8/9) which do not match the exact county-level definitions in the S&P CoreLogic methodology.
+
+**Solution**: Replaced `CASE_SHILLER_METRO_MAP` (20-entry CBSA-based) with `CASE_SHILLER_COUNTY_MAP` (~160-entry FIPS-based) sourced from the S&P Case-Shiller "Index Geography" table. Switched HUD API from type 8/9 (CBSA/CBSADIV-to-ZIP) to type 7 (County-to-ZIP).
+
+**Changes by file:**
+
+1. **case_shiller_zip_mapper.py** — Complete refactor:
+   - Removed `CASE_SHILLER_METRO_MAP` (CBSA-based), replaced with `CASE_SHILLER_COUNTY_MAP` (FIPS-based, ~160 entries across 20 metros)
+   - Changed HUD API from type 8/9 to type 7 (`_HUD_TYPE_COUNTY_ZIP = 7`)
+   - Removed `build_case_shiller_metro_map()`, added `build_case_shiller_county_map()`
+   - Rewrote `build_case_shiller_zip_coverage()` — now takes single `county_xwalk` DataFrame, joins on 5-digit FIPS
+   - Rewrote `summarize_case_shiller_zip_coverage()` — aggregates by region with unique county counts
+   - Updated `validate_zip_coverage()` — validates FIPS code format instead of CBSA duplicates
+   - Renamed output sheet `CaseShiller_Metro_Map_Audit` → `CaseShiller_County_Map_Audit`
+   - Updated `build_case_shiller_zip_sheets()` orchestrator — fetches per-county HUD data
+   - Retained: retry/backoff logic, env toggle, HUD token auth, ratio extraction, `_normalize_zip`, backward-compatible `CASE_SHILLER_METROS`/`map_zip_to_metro`
+
+2. **MSPBNA_CR_Normalized.py** — Updated comment referencing `CaseShiller_County_Map_Audit`
+
+3. **report_generator.py** — Fixed MSBNA label: `resolve_display_label` returns `"MSBNA"` (not `"MS"`)
+
+4. **test_regression.py** — Updated `TestCaseShillerZIP`:
+   - Changed audit sheet key assertions from `CaseShiller_Metro_Map_Audit` to `CaseShiller_County_Map_Audit`
+   - Added 6 new tests: `test_county_map_has_20_regions`, `test_county_map_fips_are_5_digit`, `test_county_map_has_required_fields`, `test_hud_type_is_county_zip`, `test_no_cbsa_references_in_coverage_builder`
+   - Fixed `test_msbna_label_is_msbna` (was `test_msbna_label_is_ms`)
+
+5. **CLAUDE.md** — Rewrote Section 11 for county-level mapping. Updated sheet layout table. Added changelog.
 
 ### 2026-03-11 — Centralized Label Resolver (Ticker-Style Display Labels)
 
@@ -933,13 +963,19 @@ The ingestion engine validates:
 
 ---
 
-## 11. HUD USPS ZIP Crosswalk — Case-Shiller Metro Enrichment
+## 11. HUD USPS ZIP Crosswalk — Case-Shiller County-Level Enrichment
 
 ### Overview
 
-`case_shiller_zip_mapper.py` maps the 20 regional Case-Shiller metro indexes to ZIP codes using the HUD USPS ZIP Code Crosswalk API. This is an **internal reference mapping layer** — it does not alter FRED data or FDIC metrics. Its purpose is to enable downstream loan-level geographic tagging against Case-Shiller regions.
+`case_shiller_zip_mapper.py` maps the 20 regional Case-Shiller metro indexes to ZIP codes using **county-level FIPS codes** (per S&P CoreLogic methodology) joined to the HUD USPS County-to-ZIP Crosswalk API (type=7). This is an **internal reference mapping layer** — it does not alter FRED data or FDIC metrics. Its purpose is to enable downstream loan-level geographic tagging against Case-Shiller regions.
 
 **Explicitly excluded**: U.S. National, Composite-10, and Composite-20 indexes (these have no geographic footprint to map).
+
+### County-Level FIPS Mapping (S&P CoreLogic)
+
+The `CASE_SHILLER_COUNTY_MAP` list contains the official county-level definitions from the S&P Case-Shiller "Index Geography" table. Each entry maps a 5-digit US FIPS county code to a Case-Shiller region. This replaces the former CBSA/CBSA-Division approximation approach with exact county-level definitions as specified by S&P.
+
+**Key statistics:** ~160 counties across 20 metros, spanning 17 states + DC.
 
 ### HUD API Token Setup (One-Time)
 
@@ -956,32 +992,17 @@ The ingestion engine validates:
 
 ZIP enrichment runs automatically within `run_expansion_pipeline_async()` in `fred_ingestion_engine.py`, after FRED data fetch and Case-Shiller discovery. It is controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`). If the HUD token is missing, the enrichment is skipped gracefully with a warning.
 
-### Metro → CBSA Mapping Judgment Calls
+### HUD API: County-to-ZIP (Type 7)
 
-7 of the 20 metros use CBSA Division-level mapping (type=9) instead of full CBSA (type=8) because the S&P CoreLogic index tracks a subdivision of the broader metro:
-
-| Metro | CBSA | Division Used | Rationale |
-|---|---|---|---|
-| New York | 35620 | 35614 (NY-Jersey City-White Plains) | Core NY metro tracked by S&P |
-| Los Angeles | 31080 | 31084 (LA-Long Beach-Glendale) | Excludes Orange County |
-| Chicago | 16980 | 16974 (Chicago-Naperville-Evanston) | Core Chicago metro |
-| Miami | 33100 | 33124 (Miami-Miami Beach-Kendall) | Miami-Dade focus |
-| Washington | 47900 | 47894 (DC-VA-MD-WV core) | Core DC metro |
-| Detroit | 19820 | 19804 (Detroit-Dearborn-Livonia) | Core Detroit metro |
-| Seattle | 42660 | 42644 (Seattle-Bellevue-Kent) | Core Seattle area |
-| Boston | 14460 | 14454 (Boston, MA) | Core Boston metro |
-| Dallas | 19100 | 19124 (Dallas-Plano-Irving) | Dallas division |
-| San Francisco | 41860 | 41884 (SF-San Mateo-Redwood City) | Core SF area |
-
-The remaining 10 metros (Atlanta, Charlotte, Cleveland, Denver, Las Vegas, Minneapolis, Phoenix, Portland, San Diego, Tampa) use CBSA-level mapping only as they have no subdivisions.
+The HUD USPS Crosswalk API is called with `type=7` (county-to-ZIP) for each unique FIPS code in `CASE_SHILLER_COUNTY_MAP`. The API returns all ZIP codes that overlap each county along with allocation ratios (`tot_ratio`, `res_ratio`, `bus_ratio`, `oth_ratio`). Results are joined strictly on 5-digit FIPS code.
 
 ### Output Sheets
 
 | Sheet | Description |
 |---|---|
-| `CaseShiller_Zip_Coverage` | One row per (region, ZIP) with CBSA codes, HUD ratios (`tot_ratio`, `res_ratio`, `bus_ratio`, `oth_ratio`), crosswalk vintage |
-| `CaseShiller_Zip_Summary` | One row per metro: ZIP count, CBSA/Div counts, mapping type used, vintage |
-| `CaseShiller_Metro_Map_Audit` | Full 20-entry mapping table with judgment call comments and `included_in_zip_output` flag |
+| `CaseShiller_Zip_Coverage` | One row per (region, ZIP, county_fips) with county name, state, HUD ratios, crosswalk vintage |
+| `CaseShiller_Zip_Summary` | One row per region: ZIP count, unique county count, county/state lists, vintage |
+| `CaseShiller_County_Map_Audit` | Full county-level FIPS mapping with `included_in_zip_output` flag |
 
 ### Validation (7 Checks)
 
@@ -989,6 +1010,6 @@ The remaining 10 metros (Atlanta, Charlotte, Cleveland, Denver, Las Vegas, Minne
 2. No blank ZIP codes
 3. All ZIPs are 5-character zero-padded strings
 4. Summary ZIP counts reconcile with detail rows
-5. No duplicate region definitions in metro map
+5. All FIPS codes in county map are valid 5-digit strings
 6. All 20 metros have at least one ZIP row
 7. HUD ratio columns are not entirely null
