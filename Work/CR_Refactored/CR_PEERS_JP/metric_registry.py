@@ -179,6 +179,19 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
         min_value=0.0,
         consumers=["executive_summary", "segment_focus_cre", "detailed_peer_table"],
     ),
+    # Share metrics: segment ACL / total ACL pool (NOT coverage)
+    "RIC_CRE_ACL_Share": MetricSpec(
+        code="RIC_CRE_ACL_Share",
+        dependencies=["RIC_CRE_ACL", "Total_ACL"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["RIC_CRE_ACL"], df["Total_ACL"]),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        max_value=1.0,
+        consumers=["ratio_components_standard", "segment_focus_cre", "detailed_peer_table"],
+    ),
     "RIC_CRE_Nonaccrual_Rate": MetricSpec(
         code="RIC_CRE_Nonaccrual_Rate",
         dependencies=["RIC_CRE_Nonaccrual", "RIC_CRE_Cost"],
@@ -192,6 +205,18 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
     ),
 
     # ── Segment: Resi ───────────────────────────────────────────────────
+    "RIC_Resi_ACL_Share": MetricSpec(
+        code="RIC_Resi_ACL_Share",
+        dependencies=["RIC_Resi_ACL", "Total_ACL"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["RIC_Resi_ACL"], df["Total_ACL"]),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        max_value=1.0,
+        consumers=["ratio_components_standard", "segment_focus_resi", "detailed_peer_table"],
+    ),
     "RIC_Resi_ACL_Coverage": MetricSpec(
         code="RIC_Resi_ACL_Coverage",
         dependencies=["RIC_Resi_ACL", "RIC_Resi_Cost"],
@@ -250,6 +275,18 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
         unit="fraction",
         min_value=0.0,
         consumers=["segment_focus_resi"],
+    ),
+    "Norm_CRE_ACL_Share": MetricSpec(
+        code="Norm_CRE_ACL_Share",
+        dependencies=["RIC_CRE_ACL", "Norm_ACL_Balance"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["RIC_CRE_ACL"], df.get("Norm_ACL_Balance", 0)),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        max_value=1.0,
+        consumers=["ratio_components_normalized", "segment_focus_cre", "detailed_peer_table"],
     ),
 
     # ── Upstream Choke-Point Placeholders ────────────────────────────────

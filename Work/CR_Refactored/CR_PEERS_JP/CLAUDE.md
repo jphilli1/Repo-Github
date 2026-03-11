@@ -479,6 +479,34 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-11 — ACL Ratio Semantic Integrity & Metric Registry Completeness
+
+**Problem**: Missing metric registry entries for `RIC_CRE_ACL_Share`, `RIC_Resi_ACL_Share`, and `Norm_CRE_ACL_Share`. The `_METRIC_FORMAT_TYPE` maintenance rule needed explicit exclusion examples.
+
+**Coverage vs Share vs x-Multiple Rule (non-negotiable):**
+
+| Denominator Type | Label Term | Format | Examples |
+|---|---|---|---|
+| Exposure/loan base | "Coverage" or "Ratio" | % | `RIC_CRE_ACL / RIC_CRE_Cost`, `Norm_ACL_Balance / Norm_Gross_Loans` |
+| ACL pool | "Share" or "% of ACL" | % | `RIC_CRE_ACL / Total_ACL`, `RIC_CRE_ACL / Norm_ACL_Balance` |
+| Nonaccrual/NPL base | "NPL Coverage" | x-multiple | `RIC_CRE_ACL / RIC_CRE_Nonaccrual` |
+
+**`_METRIC_FORMAT_TYPE` Maintenance Rule**: Only NPL coverage metrics (denominator = nonaccrual/past-due) belong in the x-format registry. Any new NPL coverage metric MUST be added explicitly. Loan-coverage and share-of-ACL metrics must NEVER be added — they default to percent.
+
+**Changes:**
+1. **metric_registry.py** — Added 3 missing `MetricSpec` entries: `RIC_CRE_ACL_Share` (deps: `RIC_CRE_ACL`, `Total_ACL`), `RIC_Resi_ACL_Share` (deps: `RIC_Resi_ACL`, `Total_ACL`), `Norm_CRE_ACL_Share` (deps: `RIC_CRE_ACL`, `Norm_ACL_Balance`)
+2. **report_generator.py** — Added explicit exclusion examples to `_METRIC_FORMAT_TYPE` comment listing coverage/share metrics that must NOT be added to x-format
+3. **test_regression.py** — Added `TestACLRatioSemanticIntegrity` (9 tests): Total_ACL denominator never labeled Coverage, Norm_ACL_Balance denominator never labeled Coverage, exposure denominator labeled Coverage/Ratio, NPL metrics in x-format, coverage/share not in x-format, maintenance rule documented, registry has all share entries, share metrics depend on ACL denominators, Norm_CRE_ACL_Share depends on Norm_ACL_Balance
+
+**Example corrected labels (all verified correct in current code):**
+- `RIC_CRE_ACL / Total_ACL` → "CRE % of ACL" (Share) ✓
+- `RIC_CRE_ACL / RIC_CRE_Cost` → "CRE ACL Coverage" (Coverage) ✓
+- `RIC_CRE_ACL / Norm_ACL_Balance` → "Norm CRE % of ACL" (Share) ✓
+- `RIC_Resi_ACL / Wealth_Resi_Balance` → "Norm Resi ACL Coverage" (Coverage) ✓
+- `RIC_CRE_ACL / RIC_CRE_Nonaccrual` → "CRE NPL Coverage" (x-multiple) ✓
+
+**Test baseline**: 213 tests (previous 204 + 9 new).
+
 ### 2026-03-11 — Fix DashboardConfig HUD Token TypeError
 
 **Bug**: `main()` crashed with `TypeError: 'DashboardConfig' object does not support item assignment` at `config["_hud_user_token"] = _hud_token`. The `DashboardConfig` class is a plain Python class, not a dict, so bracket-style item assignment fails.

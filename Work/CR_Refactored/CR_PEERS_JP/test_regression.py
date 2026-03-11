@@ -3266,6 +3266,109 @@ class TestCoverageVsShareSemantics(unittest.TestCase):
         # Metric might not have a display entry, which is fine
 
 
+class TestACLRatioSemanticIntegrity(unittest.TestCase):
+    """Comprehensive coverage/share/x-multiple semantic validation."""
+
+    def test_total_acl_denominator_never_labeled_coverage(self):
+        """If denominator is Total_ACL, the display label must NOT contain 'Coverage'."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('(') and '"Total_ACL"' in stripped:
+                display = stripped.split(',')[0]
+                self.assertNotIn("Coverage", display,
+                    f"Total_ACL denominator row mislabeled as Coverage: {stripped[:100]}")
+
+    def test_norm_acl_balance_denominator_never_labeled_coverage(self):
+        """If denominator is Norm_ACL_Balance, the display label must NOT contain 'Coverage'."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('(') and '"Norm_ACL_Balance"' in stripped:
+                display = stripped.split(',')[0]
+                self.assertNotIn("Coverage", display,
+                    f"Norm_ACL_Balance denominator row mislabeled as Coverage: {stripped[:100]}")
+
+    def test_exposure_denominator_labeled_coverage(self):
+        """Rows with exposure base denominator and 'ACL' in label should say Coverage or Ratio."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        exposure_bases = ["RIC_CRE_Cost", "RIC_Resi_Cost", "Wealth_Resi_Balance",
+                          "CRE_Investment_Pure_Balance"]
+        for line in source.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith('('):
+                continue
+            for base in exposure_bases:
+                if f'"{base}"' in stripped and "ACL" in stripped.split(',')[0]:
+                    display = stripped.split(',')[0]
+                    has_coverage_or_ratio = "Coverage" in display or "Ratio" in display
+                    self.assertTrue(has_coverage_or_ratio,
+                        f"Exposure-denominator ACL row should say Coverage/Ratio: {stripped[:100]}")
+
+    def test_npl_coverage_metrics_in_x_format_registry(self):
+        """NPL coverage metrics must be in _METRIC_FORMAT_TYPE with 'x' format."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        for code in ["RIC_CRE_Risk_Adj_Coverage", "RIC_Resi_Risk_Adj_Coverage"]:
+            self.assertIn(f'"{code}": "x"', source,
+                f"NPL coverage metric {code} must be in _METRIC_FORMAT_TYPE as 'x'")
+
+    def test_acl_coverage_metrics_not_in_x_format(self):
+        """Loan coverage and share metrics must NOT be in _METRIC_FORMAT_TYPE as 'x'."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        for code in ["RIC_CRE_ACL_Coverage", "RIC_Resi_ACL_Coverage",
+                      "RIC_CRE_ACL_Share", "RIC_Resi_ACL_Share",
+                      "Norm_CRE_ACL_Share", "Norm_ACL_Coverage"]:
+            self.assertNotIn(f'"{code}": "x"', source,
+                f"Loan coverage or share metric {code} must NOT be formatted as x-multiple")
+
+    def test_metric_format_type_exists_with_maintenance_rule(self):
+        """_METRIC_FORMAT_TYPE must exist and document the maintenance rule."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("_METRIC_FORMAT_TYPE", source,
+            "_METRIC_FORMAT_TYPE dict must exist in report_generator.py")
+        self.assertIn("MAINTENANCE RULE", source,
+            "_METRIC_FORMAT_TYPE must include MAINTENANCE RULE comment")
+        self.assertIn("MUST be added here explicitly", source,
+            "Maintenance rule must state new NPL metrics must be added explicitly")
+
+    def test_metric_registry_has_share_entries(self):
+        """metric_registry.py must have specs for all ACL share metrics."""
+        src = Path(__file__).parent / "metric_registry.py"
+        source = src.read_text(encoding="utf-8")
+        for code in ["RIC_CRE_ACL_Share", "RIC_Resi_ACL_Share", "Norm_CRE_ACL_Share"]:
+            self.assertIn(f'"{code}"', source,
+                f"metric_registry.py must have MetricSpec for {code}")
+
+    def test_share_metrics_have_acl_denominator_in_registry(self):
+        """Share metrics in registry must depend on Total_ACL or Norm_ACL_Balance."""
+        src = Path(__file__).parent / "metric_registry.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        for code in ["RIC_CRE_ACL_Share", "RIC_Resi_ACL_Share"]:
+            # Find the spec block and verify Total_ACL is in dependencies
+            pattern = f'"{code}".*?consumers='
+            match = re.search(pattern, source, re.DOTALL)
+            self.assertIsNotNone(match, f"Could not find spec for {code}")
+            self.assertIn("Total_ACL", match.group(0),
+                f"{code} must depend on Total_ACL as denominator")
+
+    def test_norm_cre_share_depends_on_norm_acl_balance(self):
+        """Norm_CRE_ACL_Share must depend on Norm_ACL_Balance, not Total_ACL."""
+        src = Path(__file__).parent / "metric_registry.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        match = re.search(r'"Norm_CRE_ACL_Share".*?consumers=', source, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertIn("Norm_ACL_Balance", match.group(0),
+            "Norm_CRE_ACL_Share must depend on Norm_ACL_Balance")
+
+
 class TestHUDTokenDiscovery(unittest.TestCase):
     """HUD token resolver must support multi-source discovery with diagnostics."""
 
