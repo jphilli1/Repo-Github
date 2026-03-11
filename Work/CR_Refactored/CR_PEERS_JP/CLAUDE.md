@@ -322,7 +322,9 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 
 ### Display Label Policy
 
-All presentation tabs use `_get_metric_short_name(code)` to resolve display names from `FDIC_Metric_Descriptions` (via `MasterDataDictionary`). Columns: `Metric Code` (technical field name) + `Metric Name` (display label). Falls back to the code itself when no display label exists.
+All presentation tabs use `_get_metric_short_name(code)` to resolve display names from `FDIC_Metric_Descriptions` (via `MasterDataDictionary`). Columns: `Metric Code` (technical field name) + `Metric Name` (display label). Falls back to the code itself when no display label exists. Debug logging is emitted for any fallback.
+
+**Validation note**: Every metric in `SUMMARY_DASHBOARD_METRICS` and `NORMALIZED_COMPARISON_METRICS` must have a corresponding entry in `LOCAL_DERIVED_METRICS` (Tier 3) or resolve via MDRM/FDIC API (Tiers 1-2). Regression tests in `TestWorkbookLevelCuration` and `TestDisplayLabelCoverage` enforce this. Presentation-layer fixes are only considered complete once visible in the generated workbook — source-code-level intent alone is insufficient.
 
 ### Metric Role Classification
 
@@ -358,6 +360,34 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 6. **Case-Shiller ZIP sheet persistence (MSPBNA_CR_Normalized.py)**: Wrapped `build_case_shiller_zip_sheets()` call in try/except so HUD API failures do not crash the pipeline. Added logging for which ZIP sheets are written. The `**cs_kwargs` unpack in `write_excel_output()` persists non-empty sheets (CaseShiller_Zip_Coverage, CaseShiller_Zip_Summary, CaseShiller_Metro_Map_Audit). When enrichment is disabled or HUD token is missing, only the audit sheet (always non-empty) is written. Added regression tests for resilience and audit sheet presence.
 
 **New Excel sheets:** `Exclusion_Component_Audit`, `Composite_Coverage_Audit`, `Metric_Validation_Audit`
+
+### 2026-03-11 — End-to-End Workbook Output Fix, Display Labels, Matplotlib Suppression
+
+**Root cause of workbook-level failure**: The presentation-layer code changes (curated allowlists, metric roles, display labels) were structurally correct in source, but the workbook output still appeared as a raw dump because:
+- `LOCAL_DERIVED_METRICS` in `master_data_dictionary.py` was missing display labels for ~30 metrics used in the curated tabs (`Norm_*`, `RIC_*`, profitability, liquidity). `_get_metric_short_name()` fell back to raw codes, making `Metric Name` identical to `Metric Code`.
+- `create_normalized_comparison` did not compute `Performance_Flag`, so the Normalized_Comparison tab lacked evaluative context.
+- `generate_ratio_components_table` always selected 99999/90003 as the peer composite regardless of `is_normalized` mode, so normalized HTML tables used the wrong peer.
+- No workbook-level regression tests existed to catch these end-to-end failures.
+
+**Lesson**: Presentation-layer fixes are only considered complete once visible in the generated workbook. Source-code-level tests alone are insufficient — workbook-level validation is required.
+
+**Fixes applied:**
+
+1. **Display label coverage (master_data_dictionary.py)**: Added ~30 entries to `LOCAL_DERIVED_METRICS` covering all metrics in `SUMMARY_DASHBOARD_METRICS` and `NORMALIZED_COMPARISON_METRICS`: `Norm_Gross_Loans`, `Norm_ACL_Coverage`, `Norm_Risk_Adj_Allowance_Coverage`, `Norm_Nonaccrual_Rate`, `Norm_NCO_Rate`, `Norm_Delinquency_Rate`, `Norm_SBL_Composition`, `Norm_Fund_Finance_Composition`, `Norm_Wealth_Resi_Composition`, `Norm_CRE_Investment_Composition`, `Norm_Exclusion_Pct`, `Norm_Loan_Yield`, `Norm_Loss_Adj_Yield`, `Norm_Risk_Adj_Return`, `Norm_Provision_Rate`, `Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_CRE_ACL_Share`, `Norm_Resi_ACL_Share`, `RIC_CRE_Loan_Share`, `RIC_Resi_Loan_Share`, `RIC_CRE_ACL_Share`, `RIC_CRE_ACL_Coverage`, `RIC_CRE_Risk_Adj_Coverage`, `RIC_CRE_NCO_Rate`, `Provision_to_Loans_Rate`, `Liquidity_Ratio`, `HQLA_Ratio`, `Loans_to_Deposits`. Debug logging added for any remaining fallback cases.
+
+2. **Normalized comparison Performance_Flag (MSPBNA_CR_Normalized.py)**: `create_normalized_comparison` now computes `Performance_Flag` using Core PB Norm (90004) percentile, routed through `_get_performance_flag()` which returns blank for descriptive metrics.
+
+3. **Diagnostic logging before workbook write (MSPBNA_CR_Normalized.py)**: Added explicit logging of row count and first 5 `Metric Code` values for both `Summary_Dashboard` and `Normalized_Comparison` immediately before `write_excel_output()`. Also adds a hard error log if `Norm_Provision_Rate` leaks into the normalized tab.
+
+4. **Ratio components table is_normalized-aware peer (report_generator.py)**: `generate_ratio_components_table` now selects `peer_cert=90006` when `is_normalized=True` (previously always used 99999/90003). Re-pick after synthetic columns uses safe `peer_slice.empty` check instead of bare `.iloc[0]`.
+
+5. **Matplotlib warning suppressed (report_generator.py)**: Added `import warnings` and `warnings.filterwarnings("ignore", message="This figure includes Axes that are not compatible with tight_layout", category=UserWarning)` at module top.
+
+6. **Workbook-level regression tests (test_regression.py)**: Added 4 new test classes (14 test methods total):
+   - `TestWorkbookLevelCuration` — validates curated allowlist sizes, excludes raw MDRM fields, excludes internal pipeline columns, excludes Norm_Provision_Rate, verifies display label coverage for all curated metrics
+   - `TestDisplayLabelCoverage` — validates LOCAL_DERIVED_METRICS has entries for all Norm_, RIC_, and profitability/liquidity metrics
+   - `TestHTMLTableResilience` — validates is_normalized-aware peer selection (90006), safe .empty fallback, matplotlib warning filter
+   - `TestNormalizedComparisonFlags` — validates Performance_Flag column and _get_performance_flag usage in create_normalized_comparison
 
 ### 2026-03-11 — Presentation Curation, Metric Roles, Chart Resilience
 

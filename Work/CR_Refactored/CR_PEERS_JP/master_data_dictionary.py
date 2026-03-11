@@ -397,6 +397,132 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
         "short": "Loan Yield (Proxy)",
         "long": "TTM Interest Income on Loans / TTM Average Gross Loans.",
     },
+
+    # --- Normalized (Ex-Commercial/Ex-Consumer) Metrics ---
+    "Norm_Gross_Loans": {
+        "short": "Norm. Gross Loans",
+        "long": "Total Gross Loans minus excluded categories (C&I, NDFI, ADC, Cards, Auto, Ag).",
+    },
+    "Norm_ACL_Balance": {
+        "short": "Norm. ACL Balance",
+        "long": "Normalized Allowance for Credit Losses (total ACL minus excluded segment ACL).",
+    },
+    "Norm_ACL_Coverage": {
+        "short": "Norm. ACL / Loans",
+        "long": "Normalized ACL Balance divided by Normalized Gross Loans.",
+    },
+    "Norm_Risk_Adj_Allowance_Coverage": {
+        "short": "Norm. Risk-Adj ACL",
+        "long": "Normalized ACL Balance divided by (Norm Gross Loans minus SBL Balance).",
+    },
+    "Norm_Nonaccrual_Rate": {
+        "short": "Norm. Nonaccrual Rate",
+        "long": "Normalized nonaccrual loans divided by Normalized Gross Loans.",
+    },
+    "Norm_NCO_Rate": {
+        "short": "Norm. NCO Rate",
+        "long": "Normalized Net Charge-Offs divided by Normalized Gross Loans.",
+    },
+    "Norm_Delinquency_Rate": {
+        "short": "Norm. Delinquency Rate",
+        "long": "Normalized past-due loans (30+ days) divided by Normalized Gross Loans.",
+    },
+    "Norm_SBL_Composition": {
+        "short": "Norm. SBL %",
+        "long": "Securities-Based Lending as a percentage of Normalized Gross Loans.",
+    },
+    "Norm_Fund_Finance_Composition": {
+        "short": "Norm. Fund Finance %",
+        "long": "Fund Finance (Capital Call Lines) as a percentage of Normalized Gross Loans.",
+    },
+    "Norm_Wealth_Resi_Composition": {
+        "short": "Norm. Wealth Resi %",
+        "long": "Wealth Residential (Jumbo + HELOCs) as a percentage of Normalized Gross Loans.",
+    },
+    "Norm_CRE_Investment_Composition": {
+        "short": "Norm. CRE Invest. %",
+        "long": "Investment CRE as a percentage of Normalized Gross Loans.",
+    },
+    "Norm_Exclusion_Pct": {
+        "short": "Exclusion % of Total",
+        "long": "Excluded loan balance as a percentage of Total Gross Loans.",
+    },
+    "Norm_Loan_Yield": {
+        "short": "Norm. Loan Yield",
+        "long": "TTM Interest Income on Loans divided by Normalized Gross Loans.",
+    },
+    "Norm_Loss_Adj_Yield": {
+        "short": "Norm. Loss-Adj Yield",
+        "long": "Normalized Loan Yield minus Normalized NCO Rate.",
+    },
+    "Norm_Risk_Adj_Return": {
+        "short": "Norm. Risk-Adj Return",
+        "long": "Normalized Loan Yield minus Normalized NCO Rate minus Cost of Funds proxy.",
+    },
+    "Norm_Provision_Rate": {
+        "short": "Norm. Provision Rate",
+        "long": "Intentionally NaN — provision expense is not segment-specific in call reports.",
+    },
+    "Norm_Total_NCO": {
+        "short": "Norm. Total NCO",
+        "long": "Normalized total Net Charge-Offs (total minus excluded categories).",
+    },
+    "Norm_Total_Nonaccrual": {
+        "short": "Norm. Total Nonaccrual",
+        "long": "Normalized total nonaccrual loans (total minus excluded categories).",
+    },
+    "Norm_CRE_ACL_Share": {
+        "short": "Norm. CRE ACL Share",
+        "long": "CRE Allowance as a percentage of Normalized ACL Balance.",
+    },
+    "Norm_Resi_ACL_Share": {
+        "short": "Norm. Resi ACL Share",
+        "long": "Resi Allowance as a percentage of Normalized ACL Balance.",
+    },
+
+    # --- RI-C Segment Metrics (CRE / Resi) ---
+    "RIC_CRE_Loan_Share": {
+        "short": "CRE % of Total Loans",
+        "long": "CRE Cost Basis as a percentage of Total Gross Loans.",
+    },
+    "RIC_Resi_Loan_Share": {
+        "short": "Resi % of Total Loans",
+        "long": "Resi Cost Basis as a percentage of Total Gross Loans.",
+    },
+    "RIC_CRE_ACL_Share": {
+        "short": "CRE % of ACL",
+        "long": "CRE Allowance as a percentage of Total ACL.",
+    },
+    "RIC_CRE_ACL_Coverage": {
+        "short": "CRE ACL / CRE Loans",
+        "long": "CRE Allowance divided by CRE Cost Basis.",
+    },
+    "RIC_CRE_Risk_Adj_Coverage": {
+        "short": "CRE ACL / CRE NPLs",
+        "long": "CRE Allowance divided by CRE Nonaccrual Loans (NPL coverage).",
+    },
+    "RIC_CRE_NCO_Rate": {
+        "short": "CRE NCO Rate",
+        "long": "CRE Net Charge-Offs (TTM) divided by CRE Cost Basis.",
+    },
+
+    # --- Profitability & Liquidity ---
+    "Provision_to_Loans_Rate": {
+        "short": "Provision / Loans",
+        "long": "Provision Expense as a percentage of Average Gross Loans.",
+    },
+    "Liquidity_Ratio": {
+        "short": "Liquidity Ratio",
+        "long": "Liquid assets (cash + securities) as a percentage of total assets.",
+    },
+    "HQLA_Ratio": {
+        "short": "HQLA Ratio",
+        "long": "High-Quality Liquid Assets as a percentage of total assets.",
+    },
+    "Loans_to_Deposits": {
+        "short": "Loans / Deposits",
+        "long": "Total Gross Loans divided by Total Deposits.",
+    },
 }
 
 

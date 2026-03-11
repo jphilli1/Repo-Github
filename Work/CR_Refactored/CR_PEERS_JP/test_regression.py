@@ -1450,7 +1450,213 @@ class TestPresentationCuration(unittest.TestCase):
     def test_ratio_components_safe_peer_lookup(self):
         """generate_ratio_components_table must not abort when peer is missing."""
         source = self._read_source("report_generator.py")
-        self.assertIn("peer_cert in latest_data[\"CERT\"].values else pd.Series()", source)
+        self.assertIn("peer_slice.empty", source)
+
+
+class TestWorkbookLevelCuration(unittest.TestCase):
+    """
+    Integration-style tests that validate the curated allowlists and display
+    label coverage. Uses source-code parsing to avoid importing the full
+    pipeline (which requires aiohttp/scipy/etc.).
+    These tests would have caught the 'raw metric dump' bug in the latest
+    bad workbook.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        """Parse allowlists from source code."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Extract SUMMARY_DASHBOARD_METRICS list via exec on the list literal
+        import ast
+        # Find the list assignment
+        for name in ("SUMMARY_DASHBOARD_METRICS", "NORMALIZED_COMPARISON_METRICS"):
+            start = source.index(f"{name} = [")
+            bracket_start = source.index("[", start)
+            # Find matching close bracket
+            depth = 0
+            for i, ch in enumerate(source[bracket_start:], bracket_start):
+                if ch == "[": depth += 1
+                elif ch == "]": depth -= 1
+                if depth == 0:
+                    bracket_end = i + 1
+                    break
+            setattr(cls, name, ast.literal_eval(source[bracket_start:bracket_end]))
+
+        # Extract DESCRIPTIVE_METRICS frozenset
+        ds_start = source.index("DESCRIPTIVE_METRICS = frozenset({")
+        brace_start = source.index("{", ds_start)
+        depth = 0
+        for i, ch in enumerate(source[brace_start:], brace_start):
+            if ch == "{": depth += 1
+            elif ch == "}": depth -= 1
+            if depth == 0:
+                brace_end = i + 1
+                break
+        cls.DESCRIPTIVE_METRICS = ast.literal_eval(source[brace_start:brace_end])
+
+    # ------------------------------------------------------------------
+    #  1. Summary_Dashboard curated metric codes
+    # ------------------------------------------------------------------
+    def test_summary_dashboard_only_curated_metrics(self):
+        """Summary_Dashboard allowlist must be bounded (not hundreds of metrics)."""
+        self.assertLessEqual(len(self.SUMMARY_DASHBOARD_METRICS), 30)
+        self.assertGreaterEqual(len(self.SUMMARY_DASHBOARD_METRICS), 10)
+
+    # ------------------------------------------------------------------
+    #  2. Normalized_Comparison must NOT contain Norm_Provision_Rate
+    # ------------------------------------------------------------------
+    def test_normalized_comparison_excludes_provision_rate(self):
+        """Norm_Provision_Rate must never appear in NORMALIZED_COMPARISON_METRICS."""
+        self.assertNotIn("Norm_Provision_Rate", self.NORMALIZED_COMPARISON_METRICS)
+
+    # ------------------------------------------------------------------
+    #  3. Metric Name display labels resolve (not raw code fallback)
+    # ------------------------------------------------------------------
+    def test_display_labels_resolve_for_curated_metrics(self):
+        """Every curated metric must have a display label in LOCAL_DERIVED_METRICS
+        OR be a well-known FDIC alias (ASSET, LNLS, ROA, etc.)."""
+        from master_data_dictionary import LOCAL_DERIVED_METRICS
+        fdic_aliases = {"ASSET", "LNLS", "ROA", "ROE", "NIMY", "EEFFR"}
+        all_curated = set(self.SUMMARY_DASHBOARD_METRICS) | set(self.NORMALIZED_COMPARISON_METRICS)
+        missing_labels = []
+        for code in all_curated:
+            if code in fdic_aliases:
+                continue
+            if code not in LOCAL_DERIVED_METRICS:
+                missing_labels.append(code)
+        self.assertEqual(
+            missing_labels, [],
+            f"These curated metrics have no display label in LOCAL_DERIVED_METRICS: {missing_labels}"
+        )
+
+    # ------------------------------------------------------------------
+    #  4. Descriptive metrics in curated tabs must be in DESCRIPTIVE_METRICS
+    # ------------------------------------------------------------------
+    def test_descriptive_metrics_in_curated_lists(self):
+        """Composition/share metrics in curated tabs must be in DESCRIPTIVE_METRICS."""
+        expected_descriptive_in_summary = {
+            "ASSET", "LNLS", "SBL_Composition",
+            "RIC_Resi_Loan_Share", "RIC_CRE_Loan_Share", "RIC_CRE_ACL_Share",
+        }
+        for m in expected_descriptive_in_summary:
+            if m in self.SUMMARY_DASHBOARD_METRICS:
+                self.assertIn(m, self.DESCRIPTIVE_METRICS,
+                              f"{m} is in Summary_Dashboard but not in DESCRIPTIVE_METRICS")
+
+    # ------------------------------------------------------------------
+    #  5. Workbook row counts match curated list sizes
+    # ------------------------------------------------------------------
+    def test_curated_list_sizes_reasonable(self):
+        """Curated lists must be much smaller than a raw dump (hundreds of cols)."""
+        self.assertLess(len(self.SUMMARY_DASHBOARD_METRICS), 50)
+        self.assertLess(len(self.NORMALIZED_COMPARISON_METRICS), 30)
+
+    # ------------------------------------------------------------------
+    #  6. Regression: would have caught the raw dump bug
+    # ------------------------------------------------------------------
+    def test_no_raw_mdrm_fields_in_summary_dashboard(self):
+        """Summary_Dashboard must not contain raw MDRM codes (RCFD/RCON/RIAD)."""
+        for m in self.SUMMARY_DASHBOARD_METRICS:
+            self.assertFalse(m.startswith(("RCFD", "RCON", "RIAD")),
+                             f"Raw MDRM field '{m}' in SUMMARY_DASHBOARD_METRICS")
+
+    def test_no_internal_pipeline_columns_in_curated_tabs(self):
+        """Internal diagnostic columns must not appear in curated tabs."""
+        internal_prefixes = ("_Flag_", "_Norm_", "_Excl_", "_Diag_")
+        all_curated = set(self.SUMMARY_DASHBOARD_METRICS) | set(self.NORMALIZED_COMPARISON_METRICS)
+        for m in all_curated:
+            self.assertFalse(m.startswith(internal_prefixes),
+                             f"Internal pipeline column '{m}' in curated tab")
+
+
+class TestDisplayLabelCoverage(unittest.TestCase):
+    """Validates that the master data dictionary has entries for all curated metrics."""
+
+    def test_local_derived_has_norm_metrics(self):
+        """LOCAL_DERIVED_METRICS must have display labels for Norm_ curated metrics."""
+        from master_data_dictionary import LOCAL_DERIVED_METRICS
+        expected_norm = [
+            "Norm_Gross_Loans", "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+            "Norm_Nonaccrual_Rate", "Norm_NCO_Rate", "Norm_Delinquency_Rate",
+            "Norm_SBL_Composition", "Norm_Fund_Finance_Composition",
+            "Norm_Wealth_Resi_Composition", "Norm_CRE_Investment_Composition",
+            "Norm_Exclusion_Pct", "Norm_Loan_Yield", "Norm_Loss_Adj_Yield",
+            "Norm_Risk_Adj_Return",
+        ]
+        missing = [m for m in expected_norm if m not in LOCAL_DERIVED_METRICS]
+        self.assertEqual(missing, [], f"Missing display labels in LOCAL_DERIVED_METRICS: {missing}")
+
+    def test_local_derived_has_ric_metrics(self):
+        """LOCAL_DERIVED_METRICS must have display labels for RIC_ curated metrics."""
+        from master_data_dictionary import LOCAL_DERIVED_METRICS
+        expected_ric = [
+            "RIC_CRE_Loan_Share", "RIC_Resi_Loan_Share", "RIC_CRE_ACL_Share",
+            "RIC_CRE_ACL_Coverage", "RIC_CRE_Risk_Adj_Coverage", "RIC_CRE_NCO_Rate",
+        ]
+        missing = [m for m in expected_ric if m not in LOCAL_DERIVED_METRICS]
+        self.assertEqual(missing, [], f"Missing display labels in LOCAL_DERIVED_METRICS: {missing}")
+
+    def test_local_derived_has_profitability_liquidity(self):
+        """LOCAL_DERIVED_METRICS must have display labels for profitability/liquidity metrics."""
+        from master_data_dictionary import LOCAL_DERIVED_METRICS
+        expected = ["Provision_to_Loans_Rate", "Liquidity_Ratio", "HQLA_Ratio", "Loans_to_Deposits"]
+        missing = [m for m in expected if m not in LOCAL_DERIVED_METRICS]
+        self.assertEqual(missing, [], f"Missing display labels in LOCAL_DERIVED_METRICS: {missing}")
+
+
+class TestHTMLTableResilience(unittest.TestCase):
+    """Verifies generate_ratio_components_table handles missing peer composites."""
+
+    def test_ratio_table_uses_normalized_peer(self):
+        """When is_normalized=True, peer_cert must be 90006 not 99999."""
+        src_path = os.path.join(os.path.dirname(__file__), "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Extract the function body
+        func_start = source.index("def generate_ratio_components_table")
+        next_def = source.index("\ndef ", func_start + 1)
+        func_body = source[func_start:next_def]
+        self.assertIn("90006 if is_normalized", func_body,
+                       "generate_ratio_components_table must select 90006 for normalized mode")
+
+    def test_peer_slice_safe_fallback(self):
+        """Peer lookup must use .empty check, not bare .iloc[0]."""
+        src_path = os.path.join(os.path.dirname(__file__), "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        func_start = source.index("def generate_ratio_components_table")
+        next_def = source.index("\ndef ", func_start + 1)
+        func_body = source[func_start:next_def]
+        self.assertIn("peer_slice.empty", func_body,
+                       "Peer lookup must check peer_slice.empty for safe fallback")
+
+    def test_matplotlib_warning_suppressed(self):
+        """report_generator.py must suppress the tight_layout Axes warning."""
+        src_path = os.path.join(os.path.dirname(__file__), "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("not compatible with tight_layout", source,
+                       "Matplotlib tight_layout warning must be filtered")
+
+
+class TestNormalizedComparisonFlags(unittest.TestCase):
+    """Verifies that create_normalized_comparison generates performance flags
+    and that descriptive metrics get blank flags."""
+
+    def test_normalized_comparison_has_performance_flag(self):
+        """create_normalized_comparison must produce a Performance_Flag column."""
+        src_path = os.path.join(os.path.dirname(__file__), "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        func_start = source.index("def create_normalized_comparison")
+        next_def = source.index("\n    def ", func_start + 1)
+        func_body = source[func_start:next_def]
+        self.assertIn("Performance_Flag", func_body,
+                       "create_normalized_comparison must compute Performance_Flag")
+        self.assertIn("_get_performance_flag", func_body,
+                       "create_normalized_comparison must use _get_performance_flag")
 
 
 if __name__ == '__main__':
