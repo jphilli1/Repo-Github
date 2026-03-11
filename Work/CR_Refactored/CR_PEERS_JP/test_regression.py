@@ -2243,7 +2243,7 @@ class TestCsvLogging(unittest.TestCase):
     """Verify CSV log schema, per-script files, and reset behavior."""
 
     def test_csv_log_columns_count(self):
-        """CSV log schema must have exactly 16 columns."""
+        """CSV log schema must have exactly 15 columns."""
         from logging_utils import CSV_LOG_COLUMNS
         self.assertEqual(len(CSV_LOG_COLUMNS), 15,
                          f"CSV schema must have 15 columns, got {len(CSV_LOG_COLUMNS)}")
@@ -2407,6 +2407,120 @@ class TestClaudeMDLogging(unittest.TestCase):
         md_path = Path(__file__).parent / "CLAUDE.md"
         md = md_path.read_text(encoding="utf-8")
         self.assertIn("YYYYMMDD", md, "CLAUDE.md must document date-only naming")
+
+
+class TestLoggerSafeLifecycle(unittest.TestCase):
+    """Verify print-after-close, stream restoration, and idempotent shutdown."""
+
+    def test_print_after_logger_close_does_not_crash(self):
+        """print() after csv_log.close() must not raise ValueError."""
+        from logging_utils import CsvLogger, TeeToLogger
+        import tempfile
+        old_stdout = sys.stdout
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                logger = CsvLogger("close_test", log_dir=tmpdir)
+                sys.stdout = TeeToLogger(old_stdout, logger, stream_name="STDOUT")
+                logger.close()
+                # This must not raise ValueError: I/O operation on closed file
+                print("message after close")
+        finally:
+            sys.stdout = old_stdout
+
+    def test_stderr_after_logger_close_does_not_crash(self):
+        """stderr after csv_log.close() must not raise ValueError."""
+        from logging_utils import CsvLogger, TeeToLogger
+        import tempfile
+        old_stderr = sys.stderr
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                logger = CsvLogger("close_stderr_test", log_dir=tmpdir)
+                sys.stderr = TeeToLogger(old_stderr, logger, stream_name="STDERR")
+                logger.close()
+                print("stderr after close", file=sys.stderr)
+        finally:
+            sys.stderr = old_stderr
+
+    def test_close_restores_streams(self):
+        """After shutdown(), sys.stdout/sys.stderr must be original streams."""
+        from logging_utils import setup_csv_logging, TeeToLogger
+        import tempfile
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                logger = setup_csv_logging("restore_test", log_dir=tmpdir)
+                # Should be TeeToLogger now
+                self.assertIsInstance(sys.stdout, TeeToLogger)
+                self.assertIsInstance(sys.stderr, TeeToLogger)
+                logger.shutdown()
+                # Should be restored
+                self.assertNotIsInstance(sys.stdout, TeeToLogger,
+                    "sys.stdout must be restored after shutdown")
+                self.assertNotIsInstance(sys.stderr, TeeToLogger,
+                    "sys.stderr must be restored after shutdown")
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+    def test_double_close_is_safe(self):
+        """Calling close() or shutdown() twice must not raise."""
+        from logging_utils import CsvLogger
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = CsvLogger("double_close_test", log_dir=tmpdir)
+            logger.close()
+            logger.close()  # Must not raise
+            logger.shutdown()  # Must not raise
+
+    def test_setup_csv_logging_does_not_stack_nested_tees(self):
+        """Calling setup_csv_logging twice must not create nested TeeToLogger."""
+        from logging_utils import setup_csv_logging, TeeToLogger
+        import tempfile
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                log1 = setup_csv_logging("nest_test_1", log_dir=tmpdir)
+                log2 = setup_csv_logging("nest_test_2", log_dir=tmpdir)
+                # sys.stdout should be TeeToLogger wrapping the raw stream,
+                # not TeeToLogger wrapping TeeToLogger
+                tee = sys.stdout
+                self.assertIsInstance(tee, TeeToLogger)
+                self.assertNotIsInstance(tee._original, TeeToLogger,
+                    "setup_csv_logging must unwrap existing TeeToLogger to prevent nesting")
+                log2.shutdown()
+                log1.shutdown()
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+    def test_mspbna_has_single_terminal_csv_close_path(self):
+        """MSPBNA_CR_Normalized.py must not close csv_log inside dash.run()."""
+        src_path = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        src = src_path.read_text(encoding="utf-8")
+        # The old bug: csv_log.close() inside the run() method
+        # Find all csv_log.close() calls
+        close_calls = [line.strip() for line in src.splitlines()
+                       if "csv_log.close()" in line and not line.strip().startswith("#")]
+        self.assertEqual(len(close_calls), 0,
+            f"csv_log.close() must not appear in MSPBNA_CR_Normalized.py "
+            f"(use csv_log.shutdown() in main() only). Found: {close_calls}")
+        # Must have shutdown in main's finally block
+        self.assertIn("csv_log.shutdown()", src,
+            "main() must call csv_log.shutdown() as the terminal close path")
+
+    def test_report_generator_safe_shutdown(self):
+        """report_generator.py must use csv_log.shutdown() not csv_log.close()."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        close_calls = [line.strip() for line in src.splitlines()
+                       if "csv_log.close()" in line and not line.strip().startswith("#")]
+        self.assertEqual(len(close_calls), 0,
+            f"csv_log.close() must not appear in report_generator.py "
+            f"(use csv_log.shutdown()). Found: {close_calls}")
+        self.assertIn("csv_log.shutdown()", src,
+            "generate_reports() must call csv_log.shutdown()")
 
 
 if __name__ == '__main__':

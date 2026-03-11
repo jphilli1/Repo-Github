@@ -6403,7 +6403,6 @@ class BankPerformanceDashboard:
             csv_log.info("Pipeline completed successfully",
                          event_type="CONFIG", phase="shutdown", component="run",
                          context={"output_file": fname})
-            csv_log.close()
         return {
             "output_file": fname,
             "powerbi_macro_df": powerbi_macro_df,
@@ -6551,6 +6550,9 @@ def main():
         else:
             print("\nAll FRED series fetched successfully.")
 
+        # Final shutdown: log, restore streams, close CSV — AFTER all prints
+        if csv_log:
+            csv_log.shutdown()
         logging.shutdown()
 
 if __name__ == '__main__':
