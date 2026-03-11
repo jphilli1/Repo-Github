@@ -92,10 +92,10 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
         "long": "Trailing 12-Month average of loans 90+ days past due as a "
                 "percentage of TTM average gross loans.",
     },
-    "TTM_Past_Due_Rate": {
-        "short": "Total TTM PD Rate",
-        "long": "Trailing 12-Month average of total loans 30+ days past due as a "
-                "percentage of TTM average gross loans.",
+    "Past_Due_Rate": {
+        "short": "Past Due Rate (%)",
+        "long": "Total loans 30+ days past due as a percentage of gross loans. "
+                "Point-in-time stock metric (not TTM).",
     },
 
     # --- Loan Composition (Portfolio Mix) ---

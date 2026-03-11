@@ -1774,5 +1774,213 @@ class TestCompositeRegimeCleanup(unittest.TestCase):
         self.assertNotIn("99998", body)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# DIRECTIVE C TESTS — Wealth-Focused Tables, Data Integrity, Stock vs Flow
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestDirectiveC(unittest.TestCase):
+    """Regression tests for Directive C: wealth-focused tables, data integrity fixes."""
+
+    @classmethod
+    def setUpClass(cls):
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        rg_path = os.path.join(project_dir, "report_generator.py")
+        norm_path = os.path.join(project_dir, "MSPBNA_CR_Normalized.py")
+        mdd_path = os.path.join(project_dir, "master_data_dictionary.py")
+
+        with open(rg_path, "r", encoding="utf-8") as f:
+            cls.rg_source = f.read()
+        with open(norm_path, "r", encoding="utf-8") as f:
+            cls.norm_source = f.read()
+        with open(mdd_path, "r", encoding="utf-8") as f:
+            cls.mdd_source = f.read()
+
+    # ------------------------------------------------------------------
+    # 1. Executive summary columns are wealth-focused
+    # ------------------------------------------------------------------
+    def test_executive_summary_has_wealth_peers_column(self):
+        """Executive summary must use 'Wealth Peers' column, not 'All Peers'."""
+        self.assertIn('"Wealth Peers"', self.rg_source)
+        # The function should NOT produce MSBNA columns
+        # Check that generate_credit_metrics_email_table doesn't reference MSBNA as a column
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_credit_metrics_email_table":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertNotIn('"MSBNA"', body_src,
+                    "Executive summary must not include MSBNA column")
+                self.assertNotIn('"All Peers"', body_src,
+                    "Executive summary must not include All Peers column")
+                self.assertIn('"Goldman Sachs"', body_src)
+                self.assertIn('"UBS"', body_src)
+                self.assertIn('"Wealth Peers"', body_src)
+                self.assertIn('"Delta MSPBNA vs Wealth Peers"', body_src)
+                break
+
+    # ------------------------------------------------------------------
+    # 2. Executive summary uses Core PB composite (not All Peers)
+    # ------------------------------------------------------------------
+    def test_executive_summary_uses_core_pb_composite(self):
+        """Wealth Peers must use core_pb composite (90001/90004), not all_peers."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_credit_metrics_email_table":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn('core_pb', body_src,
+                    "Wealth Peers must map to core_pb composite")
+                break
+
+    # ------------------------------------------------------------------
+    # 3. Executive summary has is_normalized parameter
+    # ------------------------------------------------------------------
+    def test_executive_summary_has_is_normalized(self):
+        """Executive summary must accept is_normalized for separate artifacts."""
+        self.assertIn("def generate_credit_metrics_email_table", self.rg_source)
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_credit_metrics_email_table":
+                param_names = [a.arg for a in node.args.args]
+                self.assertIn("is_normalized", param_names)
+                break
+
+    # ------------------------------------------------------------------
+    # 4. Segment tables use Wealth Peers, not All Peers
+    # ------------------------------------------------------------------
+    def test_segment_focus_table_wealth_peers(self):
+        """Segment focus tables must use Wealth Peers (core_pb), not All Peers."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_segment_focus_table":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn('"Wealth Peers"', body_src)
+                self.assertIn('core_pb', body_src,
+                    "Segment table must use core_pb composite as Wealth Peers")
+                # Should NOT have MSBNA as a column
+                self.assertNotIn('"MSBNA"', body_src)
+                break
+
+    # ------------------------------------------------------------------
+    # 5. Core PB peer table drops MSBNA, labels as Wealth Peers
+    # ------------------------------------------------------------------
+    def test_core_pb_table_no_msbna(self):
+        """Core PB peer table must not include MSBNA; composite labeled Wealth Peers."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_core_pb_peer_table":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                # No MSBNA in col_mapping
+                self.assertNotIn('"MSBNA"', body_src)
+                # Must label as "Wealth Peers"
+                self.assertIn('"Wealth Peers"', body_src)
+                break
+
+    # ------------------------------------------------------------------
+    # 6. Detailed peer table remains the only broad all-peer table
+    # ------------------------------------------------------------------
+    def test_detailed_peer_table_uses_all_peers(self):
+        """generate_detailed_peer_table must still use all_peers composite."""
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "generate_detailed_peer_table":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn("all_peers", body_src)
+                break
+
+    # ------------------------------------------------------------------
+    # 7. Ratio components has Norm_Risk_Adj_Gross_Loans synthesis
+    # ------------------------------------------------------------------
+    def test_ratio_components_norm_risk_adj_denominator(self):
+        """_synth must synthesize Norm_Risk_Adj_Gross_Loans for normalized mode."""
+        self.assertIn("Norm_Risk_Adj_Gross_Loans", self.rg_source)
+        # Must be in _synth function
+        import ast
+        tree = ast.parse(self.rg_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_synth":
+                body_src = ast.get_source_segment(self.rg_source, node)
+                self.assertIn("Norm_Risk_Adj_Gross_Loans", body_src)
+                break
+
+    # ------------------------------------------------------------------
+    # 8. TTM_Past_Due_Rate fully renamed to Past_Due_Rate
+    # ------------------------------------------------------------------
+    def test_no_ttm_past_due_rate_in_normalized(self):
+        """TTM_Past_Due_Rate must be fully renamed to Past_Due_Rate."""
+        self.assertNotIn("TTM_Past_Due_Rate", self.norm_source,
+            "MSPBNA_CR_Normalized.py still contains TTM_Past_Due_Rate")
+        self.assertNotIn("TTM_Past_Due_Rate", self.rg_source,
+            "report_generator.py still contains TTM_Past_Due_Rate")
+        self.assertNotIn("TTM_Past_Due_Rate", self.mdd_source,
+            "master_data_dictionary.py still contains TTM_Past_Due_Rate")
+        # But Past_Due_Rate must exist
+        self.assertIn("Past_Due_Rate", self.norm_source)
+
+    # ------------------------------------------------------------------
+    # 9. PLLL in FDIC_FIELDS_TO_FETCH
+    # ------------------------------------------------------------------
+    def test_plll_in_fdic_fields(self):
+        """PLLL must be in FDIC_FIELDS_TO_FETCH."""
+        self.assertIn('"PLLL"', self.norm_source)
+
+    # ------------------------------------------------------------------
+    # 10. ytd_to_discrete function exists at module level
+    # ------------------------------------------------------------------
+    def test_ytd_to_discrete_exists(self):
+        """ytd_to_discrete must exist as a module-level function."""
+        self.assertIn("def ytd_to_discrete(", self.norm_source)
+
+    # ------------------------------------------------------------------
+    # 11. annualize_ytd function exists at module level
+    # ------------------------------------------------------------------
+    def test_annualize_ytd_exists(self):
+        """annualize_ytd must exist as a module-level function."""
+        self.assertIn("def annualize_ytd(", self.norm_source)
+
+    # ------------------------------------------------------------------
+    # 12. Provision and Yield use annualized, not TTM
+    # ------------------------------------------------------------------
+    def test_provision_yield_use_annualization(self):
+        """Provision_to_Loans_Rate and Loan_Yield_Proxy must use annualize_ytd."""
+        self.assertIn("annualize_ytd", self.norm_source)
+        # Should use annualize_ytd for provision and income
+        self.assertIn("annualize_ytd(df_processed, 'Provision_Exp_YTD')", self.norm_source)
+        self.assertIn("annualize_ytd(df_processed, 'Int_Inc_Loans_YTD')", self.norm_source)
+
+    # ------------------------------------------------------------------
+    # 13. compute_quarterly_from_ytd delegates to ytd_to_discrete
+    # ------------------------------------------------------------------
+    def test_compute_quarterly_delegates_to_ytd_to_discrete(self):
+        """Inner compute_quarterly_from_ytd must delegate to module-level ytd_to_discrete."""
+        self.assertIn("ytd_to_discrete(df_in, col_name)", self.norm_source)
+
+    # ------------------------------------------------------------------
+    # 14. Standard and normalized executive summaries both generated
+    # ------------------------------------------------------------------
+    def test_both_executive_summary_versions_generated(self):
+        """generate_reports must produce both standard and normalized executive summaries."""
+        # The loop generates f"_executive_summary_{norm_str}_" where norm_str is "standard"/"normalized"
+        self.assertIn("executive_summary_", self.rg_source)
+        # Must call generate_credit_metrics_email_table with is_normalized in a loop
+        self.assertIn("for is_norm in [False, True]", self.rg_source)
+
+    # ------------------------------------------------------------------
+    # 15. Past_Due_Rate display label is not TTM
+    # ------------------------------------------------------------------
+    def test_past_due_rate_display_not_ttm(self):
+        """Past_Due_Rate display label must not say TTM in the short name."""
+        self.assertIn('"Past_Due_Rate"', self.mdd_source)
+        # The "short" label must not contain "TTM"
+        idx = self.mdd_source.index('"Past_Due_Rate"')
+        snippet = self.mdd_source[idx:idx+80]  # Just the short label
+        self.assertNotIn("TTM Past Due", snippet,
+            "Past_Due_Rate short display label must not say TTM")
+
+
 if __name__ == '__main__':
     unittest.main()
