@@ -2231,12 +2231,16 @@ class TestDateOnlyNaming(unittest.TestCase):
         self.assertNotIn("Bank_Performance_Dashboard_{ts}", src,
                          "Dashboard filename must use build_artifact_filename, not inline ts")
 
-    def test_report_generator_uses_get_run_date_str(self):
-        """report_generator.py must import and use get_run_date_str."""
+    def test_report_generator_no_duplicate_date_stamp(self):
+        """report_generator.py must not append a separate date stamp to artifact names."""
         src_path = Path(__file__).parent / "report_generator.py"
         src = src_path.read_text(encoding="utf-8")
-        self.assertIn("get_run_date_str", src,
-                      "report_generator must use get_run_date_str from logging_utils")
+        # {base} already includes the date from the Excel stem, so there
+        # must be no separate {stamp} variable appended to filenames.
+        import re
+        stamp_usages = re.findall(r'\{stamp\}', src)
+        self.assertEqual(len(stamp_usages), 0,
+                         "report_generator must not use {stamp} — base already has the date")
 
 
 class TestCsvLogging(unittest.TestCase):
@@ -2521,6 +2525,91 @@ class TestLoggerSafeLifecycle(unittest.TestCase):
             f"(use csv_log.shutdown()). Found: {close_calls}")
         self.assertIn("csv_log.shutdown()", src,
             "generate_reports() must call csv_log.shutdown()")
+
+
+# ==========================================================================
+#  PRESENTATION & OUTPUT CLEANUP TESTS
+# ==========================================================================
+
+
+class TestNoMixedRegimeArtifact(unittest.TestCase):
+    """No side-by-side standard+normalized comparison artifact in generate_reports."""
+
+    def test_no_mixed_normalized_comparison_in_generate_reports(self):
+        """generate_reports must not call generate_normalized_comparison_table."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        # Find calls to generate_normalized_comparison_table (not the def itself)
+        import re
+        calls = re.findall(
+            r'(?<!def\s)generate_normalized_comparison_table\s*\(', src
+        )
+        self.assertEqual(len(calls), 0,
+            "generate_reports must not call generate_normalized_comparison_table "
+            "(mixed standard+normalized artifact violates single-regime rule)")
+
+
+class TestNoDoubleDateFilenames(unittest.TestCase):
+    """Artifact filenames must not have a duplicated date suffix."""
+
+    def test_no_double_date_in_artifact_paths(self):
+        """No artifact path should contain the date twice (e.g. _20260311_..._20260311)."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        import re
+        # Look for patterns like {base}_..._YYYYMMDD.ext or {base}_..._{stamp}.ext
+        # Since base already contains the date, any additional _{stamp} or _YYYYMMDD
+        # at the end would create a double date.
+        double_date_calls = re.findall(r'\{stamp\}', src)
+        self.assertEqual(len(double_date_calls), 0,
+            "Artifact paths must not use {stamp} — {base} already contains the date")
+
+    def test_claude_md_no_double_date_examples(self):
+        """CLAUDE.md artifact examples must not show double date."""
+        md_path = Path(__file__).parent / "CLAUDE.md"
+        md = md_path.read_text(encoding="utf-8")
+        import re
+        # Pattern: _YYYYMMDD_<anything>_YYYYMMDD
+        bad = re.findall(r'\{stem\}_\w+_YYYYMMDD\.\w+', md)
+        self.assertEqual(len(bad), 0,
+            f"CLAUDE.md must not show double-date artifact names. Found: {bad}")
+
+
+class TestNormNCOLabel(unittest.TestCase):
+    """Normalized NCO label must not contain '(TTM)'."""
+
+    def test_no_ttm_in_norm_nco_display_labels(self):
+        """Presentation labels for Norm_NCO_Rate must not include (TTM)."""
+        src_path = Path(__file__).parent / "report_generator.py"
+        src = src_path.read_text(encoding="utf-8")
+        import re
+        # Find display labels that combine "Norm" and "NCO" and "TTM"
+        bad = re.findall(r'"Norm NCO Rate \(TTM\)', src)
+        self.assertEqual(len(bad), 0,
+            "Normalized NCO labels must not contain (TTM) — "
+            "Norm_NCO_Rate is already a normalized metric, not a TTM rolling sum")
+
+
+class TestTickerConventionInDocs(unittest.TestCase):
+    """CLAUDE.md must use final ticker convention in output-column examples."""
+
+    def test_no_stale_goldman_sachs_in_output_column_examples(self):
+        """CLAUDE.md output-column examples must use GS not Goldman Sachs."""
+        md_path = Path(__file__).parent / "CLAUDE.md"
+        md = md_path.read_text(encoding="utf-8")
+        import re
+        # Look for "MSPBNA | Goldman Sachs" or "Goldman Sachs | UBS" patterns
+        # which indicate stale full-name column headers in output examples
+        stale = re.findall(r'MSPBNA \| Goldman Sachs|Goldman Sachs \| UBS', md)
+        self.assertEqual(len(stale), 0,
+            f"CLAUDE.md output-column examples must use tickers (GS not Goldman Sachs). Found: {stale}")
+
+    def test_docs_use_ticker_column_convention(self):
+        """CLAUDE.md must contain MSPBNA | GS | UBS pattern for output columns."""
+        md_path = Path(__file__).parent / "CLAUDE.md"
+        md = md_path.read_text(encoding="utf-8")
+        self.assertIn("MSPBNA | GS | UBS", md,
+            "CLAUDE.md must document ticker-style column convention: MSPBNA | GS | UBS")
 
 
 if __name__ == '__main__':

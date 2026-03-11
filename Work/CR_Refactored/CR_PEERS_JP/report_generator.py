@@ -1100,7 +1100,7 @@ def generate_detailed_peer_table(
             ("Norm Risk-Adj ACL Ratio (%)", "Norm_Risk_Adj_Allowance_Coverage", "%"),
             ("Norm ACL Ratio (%)", "Norm_ACL_Coverage", "%"),
             ("Norm Nonaccrual Rate (%)", "Norm_Nonaccrual_Rate", "%"),
-            ("Norm NCO Rate (TTM) (%)", "Norm_NCO_Rate", "%"),
+            ("Norm NCO Rate (%)", "Norm_NCO_Rate", "%"),
             ("Norm SBL % of Loans", "Norm_SBL_Composition", "%"),
             ("Norm Resi % of Loans", "Norm_Wealth_Resi_Composition", "%"),
             ("Norm CRE % of Loans", "Norm_CRE_Investment_Composition", "%"),
@@ -1171,7 +1171,7 @@ def generate_core_pb_peer_table(
             ("Norm Risk-Adj ACL Ratio (%)", "Norm_Risk_Adj_Allowance_Coverage", "%"),
             ("Norm ACL Ratio (%)", "Norm_ACL_Coverage", "%"),
             ("Norm Nonaccrual Rate (%)", "Norm_Nonaccrual_Rate", "%"),
-            ("Norm NCO Rate (TTM) (%)", "Norm_NCO_Rate", "%"),
+            ("Norm NCO Rate (%)", "Norm_NCO_Rate", "%"),
             ("Norm SBL % of Loans", "Norm_SBL_Composition", "%"),
             ("Norm Resi % of Loans", "Norm_Wealth_Resi_Composition", "%"),
             ("Norm CRE % of Loans", "Norm_CRE_Investment_Composition", "%"),
@@ -1550,7 +1550,7 @@ def generate_segment_focus_table(
             ("Norm_CRE_Investment_Composition", "CRE % of Loans*", "%", False),
             ("Norm_Risk_Adj_Allowance_Coverage", "Risk-Adj ACL Ratio (%)*", "%", True),
             ("Norm_Nonaccrual_Rate", "Nonaccrual Rate (%)*", "%", False),
-            ("Norm_NCO_Rate", "NCO Rate (TTM) (%)*", "%", False),
+            ("Norm_NCO_Rate", "NCO Rate (%)*", "%", False),
             ("Norm_Delinquency_Rate", "Delinquency Rate (%)*", "%", False),
         ]
         if segment_name == "CRE":
@@ -2158,8 +2158,8 @@ def generate_reports(
                  event_type="FILE_DISCOVERED", phase="startup", component="excel_discovery",
                  context={"excel_file": str(excel_file)})
 
-    from logging_utils import get_run_date_str
-    stamp = get_run_date_str()
+    # base already contains the date (e.g. "Bank_Performance_Dashboard_20260311")
+    # so we do NOT append a second date suffix to artifact filenames.
     base = Path(excel_file).stem
 
     try:
@@ -2224,7 +2224,7 @@ def generate_reports(
                 proc_df_with_peers, subject_bank_cert, is_normalized=is_norm
             )
             if exec_html:
-                exec_path = tables_dir / f"{base}_executive_summary_{norm_str}_{stamp}.html"
+                exec_path = tables_dir / f"{base}_executive_summary_{norm_str}.html"
                 with open(exec_path, "w", encoding="utf-8") as f:
                     f.write(exec_html)
                 print(f"  Executive summary ({norm_str}) saved: {exec_path}")
@@ -2238,7 +2238,7 @@ def generate_reports(
         print("\n" + "-" * 60)
         print("GENERATING STANDARD CREDIT DETERIORATION CHART")
         print("-" * 60)
-        std_chart_path = str(charts_dir / f"{base}_standard_credit_chart_{stamp}.png")
+        std_chart_path = str(charts_dir / f"{base}_standard_credit_chart.png")
         create_credit_deterioration_chart_ppt(
             proc_df_with_peers=proc_df_with_peers,
             subject_bank_cert=subject_bank_cert,
@@ -2268,7 +2268,7 @@ def generate_reports(
         if norm_line_metric not in norm_df_plot.columns:
             norm_line_metric = "Norm_NPL_to_Gross_Loans_Rate"
 
-        norm_chart_path = str(charts_dir / f"{base}_normalized_credit_chart_{stamp}.png")
+        norm_chart_path = str(charts_dir / f"{base}_normalized_credit_chart.png")
 
         fig, ax = create_credit_deterioration_chart_ppt(
             proc_df_with_peers=norm_df_plot,
@@ -2306,7 +2306,7 @@ def generate_reports(
 
         # -- Standard scatters --
         # Use true composite CERTs directly; peer avg displayed via 90003 (All Peers)
-        s1_path = scatter_dir / f"{base}_scatter_nco_vs_npl_{stamp}.png"
+        s1_path = scatter_dir / f"{base}_scatter_nco_vs_npl.png"
         plot_scatter_dynamic(
             df=rolling8q_df,
             x_col="NPL_to_Gross_Loans_Rate",
@@ -2332,7 +2332,7 @@ def generate_reports(
         print(f"  Standard scatter (NCO vs NPL) saved: {s1_path}")
         csv_log.log_file_written(str(s1_path), phase="scatter", component="scatter_nco_vs_npl")
 
-        s2_path = scatter_dir / f"{base}_scatter_pd_vs_npl_{stamp}.png"
+        s2_path = scatter_dir / f"{base}_scatter_pd_vs_npl.png"
         plot_scatter_dynamic(
             df=rolling8q_df,
             x_col="NPL_to_Gross_Loans_Rate",
@@ -2359,7 +2359,7 @@ def generate_reports(
         csv_log.log_file_written(str(s2_path), phase="scatter", component="scatter_pd_vs_npl")
 
         # -- Normalized scatter — use true composite CERTs directly, no alias rows --
-        s3_path = scatter_dir / f"{base}_scatter_norm_nco_vs_nonaccrual_{stamp}.png"
+        s3_path = scatter_dir / f"{base}_scatter_norm_nco_vs_nonaccrual.png"
         plot_scatter_dynamic(
             df=rolling8q_df,
             x_col="Norm_Nonaccrual_Rate",
@@ -2393,7 +2393,7 @@ def generate_reports(
         print("-" * 60)
         try:
             fred_html, fred_df = build_fred_macro_table(excel_file, list(fred_short_names))
-            fred_path = tables_dir / f"{base}_fred_table_{stamp}.html"
+            fred_path = tables_dir / f"{base}_fred_table.html"
             with open(fred_path, "w", encoding="utf-8") as f:
                 f.write(fred_html)
             print(f"  FRED macro table saved: {fred_path}")
@@ -2407,13 +2407,10 @@ def generate_reports(
         print("GENERATING DETAILED HTML TABLES")
         print("-" * 60)
 
-        # Normalized Comparison (Side-by-side)
-        normcmp_html = generate_normalized_comparison_table(proc_df_with_peers, subject_bank_cert)
-        if normcmp_html:
-            nc = tables_dir / f"{base}_normalized_comparison_{stamp}.html"
-            with open(nc, "w", encoding="utf-8") as f:
-                f.write(normcmp_html)
-            print(f"  Normalized comparison table saved: {nc}")
+        # NOTE: The former mixed standard-vs-normalized comparison artifact
+        # (generate_normalized_comparison_table) has been removed.
+        # Standard and normalized metrics must not be mixed in the same
+        # table/artifact. Each artifact is single-regime only.
 
         # GENERATE DETAILED PEER, RATIO & SEGMENT TABLES
         print("\nGENERATING DETAILED PEER, RATIO & SEGMENT TABLES...")
@@ -2424,30 +2421,30 @@ def generate_reports(
             # Detailed Peer Table
             dt = generate_detailed_peer_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
             if dt:
-                with open(tables_dir / f"{base}_detailed_peer_table_{norm_str}_{stamp}.html", "w") as f:
+                with open(tables_dir / f"{base}_detailed_peer_table_{norm_str}.html", "w") as f:
                     f.write(dt)
 
             # Core PB Detailed Table
             cpb = generate_core_pb_peer_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
             if cpb:
-                with open(tables_dir / f"{base}_core_pb_peer_table_{norm_str}_{stamp}.html", "w") as f:
+                with open(tables_dir / f"{base}_core_pb_peer_table_{norm_str}.html", "w") as f:
                     f.write(cpb)
 
             # Ratio Components
             rc = generate_ratio_components_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
             if rc:
-                with open(tables_dir / f"{base}_ratio_components_{norm_str}_{stamp}.html", "w") as f:
+                with open(tables_dir / f"{base}_ratio_components_{norm_str}.html", "w") as f:
                     f.write(rc)
 
             # Segments
             cre = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, segment_name="CRE", is_normalized=is_norm)
             if cre:
-                with open(tables_dir / f"{base}_cre_segment_{norm_str}_{stamp}.html", "w") as f:
+                with open(tables_dir / f"{base}_cre_segment_{norm_str}.html", "w") as f:
                     f.write(cre)
 
             resi = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, segment_name="Resi", is_normalized=is_norm)
             if resi:
-                with open(tables_dir / f"{base}_resi_segment_{norm_str}_{stamp}.html", "w") as f:
+                with open(tables_dir / f"{base}_resi_segment_{norm_str}.html", "w") as f:
                     f.write(resi)
 
         # ------------------------------------------------------------------
@@ -2458,25 +2455,25 @@ def generate_reports(
         print("-" * 60)
 
         # 1. Portfolio Mix
-        mix_path = str(charts_dir / f"{base}_portfolio_mix_{stamp}.png")
+        mix_path = str(charts_dir / f"{base}_portfolio_mix.png")
         fig = plot_portfolio_mix(proc_df_with_peers, subject_bank_cert, save_path=mix_path)
         if fig:
             print(f"  Portfolio mix chart saved: {mix_path}")
 
         # 2. Problem-Asset Attribution
-        attr_path = str(charts_dir / f"{base}_problem_asset_attribution_{stamp}.png")
+        attr_path = str(charts_dir / f"{base}_problem_asset_attribution.png")
         fig = plot_problem_asset_attribution(proc_df_with_peers, subject_bank_cert, save_path=attr_path)
         if fig:
             print(f"  Problem-asset attribution chart saved: {attr_path}")
 
         # 3. Reserve Allocation vs Risk
-        reserve_path = str(charts_dir / f"{base}_reserve_risk_allocation_{stamp}.png")
+        reserve_path = str(charts_dir / f"{base}_reserve_risk_allocation.png")
         fig = plot_reserve_risk_allocation(proc_df_with_peers, subject_bank_cert, save_path=reserve_path)
         if fig:
             print(f"  Reserve-risk allocation chart saved: {reserve_path}")
 
         # 4. Migration Ladder
-        ladder_path = str(charts_dir / f"{base}_migration_ladder_{stamp}.png")
+        ladder_path = str(charts_dir / f"{base}_migration_ladder.png")
         fig = plot_migration_ladder(proc_df_with_peers, subject_bank_cert, save_path=ladder_path)
         if fig:
             print(f"  Migration ladder chart saved: {ladder_path}")
@@ -2489,37 +2486,37 @@ def generate_reports(
         print("-" * 60)
 
         # 5. Years-of-Reserves by Segment
-        yor_path = str(charts_dir / f"{base}_years_of_reserves_{stamp}.png")
+        yor_path = str(charts_dir / f"{base}_years_of_reserves.png")
         fig = plot_years_of_reserves(proc_df_with_peers, subject_bank_cert, save_path=yor_path)
         if fig:
             print(f"  Years-of-reserves chart saved: {yor_path}")
 
         # 6. Growth vs Deterioration Quadrant
-        gvd_path = str(charts_dir / f"{base}_growth_vs_deterioration_{stamp}.png")
+        gvd_path = str(charts_dir / f"{base}_growth_vs_deterioration.png")
         fig = plot_growth_vs_deterioration(proc_df_with_peers, subject_bank_cert, save_path=gvd_path)
         if fig:
             print(f"  Growth-vs-deterioration chart saved: {gvd_path}")
 
         # 7. Risk-Adjusted Return Frontier
-        rar_path = str(charts_dir / f"{base}_risk_adjusted_return_{stamp}.png")
+        rar_path = str(charts_dir / f"{base}_risk_adjusted_return.png")
         fig = plot_risk_adjusted_return(proc_df_with_peers, subject_bank_cert, save_path=rar_path)
         if fig:
             print(f"  Risk-adjusted return chart saved: {rar_path}")
 
         # 8. Concentration vs Capital Sensitivity
-        cvc_path = str(charts_dir / f"{base}_concentration_vs_capital_{stamp}.png")
+        cvc_path = str(charts_dir / f"{base}_concentration_vs_capital.png")
         fig = plot_concentration_vs_capital(proc_df_with_peers, subject_bank_cert, save_path=cvc_path)
         if fig:
             print(f"  Concentration-vs-capital chart saved: {cvc_path}")
 
         # 9. Liquidity / Draw-Risk Overlay
-        liq_path = str(charts_dir / f"{base}_liquidity_overlay_{stamp}.png")
+        liq_path = str(charts_dir / f"{base}_liquidity_overlay.png")
         fig = plot_liquidity_overlay(proc_df_with_peers, subject_bank_cert, save_path=liq_path)
         if fig:
             print(f"  Liquidity overlay chart saved: {liq_path}")
 
         # 10. Macro Overlay on Credit Trend
-        macro_path = str(charts_dir / f"{base}_macro_overlay_{stamp}.png")
+        macro_path = str(charts_dir / f"{base}_macro_overlay.png")
         fig = plot_macro_overlay(proc_df_with_peers, subject_bank_cert, excel_file, save_path=macro_path)
         if fig:
             print(f"  Macro overlay chart saved: {macro_path}")
@@ -2551,7 +2548,7 @@ def generate_reports(
                 # 1. SBL Backdrop
                 fig = plot_sbl_backdrop(
                     fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_sbl_backdrop_{stamp}.png"),
+                    save_path=str(charts_dir / f"{base}_sbl_backdrop.png"),
                 )
                 if fig:
                     print(f"  SBL backdrop chart saved")
@@ -2559,7 +2556,7 @@ def generate_reports(
                 # 2. Jumbo Conditions
                 fig = plot_jumbo_conditions(
                     fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_jumbo_conditions_{stamp}.png"),
+                    save_path=str(charts_dir / f"{base}_jumbo_conditions.png"),
                 )
                 if fig:
                     print(f"  Jumbo conditions chart saved")
@@ -2567,7 +2564,7 @@ def generate_reports(
                 # 3. Residential Credit Cycle
                 fig = plot_resi_credit_cycle(
                     fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_resi_credit_cycle_{stamp}.png"),
+                    save_path=str(charts_dir / f"{base}_resi_credit_cycle.png"),
                 )
                 if fig:
                     print(f"  Resi credit cycle chart saved")
@@ -2575,7 +2572,7 @@ def generate_reports(
                 # 4. CRE Cycle
                 fig = plot_cre_cycle(
                     fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_cre_cycle_{stamp}.png"),
+                    save_path=str(charts_dir / f"{base}_cre_cycle.png"),
                 )
                 if fig:
                     print(f"  CRE cycle chart saved")
@@ -2583,7 +2580,7 @@ def generate_reports(
                 # 5. Case-Shiller Collateral Panel
                 fig = plot_cs_collateral_panel(
                     fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_cs_collateral_panel_{stamp}.png"),
+                    save_path=str(charts_dir / f"{base}_cs_collateral_panel.png"),
                 )
                 if fig:
                     print(f"  Case-Shiller collateral panel saved")
