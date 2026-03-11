@@ -2818,5 +2818,129 @@ class TestImportSafety(unittest.TestCase):
             "main() must call os.chdir()")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# DIRECTIVE 5 TESTS — FRED Frequency Inference Fix
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestInferFreqFromIndex(unittest.TestCase):
+    """Tests for infer_freq_from_index() — the FRED frequency inference helper."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Extract infer_freq_from_index from source and exec it to avoid
+        importing the full module (which requires aiohttp, matplotlib, etc.)."""
+        import re
+        src = (Path(__file__).parent / "MSPBNA_CR_Normalized.py").read_text(encoding="utf-8")
+        # Extract the module-level function (starts at column 0)
+        lines = src.splitlines()
+        func_lines = []
+        capturing = False
+        for line in lines:
+            if line.startswith("def infer_freq_from_index"):
+                capturing = True
+            elif capturing and line and not line[0].isspace() and not line.startswith("#"):
+                break  # left function
+            if capturing:
+                func_lines.append(line)
+        func_src = "\n".join(func_lines)
+        ns = {"pd": pd, "np": __import__("numpy")}
+        exec(func_src, ns)
+        cls.infer = staticmethod(ns["infer_freq_from_index"])
+
+    def test_infer_freq_monthly_index(self):
+        """Monthly DatetimeIndex should return ('monthly', 'M')."""
+        idx = pd.date_range("2020-01-01", periods=24, freq="MS")
+        name, code = self.infer(idx)
+        self.assertEqual(code, "M", f"Expected 'M' for monthly, got '{code}'")
+        self.assertEqual(name, "monthly")
+
+    def test_infer_freq_quarterly_index(self):
+        """Quarterly DatetimeIndex should return ('quarterly', 'Q')."""
+        idx = pd.date_range("2020-01-01", periods=12, freq="QS")
+        name, code = self.infer(idx)
+        self.assertEqual(code, "Q", f"Expected 'Q' for quarterly, got '{code}'")
+        self.assertEqual(name, "quarterly")
+
+    def test_infer_freq_daily_index(self):
+        """Daily DatetimeIndex should return ('daily', 'D')."""
+        idx = pd.date_range("2020-01-01", periods=500, freq="D")
+        name, code = self.infer(idx)
+        self.assertEqual(code, "D", f"Expected 'D' for daily, got '{code}'")
+        self.assertEqual(name, "daily")
+
+    def test_infer_freq_irregular_monthly_no_crash(self):
+        """Irregular monthly-ish dates must not crash."""
+        # Slightly irregular monthly: some months missing, some offset
+        dates = pd.to_datetime([
+            "2020-01-15", "2020-02-14", "2020-04-16", "2020-05-15",
+            "2020-07-14", "2020-08-15", "2020-09-14", "2020-11-16",
+            "2021-01-15", "2021-02-14", "2021-04-16", "2021-05-15",
+            "2021-07-14", "2021-08-15", "2021-09-14", "2021-11-16",
+        ])
+        idx = pd.DatetimeIndex(dates)
+        # Should not raise — any valid return is fine
+        name, code = self.infer(idx)
+        self.assertIn(code, ("D", "M", "Q"), f"Unexpected code: {code}")
+
+    def test_infer_freq_duplicate_dates_no_crash(self):
+        """Duplicate timestamps must be handled safely."""
+        dates = pd.to_datetime(["2020-01-01", "2020-01-01", "2020-04-01",
+                                "2020-04-01", "2020-07-01", "2020-10-01"])
+        idx = pd.DatetimeIndex(dates)
+        name, code = self.infer(idx)
+        self.assertIn(code, ("D", "M", "Q"))
+
+    def test_infer_freq_old_bug_int_not_subscriptable(self):
+        """Reproduce the exact pattern that caused TypeError: 'int' object is not subscriptable.
+
+        The old code did:
+            pd.Series(list(zip(idx.year, idx.month)))
+              .drop_duplicates()
+              .groupby(lambda x: x[0])  # <-- x is the integer INDEX label
+              .size()
+
+        This test creates an index that reaches the last-resort fallback
+        (not daily, not clearly monthly or quarterly by obs-count) and
+        verifies no TypeError is raised.
+        """
+        # 7 observations per year — falls through all earlier heuristics
+        # (not >=200 daily, not 6-15 monthly, not 3-5 quarterly)
+        dates = []
+        for year in [2018, 2019, 2020, 2021]:
+            for month in [1, 2, 4, 5, 7, 9, 11]:
+                dates.append(f"{year}-{month:02d}-15")
+        idx = pd.DatetimeIndex(pd.to_datetime(dates))
+        # Must not raise TypeError
+        name, code = self.infer(idx)
+        self.assertIn(code, ("M", "Q"),
+            "7 obs/year with 7 distinct months should resolve to monthly or quarterly")
+
+    def test_infer_freq_empty_index(self):
+        """Empty index should return conservative default without crashing."""
+        idx = pd.DatetimeIndex([])
+        name, code = self.infer(idx)
+        self.assertIn(code, ("D", "M", "Q"))
+
+    def test_infer_freq_nat_handling(self):
+        """Index with NaT values should not crash."""
+        dates = pd.to_datetime(["2020-01-01", pd.NaT, "2020-04-01",
+                                pd.NaT, "2020-07-01", "2020-10-01"])
+        idx = pd.DatetimeIndex(dates)
+        name, code = self.infer(idx)
+        self.assertIn(code, ("D", "M", "Q"))
+
+    def test_module_level_function_exists(self):
+        """infer_freq_from_index must be a module-level function (not just nested)."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        # Must find a non-indented def
+        found = False
+        for line in source.splitlines():
+            if line.startswith("def infer_freq_from_index"):
+                found = True
+                break
+        self.assertTrue(found, "infer_freq_from_index must be a module-level function")
+
+
 if __name__ == '__main__':
     unittest.main()

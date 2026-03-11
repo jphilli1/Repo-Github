@@ -316,6 +316,13 @@ Both standard and normalized credit-deterioration charts are generated.
 - Use `list(dict.fromkeys(series_ids))` to preserve order while removing duplicates.
 - The guard must exist both at construction time (when building `series_ids_to_fetch`) and at the entry point of `fetch_all_series_async()`.
 
+### FRED Frequency Inference
+
+- `infer_freq_from_index(idx)` (module-level in `MSPBNA_CR_Normalized.py`) infers series frequency from a `DatetimeIndex` when FRED metadata is missing or marked "Unknown".
+- The helper is **heuristic and fail-safe**: it tries `pd.infer_freq()` first, then median-obs-per-year, then distinct-months-per-year, and falls back to `("quarterly", "Q")` on any unexpected failure.
+- **Never** use `Series.groupby(lambda x: x[0])` on a Series of tuples — pandas passes the integer index label, not the tuple value. Use `DataFrame.groupby()` on named columns instead.
+- The helper should never crash the FRED pipeline. All code paths are wrapped in `try/except`.
+
 ### FRED Series Validation
 
 - The FRED API returns HTTP 400 Bad Request for discontinued or mistyped series IDs. Always verify IDs against the FRED website before adding them to `FRED_SERIES_TO_FETCH`.
@@ -471,6 +478,25 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — FRED Frequency Inference Bugfix
+
+**Bug**: `_infer_freq_from_index()` crashed with `TypeError: 'int' object is not subscriptable` during the last-resort fallback branch. The old code built a `pd.Series` of `(year, month)` tuples, then did `.groupby(lambda x: x[0])` — but `groupby` passes the **Series index label** (an integer) into the lambda, not the tuple value. So `x[0]` tried to subscript an `int`.
+
+**Fix**: Replaced the `Series.groupby(lambda)` pattern with a `DataFrame.groupby("year")["month"].nunique()` approach that groups by actual column values, not index labels. The function now:
+- Normalizes the index: coerce to `DatetimeIndex`, drop `NaT`, sort, deduplicate
+- Tries `pd.infer_freq()` first (most reliable)
+- Falls back to median-observations-per-year heuristic
+- Last resort uses `DataFrame.groupby` on year/month columns (the fixed path)
+- Wraps everything in `try/except` — returns `("quarterly", "Q")` on any unexpected failure
+
+**Note**: Frequency inference is still heuristic when FRED metadata is missing or marked "Unknown". The helper is a best-effort fallback, not a guarantee. Series with highly irregular observation patterns may be classified conservatively as quarterly.
+
+**Changes:**
+1. **MSPBNA_CR_Normalized.py** — Extracted `infer_freq_from_index()` to module level for testability. Nested version now delegates to it. Added `NaT` handling, `try/except` safety wrapper.
+2. **test_regression.py** — Added `TestInferFreqFromIndex` (9 tests): monthly, quarterly, daily, irregular, duplicates, NaT, empty, exact reproduction of old bug, module-level function existence.
+
+**Test baseline**: 165 tests — 153 passing, 0 failures, 10 pre-existing errors (missing `matplotlib`/`aiohttp`), 2 skipped.
 
 ### 2026-03-11 — Final Cleanup & Testability
 

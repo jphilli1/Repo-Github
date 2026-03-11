@@ -96,6 +96,58 @@ def annualize_ytd(df: pd.DataFrame, col_name: str) -> pd.Series:
     return df[col_name] * (4.0 / quarter)
 
 
+def infer_freq_from_index(idx: pd.DatetimeIndex) -> tuple:
+    """Infer FRED series frequency from a DatetimeIndex.
+
+    Returns a tuple of (frequency_name, frequency_code):
+      - ("daily", "D")
+      - ("monthly", "M")
+      - ("quarterly", "Q")
+
+    Defensive: drops NaT, deduplicates, and wraps all heuristics in
+    try/except so it never crashes the FRED pipeline.  Falls back to
+    ("quarterly", "Q") when inference is uncertain.
+    """
+    try:
+        idx = pd.DatetimeIndex(idx, copy=False)
+        idx = idx.dropna().sort_values().unique()
+        if len(idx) < 3:
+            return ("monthly", "M")  # conservative default
+
+        # Try pandas built-in inference first (most reliable)
+        guess = pd.infer_freq(idx)
+        if guess:
+            g = guess.upper()
+            if g.startswith(("Q", "QS")):
+                return ("quarterly", "Q")
+            if g.startswith(("M", "MS")):
+                return ("monthly", "M")
+            if g.startswith(("D", "B", "C", "W")):
+                return ("daily", "D")
+
+        # Heuristic fallback: median observations per year
+        vc = pd.Series(idx.year).value_counts()
+        med_per_year = float(vc.median()) if not vc.empty else 0.0
+        if med_per_year >= 200:
+            return ("daily", "D")
+        if 6 <= med_per_year <= 15:
+            return ("monthly", "M")
+        if 3 <= med_per_year <= 5:
+            return ("quarterly", "Q")
+
+        # Last resort: count distinct months per year using a DataFrame
+        # (NOT a groupby-lambda on a Series of tuples, which would receive
+        # the integer index label instead of the tuple value).
+        ym = pd.DataFrame({"year": idx.year, "month": idx.month}).drop_duplicates()
+        months_per_year = float(ym.groupby("year")["month"].nunique().median())
+        if months_per_year and months_per_year >= 6:
+            return ("monthly", "M")
+        return ("quarterly", "Q")
+    except Exception:
+        # Absolute last resort — never crash the FRED pipeline
+        return ("quarterly", "Q")
+
+
 # ==================================================================================
 #  DETERMINISTIC CERT CONFIGURATION
 # ==================================================================================
@@ -2132,27 +2184,8 @@ class FREDDataFetcher:
         # === END PATCH S-RAW2 ===
 
         # === PATCH FREQ-2: infer frequency for series with missing/unknown metadata ===
-        def _infer_freq_from_index(idx: pd.DatetimeIndex) -> tuple[str, str]:
-            """Return ('daily'|'monthly'|'quarterly', 'D'|'M'|'Q') using raw index cadence."""
-            idx = pd.DatetimeIndex(idx).sort_values().unique()
-            if len(idx) < 3:
-                return ("monthly", "M")  # conservative default
-            guess = pd.infer_freq(idx)
-            if guess:
-                g = guess.upper()
-                if g.startswith(("Q", "QS")): return ("quarterly", "Q")
-                if g.startswith(("M", "MS")): return ("monthly", "M")
-                if g.startswith(("D", "B", "C", "W")): return ("daily", "D")
-            # Heuristic fallback: med observations per year
-            vc = pd.Series(idx.year).value_counts()
-            med_per_year = float(vc.median()) if not vc.empty else 0.0
-            if med_per_year >= 200: return ("daily", "D")
-            if 6 <= med_per_year <= 15: return ("monthly", "M")
-            if 3 <= med_per_year <= 5: return ("quarterly", "Q")
-            # last resort: bucket by month uniqueness
-            months_per_year = pd.Series(list(zip(idx.year, idx.month))).drop_duplicates().groupby(lambda x: x[0]).size().median()
-            if months_per_year and months_per_year >= 6: return ("monthly", "M")
-            return ("quarterly", "Q")
+        # Delegates to the module-level infer_freq_from_index() for testability.
+        _infer_freq_from_index = infer_freq_from_index
 
         # Build a quick lookup of existing metadata
         if metadata_df is None or metadata_df.empty:
