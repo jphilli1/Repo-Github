@@ -341,6 +341,58 @@ def _get_metric_short_name(code: str) -> str:
     return result["Metric_Name"]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# METRIC ROLE CLASSIFICATION — controls performance flag eligibility
+# ═══════════════════════════════════════════════════════════════════════════
+# descriptive: size/balance/composition — no evaluative flag
+# evaluative:  risk/return/coverage — gets Top/Bottom Quartile flag
+# diagnostic:  internal pipeline columns — excluded from presentation
+
+DESCRIPTIVE_METRICS = frozenset({
+    "ASSET", "LNLS", "Gross_Loans", "Total_ACL", "Norm_ACL_Balance",
+    "Norm_Gross_Loans", "Excluded_Balance", "SBL_Balance",
+    "Fund_Finance_Balance", "RIC_Resi_Cost", "RIC_CRE_Cost",
+    "Norm_Total_NCO", "Norm_Total_Nonaccrual",
+    # Composition / share metrics (describe portfolio shape, not performance)
+    "SBL_Composition", "Norm_SBL_Composition", "Fund_Finance_Composition",
+    "Norm_Fund_Finance_Composition", "Norm_Wealth_Resi_Composition",
+    "Norm_CRE_Investment_Composition", "Norm_Exclusion_Pct",
+    "RIC_Resi_Loan_Share", "RIC_CRE_Loan_Share", "RIC_CRE_ACL_Share",
+    "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+})
+
+# Curated metric allowlist for presentation tabs (Summary_Dashboard / Normalized_Comparison).
+# Only these metrics appear in the curated presentation view.
+SUMMARY_DASHBOARD_METRICS = [
+    # Size
+    "ASSET", "LNLS",
+    # Credit quality (standard)
+    "Risk_Adj_Allowance_Coverage", "Allowance_to_Gross_Loans_Rate",
+    "Nonaccrual_to_Gross_Loans_Rate", "TTM_NCO_Rate",
+    # Composition
+    "SBL_Composition", "RIC_Resi_Loan_Share", "RIC_CRE_Loan_Share",
+    # CRE segment
+    "RIC_CRE_ACL_Share", "RIC_CRE_ACL_Coverage",
+    "RIC_CRE_Risk_Adj_Coverage", "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_NCO_Rate",
+    # Profitability
+    "ROA", "ROE", "NIMY", "EEFFR",
+    "Loan_Yield_Proxy", "Provision_to_Loans_Rate",
+    # Liquidity
+    "Liquidity_Ratio", "HQLA_Ratio", "Loans_to_Deposits",
+]
+
+NORMALIZED_COMPARISON_METRICS = [
+    "Norm_Gross_Loans", "Norm_ACL_Coverage",
+    "Norm_Risk_Adj_Allowance_Coverage", "Norm_Nonaccrual_Rate",
+    "Norm_NCO_Rate", "Norm_Delinquency_Rate",
+    "Norm_SBL_Composition", "Norm_Fund_Finance_Composition",
+    "Norm_Wealth_Resi_Composition", "Norm_CRE_Investment_Composition",
+    "Norm_Exclusion_Pct",
+    "Norm_Loan_Yield", "Norm_Loss_Adj_Yield", "Norm_Risk_Adj_Return",
+    # Intentionally excluded: Norm_Provision_Rate (set to NaN by design)
+]
+
+
 from enum import Enum
 
 # =============================================================================
@@ -3532,8 +3584,9 @@ class PeerAnalyzer:
         subject_data = latest_data[latest_data["CERT"] == self.config.subject_bank_cert]
         if subject_data.empty: return pd.DataFrame()
 
-        numeric_cols = latest_data.select_dtypes(include=["number"]).columns
-        metrics_to_compare = [c for c in numeric_cols if c not in ("CERT", "REPDTE")]
+        # Use curated allowlist — keeps presentation tab focused on actionable KPIs,
+        # excludes raw MDRM fields, diagnostic columns, and internal pipeline columns.
+        metrics_to_compare = [m for m in SUMMARY_DASHBOARD_METRICS if m in latest_data.columns]
         comparison_list = []
 
         for metric in metrics_to_compare:
@@ -3628,17 +3681,9 @@ class PeerAnalyzer:
         subject_data = latest_data[latest_data["CERT"] == self.config.subject_bank_cert]
         if subject_data.empty: return pd.DataFrame()
 
-        # Focus on normalized metrics
-        norm_metrics = [
-            'Norm_NCO_Rate', 'Norm_Nonaccrual_Rate', 'Norm_Delinquency_Rate',
-            'Norm_ACL_Coverage', 'Norm_Gross_Loans', 'Norm_Total_NCO',
-            'Norm_Total_Nonaccrual', 'Norm_SBL_Composition',
-            'Norm_Fund_Finance_Composition', 'Norm_Wealth_Resi_Composition',
-            'Norm_Exclusion_Pct', 'Excluded_Balance',
-            # Normalized Profitability
-            'Norm_Loan_Yield', 'Norm_Provision_Rate',
-            'Norm_Loss_Adj_Yield', 'Norm_Risk_Adj_Return'
-        ]
+        # Use curated allowlist — Norm_Provision_Rate is intentionally excluded
+        # (set to NaN by design; provision expense is not segment-specific)
+        norm_metrics = [m for m in NORMALIZED_COMPARISON_METRICS if m in latest_data.columns]
 
         comparison_list = []
 
@@ -3680,11 +3725,19 @@ class PeerAnalyzer:
         return pd.DataFrame(comparison_list)
 
     def _get_performance_flag(self, metric_code: str, percentile: float) -> str:
-        """Determines if high/low percentile is good/bad based on metric type."""
+        """Determines if high/low percentile is good/bad based on metric type.
+
+        Returns blank for descriptive metrics (size, balance, composition)
+        so that non-evaluative fields do not receive misleading flags.
+        """
+        # Descriptive metrics get no evaluative flag
+        if metric_code in DESCRIPTIVE_METRICS:
+            return ""
+
         metric = metric_code.lower()
 
         # Metrics where LOWER is better
-        lower_is_better_terms = ["nco", "npl", "past_due", "nonaccrual", "cost_of_funds", "pd30", "pd90", "risk"]
+        lower_is_better_terms = ["nco", "npl", "past_due", "nonaccrual", "cost_of_funds", "pd30", "pd90", "delinq"]
         is_risk_metric = any(term in metric for term in lower_is_better_terms)
 
         if is_risk_metric:
@@ -3692,7 +3745,7 @@ class PeerAnalyzer:
             if percentile <= 50: return "Better than Median"
             return "Bottom Quartile (High Risk)"
 
-        # Metrics where HIGHER is better (Profitability, Capital, Growth)
+        # Metrics where HIGHER is better (Profitability, Capital, Coverage)
         else:
             if percentile >= 75: return "Top Quartile (Strong)"
             if percentile >= 50: return "Better than Median"

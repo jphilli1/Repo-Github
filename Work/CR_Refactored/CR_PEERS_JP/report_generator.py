@@ -1197,10 +1197,12 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
 
     try:
         subj = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
-        peer_cert = 99999 if 99999 in latest_data["CERT"].values else (90003 if 90003 in latest_data["CERT"].values else 90001)
-        peer = latest_data[latest_data["CERT"] == peer_cert].iloc[0]
     except IndexError:
-        return None
+        return None  # Subject bank is required
+
+    # Safely handle missing peer composites without aborting table generation
+    peer_cert = 99999 if 99999 in latest_data["CERT"].values else (90003 if 90003 in latest_data["CERT"].values else 90001)
+    peer = latest_data[latest_data["CERT"] == peer_cert].iloc[0] if peer_cert in latest_data["CERT"].values else pd.Series()
 
     # Synthesize _Norm_Total_Past_Due for normalized delinquency row
     if 'Norm_PD30' in latest_data.columns and 'Norm_PD90' in latest_data.columns:
@@ -2672,7 +2674,8 @@ def create_credit_deterioration_chart_ppt(
                         columnspacing=2.0, handlelength=2.2, fontsize=legend_fontsize)
     leg.get_frame().set_alpha(0.96)
 
-    fig.tight_layout()
+    # tight_layout call removed — conflicts with twinx() + GridSpec, causing
+    # noisy warnings. savefig(..., bbox_inches="tight") handles layout instead.
     if save_path:
         Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
