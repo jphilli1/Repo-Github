@@ -36,7 +36,6 @@ from metric_registry import run_upstream_validation_suite
 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-os.chdir(script_dir)
 
 
 # ==================================================================================
@@ -110,22 +109,11 @@ except ImportError:
     pass
 
 
-token = os.getenv("HUD_USER_TOKEN")
-print("HUD_USER_TOKEN found:", bool(token))
-print("Length:", len(token) if token else 0)
-print("Prefix:", token[:6] + "..." if token else None)
-_mspbna_raw = os.getenv("MSPBNA_CERT")
-_msbna_raw = os.getenv("MSBNA_CERT")
-if not _mspbna_raw or not _msbna_raw:
-    raise ValueError(
-        "MSPBNA_CERT and MSBNA_CERT environment variables are required.\n"
-        "Set them before running:\n"
-        "  export MSPBNA_CERT=34221\n"
-        "  export MSBNA_CERT=32992\n"
-        "Or create a .env file in the script directory with those values."
-    )
-MSPBNA_CERT = int(_mspbna_raw)
-MSBNA_CERT = int(_msbna_raw)
+# Env vars are read with defaults so the module can be imported safely without
+# requiring environment variables to be set.  The hard validation (ValueError)
+# lives in _validate_runtime_env(), which main() calls before doing real work.
+MSPBNA_CERT = int(os.getenv("MSPBNA_CERT", "34221"))
+MSBNA_CERT = int(os.getenv("MSBNA_CERT", "32992"))
 MS_COMBINED_CERT = int(os.getenv("MS_COMBINED_CERT", "88888"))
 
 # Composite aggregation: "mean" or "weighted" (auto-detect if unset)
@@ -158,8 +146,29 @@ def setup_logging(log_dir: str = "logs") -> logging.Logger:
     logger.info(f"Logging initialized. CSV log: {csv_log.log_filename}")
     return logger
 
-csv_log = None  # Will be set by setup_logging()
-logger = setup_logging()
+csv_log = None   # Will be set by setup_logging() at runtime
+logger = None    # Will be set by setup_logging() at runtime
+
+
+def _validate_runtime_env() -> None:
+    """Validate required environment variables at runtime (not import time).
+
+    Called by main() before doing real work.  Prints HUD token info and
+    raises ValueError if MSPBNA_CERT / MSBNA_CERT are unset.
+    """
+    token = os.getenv("HUD_USER_TOKEN")
+    print("HUD_USER_TOKEN found:", bool(token))
+    print("Length:", len(token) if token else 0)
+    print("Prefix:", token[:6] + "..." if token else None)
+
+    if not os.getenv("MSPBNA_CERT") or not os.getenv("MSBNA_CERT"):
+        raise ValueError(
+            "MSPBNA_CERT and MSBNA_CERT environment variables are required.\n"
+            "Set them before running:\n"
+            "  export MSPBNA_CERT=34221\n"
+            "  export MSBNA_CERT=32992\n"
+            "Or create a .env file in the script directory with those values."
+        )
 
 @dataclass
 class DashboardConfig:
@@ -6472,6 +6481,13 @@ def load_config() -> DashboardConfig:
 
 
 def main():
+    global logger
+    # Runtime bootstrap — these were removed from module level so that
+    # importing the module does not require env vars, alter cwd, or open logs.
+    os.chdir(script_dir)
+    _validate_runtime_env()
+    logger = setup_logging()
+
     run_results = {}
     try:
         config = load_config()
