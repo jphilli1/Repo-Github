@@ -30,7 +30,7 @@ from tqdm.asyncio import tqdm as tqdm_asyncio
 
 # --- Consolidated Data Dictionary (same package) ---
 from master_data_dictionary import MasterDataDictionary, LOCAL_DERIVED_METRICS
-from case_shiller_zip_mapper import build_case_shiller_zip_sheets
+from case_shiller_zip_mapper import build_case_shiller_zip_sheets, resolve_hud_token
 from metric_registry import run_upstream_validation_suite
 
 
@@ -202,16 +202,25 @@ csv_log = None   # Will be set by setup_logging() at runtime
 logger = None    # Will be set by setup_logging() at runtime
 
 
-def _validate_runtime_env() -> None:
+def _validate_runtime_env() -> Optional[str]:
     """Validate required environment variables at runtime (not import time).
 
-    Called by main() before doing real work.  Prints HUD token info and
-    raises ValueError if MSPBNA_CERT / MSBNA_CERT are unset.
+    Called by main() before doing real work.  Uses resolve_hud_token() for
+    multi-source HUD token discovery with full diagnostics.
+
+    Returns the resolved HUD token (or None) so main() can pass it explicitly.
     """
-    token = os.getenv("HUD_USER_TOKEN")
-    print("HUD_USER_TOKEN found:", bool(token))
-    print("Length:", len(token) if token else 0)
-    print("Prefix:", token[:6] + "..." if token else None)
+    hud_token, diag = resolve_hud_token(script_dir=str(script_dir))
+    print("HUD_USER_TOKEN visible to process:", diag["token_found"])
+    print("  source_used:", diag["source_used"])
+    print("  token_length:", diag["token_length"])
+    print("  token_prefix_masked:", diag["token_prefix_masked"])
+    print("  dotenv_available:", diag["dotenv_available"])
+    print("  paths_checked:", diag["paths_checked"])
+    print("  cwd:", diag["current_working_directory"])
+    print("  script_dir:", diag["script_directory"])
+    print("  executable:", diag["process_executable"])
+    print("  pid:", diag["process_pid"])
 
     if not os.getenv("MSPBNA_CERT") or not os.getenv("MSBNA_CERT"):
         raise ValueError(
@@ -221,6 +230,8 @@ def _validate_runtime_env() -> None:
             "  export MSBNA_CERT=32992\n"
             "Or create a .env file in the script directory with those values."
         )
+
+    return hud_token
 
 @dataclass
 class DashboardConfig:
@@ -6018,7 +6029,7 @@ class BankPerformanceDashboard:
             {"MetricCode":"Norm_Risk_Adj_Allowance_Coverage", "Display":"Norm: Risk-Adj Coverage (Ex-SBL)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Resi_ACL_Coverage",           "Display":"Resi ACL Coverage on Wealth Resi Balance",   "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Resi_ACL_Share",              "Display":"Resi ACL Share of Norm ACL",   "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE Reserve % of Norm ACL",    "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE ACL Coverage (% of CRE Loans)",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Comm_ACL_Coverage",           "Display":"C&I Reserve % of Norm Loans",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_Investment_Composition", "Display":"Norm: CRE Invest. % (Ex-ADC)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_OO_Composition",         "Display":"Norm: CRE Owner-Occ %",        "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
@@ -6228,19 +6239,26 @@ class BankPerformanceDashboard:
             metric_validation_df = pd.DataFrame()
 
         # --- Case-Shiller ZIP Enrichment (standalone sheets) ---
-        # Produces up to 3 sheets: CaseShiller_Zip_Coverage, CaseShiller_Zip_Summary,
-        # CaseShiller_County_Map_Audit. Wrapped in try/except so HUD API failures
-        # do not crash the pipeline.
+        # Produces up to 3+2 keys: 3 DataFrames + enrichment_status + token_diagnostics.
+        # Wrapped in try/except so HUD API failures do not crash the pipeline.
         cs_kwargs = {}
         try:
-            cs_zip_sheets = build_case_shiller_zip_sheets()
+            _hud_tok = self.config.get("_hud_user_token")
+            cs_zip_sheets = build_case_shiller_zip_sheets(hud_user_token=_hud_tok)
+            enrich_status = cs_zip_sheets.pop("enrichment_status", "UNKNOWN")
+            tok_diag = cs_zip_sheets.pop("token_diagnostics", {})
+            logging.info(f"Case-Shiller enrichment status: {enrich_status}")
+            if tok_diag:
+                logging.info(f"  token_diagnostics: source={tok_diag.get('source_used')}, "
+                             f"found={tok_diag.get('token_found')}, "
+                             f"prefix={tok_diag.get('token_prefix_masked')}")
             for sheet_name, sheet_df in cs_zip_sheets.items():
                 if isinstance(sheet_df, pd.DataFrame) and not sheet_df.empty:
                     cs_kwargs[sheet_name] = sheet_df
             if cs_kwargs:
                 logging.info(f"Case-Shiller ZIP sheets to write: {list(cs_kwargs.keys())}")
             else:
-                logging.warning("Case-Shiller ZIP enrichment produced no non-empty sheets")
+                logging.warning(f"Case-Shiller ZIP enrichment produced no non-empty sheets (status={enrich_status})")
         except Exception as e:
             logging.warning(f"Case-Shiller ZIP enrichment failed (non-fatal): {e}")
 
@@ -6520,12 +6538,13 @@ def main():
     # Runtime bootstrap — these were removed from module level so that
     # importing the module does not require env vars, alter cwd, or open logs.
     os.chdir(script_dir)
-    _validate_runtime_env()
+    _hud_token = _validate_runtime_env()
     logger = setup_logging()
 
     run_results = {}
     try:
         config = load_config()
+        config["_hud_user_token"] = _hud_token  # pass resolved token to pipeline
         dash = BankPerformanceDashboard(config)
         run_results = dash.run()
         print("\n" + "="*80)

@@ -3079,10 +3079,10 @@ class TestLowCoverageChartSuppression(unittest.TestCase):
 
 
 class TestCoverageMetricFormatting(unittest.TestCase):
-    """Coverage metrics in ratio-components must use x-format, not %."""
+    """Coverage metrics in ratio-components must use semantic format types."""
 
-    def test_ratio_components_uses_fmt_multiple_for_coverage(self):
-        """generate_ratio_components_table must use _fmt_multiple for coverage metrics."""
+    def test_ratio_components_uses_fmt_multiple_for_npl(self):
+        """generate_ratio_components_table must use _fmt_multiple for NPL coverage."""
         src = Path(__file__).parent / "report_generator.py"
         source = src.read_text(encoding="utf-8")
         lines = source.splitlines()
@@ -3091,19 +3091,25 @@ class TestCoverageMetricFormatting(unittest.TestCase):
         for line in lines:
             if "def generate_ratio_components_table" in line:
                 in_func = True
-            elif in_func and not line.startswith(" ") and line.strip():
+                continue
+            if in_func and line.strip() and not line[0].isspace() and (line.startswith("def ") or line.startswith("class ")):
                 break
             if in_func and "_fmt_multiple" in line:
                 found = True
         self.assertTrue(found,
-            "generate_ratio_components_table must use _fmt_multiple for coverage metrics")
+            "generate_ratio_components_table must use _fmt_multiple for NPL coverage")
 
-    def test_coverage_keyword_detection(self):
-        """Ratio-components must detect coverage metrics by keyword."""
+    def test_metric_format_type_registry(self):
+        """report_generator must define _METRIC_FORMAT_TYPE for semantic formatting."""
         src = Path(__file__).parent / "report_generator.py"
         source = src.read_text(encoding="utf-8")
-        self.assertIn("_COVERAGE_KEYWORDS", source,
-            "Ratio-components must define _COVERAGE_KEYWORDS for x-format detection")
+        self.assertIn("_METRIC_FORMAT_TYPE", source,
+            "report_generator must define _METRIC_FORMAT_TYPE dict for semantic formatting")
+        # NPL coverage metrics must be marked as "x" format
+        self.assertIn('"RIC_CRE_Risk_Adj_Coverage": "x"', source,
+            "CRE NPL coverage must be formatted as x-multiple")
+        self.assertIn('"RIC_Resi_Risk_Adj_Coverage": "x"', source,
+            "Resi NPL coverage must be formatted as x-multiple")
 
 
 class TestNormalizedRatioLabels(unittest.TestCase):
@@ -3163,6 +3169,204 @@ class TestNoDoubleDateArtifactPaths(unittest.TestCase):
         double_date = re.findall(r'\{stamp\}', source)
         self.assertEqual(len(double_date), 0,
             f"report_generator.py must not use {{stamp}} variable (causes double-date). Found {len(double_date)} occurrences.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DIRECTIVE 7 — Coverage vs Share Semantics, HUD Token Discovery
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCoverageVsShareSemantics(unittest.TestCase):
+    """ACL metrics must be labeled correctly based on denominator type."""
+
+    def test_share_rows_not_labeled_coverage(self):
+        """If denominator is Total_ACL or Norm_ACL_Balance, label must not say 'Coverage'."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            # Check ratio-components metric tuples: (display, num_lbl, num_col, den_lbl, den_col, rat_col)
+            if ("Total_ACL" in line or "Norm_ACL_Balance" in line) and "RIC_" in line:
+                # This line has ACL pool as denominator — should be share, not coverage
+                parts = line.strip()
+                if parts.startswith("(") and "Coverage" in parts.split(",")[0]:
+                    # First element is display name — it should not say "Coverage"
+                    self.fail(
+                        f"Row with ACL-pool denominator is mislabeled as Coverage: {parts[:80]}"
+                    )
+
+    def test_exposure_coverage_rows_have_exposure_denominator(self):
+        """Rows labeled 'ACL Coverage' must have exposure-base denominator, not ACL pool."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('("') and "ACL Coverage" in stripped:
+                # This is a ratio-components tuple with "Coverage" in display name
+                # Denominator (5th element) must NOT be Total_ACL or Norm_ACL_Balance
+                self.assertNotIn("Total_ACL", stripped.split(",")[4] if len(stripped.split(",")) > 4 else "",
+                    f"Coverage row has ACL pool as denominator: {stripped[:80]}")
+                self.assertNotIn("Norm_ACL_Balance", stripped.split(",")[4] if len(stripped.split(",")) > 4 else "",
+                    f"Coverage row has ACL pool as denominator: {stripped[:80]}")
+
+    def test_norm_acl_coverage_has_loans_denominator(self):
+        """Norm_ACL_Coverage must be Norm_ACL_Balance / Norm_Gross_Loans."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            if "Norm_ACL_Coverage" in line and "safe_div" in line:
+                self.assertIn("Norm_Gross_Loans", line,
+                    "Norm_ACL_Coverage denominator must be Norm_Gross_Loans, not ACL balance")
+                return
+        self.fail("Could not find Norm_ACL_Coverage safe_div computation")
+
+    def test_npl_coverage_format_is_x_multiple(self):
+        """NPL coverage metrics must be formatted as x-multiples, not %."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn('"RIC_CRE_Risk_Adj_Coverage": "x"', source)
+        self.assertIn('"RIC_Resi_Risk_Adj_Coverage": "x"', source)
+
+    def test_loan_coverage_format_is_percent(self):
+        """Loan coverage metrics (ACL/Loans) must NOT be in _METRIC_FORMAT_TYPE as 'x'."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        # These should default to percent (not appear in _METRIC_FORMAT_TYPE as "x")
+        for code in ["Allowance_to_Gross_Loans_Rate", "Norm_ACL_Coverage",
+                      "Risk_Adj_Allowance_Coverage", "RIC_CRE_ACL_Coverage"]:
+            self.assertNotIn(f'"{code}": "x"', source,
+                f"Loan coverage metric {code} must not be formatted as x-multiple")
+
+    def test_display_label_norm_cre_acl_coverage_correct(self):
+        """Norm_CRE_ACL_Coverage display label must reference CRE loans, not ACL pool."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            if '"Norm_CRE_ACL_Coverage"' in line and '"Display"' in line:
+                # Must NOT say "of Norm ACL" or "of ACL" — it's ACL / CRE loans
+                self.assertNotIn("of Norm ACL", line,
+                    "Norm_CRE_ACL_Coverage display says 'of Norm ACL' but denominator is CRE exposure")
+                self.assertNotIn("% of ACL", line,
+                    "Norm_CRE_ACL_Coverage display says '% of ACL' but denominator is CRE exposure")
+                return
+        # Metric might not have a display entry, which is fine
+
+
+class TestHUDTokenDiscovery(unittest.TestCase):
+    """HUD token resolver must support multi-source discovery with diagnostics."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Import resolve_hud_token from case_shiller_zip_mapper."""
+        try:
+            from case_shiller_zip_mapper import resolve_hud_token
+            cls.resolve = staticmethod(resolve_hud_token)
+            cls.available = True
+        except ImportError:
+            cls.available = False
+
+    def test_resolver_exists(self):
+        """resolve_hud_token must be importable."""
+        self.assertTrue(self.available, "resolve_hud_token must be importable from case_shiller_zip_mapper")
+
+    def test_resolver_finds_explicit_token(self):
+        """Explicit argument must override all other sources."""
+        if not self.available:
+            self.skipTest("resolve_hud_token not available")
+        token, diag = self.resolve(explicit_token="test_token_123")
+        self.assertEqual(token, "test_token_123")
+        self.assertEqual(diag["source_used"], "explicit_argument")
+        self.assertTrue(diag["token_found"])
+
+    def test_resolver_diagnostics_keys(self):
+        """Diagnostics dict must include required keys."""
+        if not self.available:
+            self.skipTest("resolve_hud_token not available")
+        _, diag = self.resolve(explicit_token="test")
+        required_keys = {"token_found", "source_used", "token_length", "token_prefix_masked",
+                         "dotenv_available", "paths_checked", "current_working_directory",
+                         "script_directory", "process_executable", "process_pid"}
+        self.assertTrue(required_keys.issubset(set(diag.keys())),
+            f"Missing diagnostics keys: {required_keys - set(diag.keys())}")
+
+    def test_resolver_never_logs_full_token(self):
+        """Token prefix must be masked — never expose the full token."""
+        if not self.available:
+            self.skipTest("resolve_hud_token not available")
+        token, diag = self.resolve(explicit_token="eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9")
+        # Prefix is first 6 chars + ***
+        self.assertEqual(diag["token_prefix_masked"], "eyJ0eX***")
+        self.assertNotIn("eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9", str(diag))
+
+    def test_resolver_finds_env_var(self):
+        """Resolver must find token from os.getenv."""
+        if not self.available:
+            self.skipTest("resolve_hud_token not available")
+        import os
+        old = os.environ.pop("HUD_USER_TOKEN", None)
+        try:
+            os.environ["HUD_USER_TOKEN"] = "env_test_token"
+            token, diag = self.resolve()
+            self.assertEqual(token, "env_test_token")
+            self.assertEqual(diag["source_used"], "environment_variable")
+        finally:
+            if old:
+                os.environ["HUD_USER_TOKEN"] = old
+            else:
+                os.environ.pop("HUD_USER_TOKEN", None)
+
+    def test_resolver_missing_token_diagnostics(self):
+        """Missing token diagnostics must include cwd, script dir, and paths checked."""
+        if not self.available:
+            self.skipTest("resolve_hud_token not available")
+        import os
+        old = os.environ.pop("HUD_USER_TOKEN", None)
+        try:
+            _, diag = self.resolve()
+            if not diag["token_found"]:
+                self.assertIn("current_working_directory", diag)
+                self.assertIn("script_directory", diag)
+                self.assertTrue(len(diag["paths_checked"]) > 0, "Must report paths checked")
+        finally:
+            if old:
+                os.environ["HUD_USER_TOKEN"] = old
+
+
+class TestEnrichmentStatusCodes(unittest.TestCase):
+    """ZIP enrichment must use structured status codes."""
+
+    def test_status_codes_defined(self):
+        """case_shiller_zip_mapper must define enrichment status constants."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        for code in ["ENRICH_SKIPPED_DISABLED", "ENRICH_SKIPPED_NO_TOKEN",
+                      "ENRICH_FAILED_TOKEN_AUTH", "ENRICH_FAILED_HTTP",
+                      "ENRICH_FAILED_EMPTY_RESPONSE", "ENRICH_SUCCESS_NO_ZIPS",
+                      "ENRICH_SUCCESS_WITH_ZIPS"]:
+            self.assertIn(code, source, f"Missing enrichment status code: {code}")
+
+    def test_build_returns_status(self):
+        """build_case_shiller_zip_sheets must return enrichment_status key."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("enrichment_status", source,
+            "build_case_shiller_zip_sheets must return enrichment_status")
+        self.assertIn("token_diagnostics", source,
+            "build_case_shiller_zip_sheets must return token_diagnostics")
+
+    def test_hud_user_token_param_exists(self):
+        """build_case_shiller_zip_sheets must accept hud_user_token parameter."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("hud_user_token", source,
+            "build_case_shiller_zip_sheets must accept hud_user_token parameter")
+
+    def test_token_passed_explicitly_from_main(self):
+        """MSPBNA_CR_Normalized must pass resolved token to build_case_shiller_zip_sheets."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("hud_user_token=", source,
+            "MSPBNA_CR_Normalized must pass hud_user_token= explicitly to enrichment function")
+        self.assertIn("resolve_hud_token", source,
+            "MSPBNA_CR_Normalized must import resolve_hud_token for multi-source discovery")
 
 
 if __name__ == '__main__':

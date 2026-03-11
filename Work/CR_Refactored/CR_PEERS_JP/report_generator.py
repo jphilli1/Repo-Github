@@ -652,6 +652,18 @@ def _fmt_multiple_diff(v: float) -> str:
         return "N/A"
     return f"{float(v):+.2f}x"
 
+# ---------------------------------------------------------------------------
+# Metric format type registry — semantic formatting based on denominator type
+# ---------------------------------------------------------------------------
+# "x"   → x-multiple (NPL coverage: ACL / NPL, typically 0.5x-5x)
+# "pct" → percent    (loan coverage: ACL / Loans, share: seg / total)
+_METRIC_FORMAT_TYPE: Dict[str, str] = {
+    # NPL coverage metrics: display as x-multiples
+    "RIC_CRE_Risk_Adj_Coverage": "x",
+    "RIC_Resi_Risk_Adj_Coverage": "x",
+    # Everything else (loan coverage, share, composition) → percent (default)
+}
+
 def _fmt_percent(v: float) -> str:
     """Format a value as percentage. Auto-detects decimal vs pct-point scale."""
     if pd.isna(v):
@@ -1463,15 +1475,14 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
 
         f_num = "N/A" if pd.isna(v_num) else _fmt_money_billions(v_num)
         f_den = "N/A" if pd.isna(v_den) else _fmt_money_billions(v_den)
-        # Coverage metrics (ACL/NPL ratios, ACL coverage) display as x-multiples, not %
-        _COVERAGE_KEYWORDS = ("Coverage", "ACL Ratio", "Risk-Adj ACL")
-        is_coverage = any(kw in disp for kw in _COVERAGE_KEYWORDS)
-        if is_coverage:
+        # Format based on semantic type: NPL coverage → x-multiple, everything else → %
+        fmt_type = _METRIC_FORMAT_TYPE.get(rat_col, "pct")
+        if fmt_type == "x":
             f_rat = _fmt_multiple(v_rat)
             f_prat = _fmt_multiple(p_rat)
         else:
-            f_rat = f"{v_rat*100:.2f}%" if pd.notna(v_rat) and abs(v_rat) < 1.0 else (f"{v_rat:.2f}%" if pd.notna(v_rat) else "N/A")
-            f_prat = f"{p_rat*100:.2f}%" if pd.notna(p_rat) and abs(p_rat) < 1.0 else (f"{p_rat:.2f}%" if pd.notna(p_rat) else "N/A")
+            f_rat = _fmt_percent(v_rat)
+            f_prat = _fmt_percent(p_rat)
 
         html += f"""<tr>
             <td class="ratio-name">{disp}</td>
