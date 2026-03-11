@@ -136,11 +136,63 @@ def get_diff_class(diff_str: str) -> str:
 # ==================================================================================
 
 # All known composite/alias CERTs — must never appear as peer dots in scatter plots
-ALL_COMPOSITE_CERTS = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888}
+ACTIVE_STANDARD_COMPOSITES = {
+    "core_pb": 90001,
+    "all_peers": 90003,
+}
+ACTIVE_NORMALIZED_COMPOSITES = {
+    "core_pb": 90004,
+    "all_peers": 90006,
+}
+INACTIVE_LEGACY_COMPOSITES = {90002, 90005, 99998, 99999}
 
-# Plotted peer-average composites by chart path
-_STANDARD_COMPOSITES = {90003, 90001}   # primary=All Peers, alt=Core PB
-_NORMALIZED_COMPOSITES = {90006, 90004}  # primary=All Peers Norm, alt=Core PB Norm
+ALL_COMPOSITE_CERTS = (
+    set(ACTIVE_STANDARD_COMPOSITES.values())
+    | set(ACTIVE_NORMALIZED_COMPOSITES.values())
+    | INACTIVE_LEGACY_COMPOSITES
+    | {88888}
+)
+
+# Plotted peer-average composites by chart path (derived from canonical dicts)
+_STANDARD_COMPOSITES = set(ACTIVE_STANDARD_COMPOSITES.values())
+_NORMALIZED_COMPOSITES = set(ACTIVE_NORMALIZED_COMPOSITES.values())
+
+
+def validate_composite_cert_regime(proc_df: pd.DataFrame) -> Dict[str, Any]:
+    """Confirms active composites are present and legacy composites are not used
+    for active artifact construction.
+
+    Returns dict with:
+        - valid: bool
+        - active_present: set of active CERTs found
+        - active_missing: set of active CERTs NOT found
+        - legacy_present: set of legacy CERTs found (for info only)
+        - warnings: list[str]
+        - errors: list[str]
+    """
+    certs_in_data = set(proc_df["CERT"].unique()) if not proc_df.empty else set()
+    active_certs = set(ACTIVE_STANDARD_COMPOSITES.values()) | set(ACTIVE_NORMALIZED_COMPOSITES.values())
+    active_present = certs_in_data & active_certs
+    active_missing = active_certs - certs_in_data
+    legacy_present = certs_in_data & INACTIVE_LEGACY_COMPOSITES
+
+    warnings_list = []
+    errors_list = []
+
+    for cert in active_missing:
+        errors_list.append(f"Active composite CERT {cert} is missing from data — charts/tables requiring it will be skipped")
+
+    for cert in legacy_present:
+        warnings_list.append(f"Legacy composite CERT {cert} found in data — must NOT be used for chart/table selection")
+
+    return {
+        "valid": len(errors_list) == 0,
+        "active_present": active_present,
+        "active_missing": active_missing,
+        "legacy_present": legacy_present,
+        "warnings": warnings_list,
+        "errors": errors_list,
+    }
 
 # Readable artifact names for suppressed_charts
 _ARTIFACT_NAMES = {
@@ -313,26 +365,26 @@ def create_credit_deterioration_chart_v3(
     entities_to_plot = [subject_bank_cert]
 
     if show_both_peer_groups:
-        entities_to_plot.extend([99999, 99998])
+        entities_to_plot.extend([90003, 90001])
         colors = {
             subject_bank_cert: '#F7A81B',
-            99999: '#5B9BD5',
-            99998: '#70AD47'
+            90003: '#5B9BD5',
+            90001: '#70AD47'
         }
         entity_names = {
             subject_bank_cert: "MSPBNA",
-            99999: "All Peers",
-            99998: "Peers (Ex. F&V)"
+            90003: "All Peers",
+            90001: "Core PB"
         }
     else:
-        entities_to_plot.append(99998)
+        entities_to_plot.append(90003)
         colors = {
             subject_bank_cert: '#F7A81B',
-            99998: '#5B9BD5'
+            90003: '#5B9BD5'
         }
         entity_names = {
             subject_bank_cert: "MSPBNA",
-            99998: "Peers (Ex. F&V)"
+            90003: "All Peers"
         }
 
     chart_df = proc_df_with_peers[proc_df_with_peers['CERT'].isin(entities_to_plot)].copy()
@@ -682,8 +734,8 @@ def generate_credit_metrics_email_table(
     try:
         idb = latest_data[latest_data["CERT"] == subject_bank_cert].iloc[0]
         msbna = latest_data[latest_data["CERT"] == 32992].iloc[0] if 32992 in latest_data["CERT"].values else None
-        core = latest_data[latest_data["CERT"] == 90001].iloc[0] if 90001 in latest_data["CERT"].values else None
-        wealth = latest_data[latest_data["CERT"] == 90002].iloc[0] if 90002 in latest_data["CERT"].values else None
+        core = latest_data[latest_data["CERT"] == ACTIVE_STANDARD_COMPOSITES["core_pb"]].iloc[0] if ACTIVE_STANDARD_COMPOSITES["core_pb"] in latest_data["CERT"].values else None
+        all_peers = latest_data[latest_data["CERT"] == ACTIVE_STANDARD_COMPOSITES["all_peers"]].iloc[0] if ACTIVE_STANDARD_COMPOSITES["all_peers"] in latest_data["CERT"].values else None
     except IndexError:
         return None, None
 
@@ -694,47 +746,47 @@ def generate_credit_metrics_email_table(
         v_idb = idb.get(code, np.nan)
         v_msbna = msbna.get(code, np.nan) if msbna is not None else np.nan
         v_core = core.get(code, np.nan) if core is not None else np.nan
-        v_wealth = wealth.get(code, np.nan) if wealth is not None else np.nan
+        v_allpeers = all_peers.get(code, np.nan) if all_peers is not None else np.nan
 
         # TASK 5: Suppress flatlined/dead metrics — skip if ALL displayed
         # values are 0, 0.0, or NaN (avoids misleading 0.00% rows).
-        all_vals = [v_idb, v_msbna, v_core, v_wealth]
+        all_vals = [v_idb, v_msbna, v_core, v_allpeers]
         if all(pd.isna(v) or (isinstance(v, (int, float)) and abs(v) < 1e-12) for v in all_vals):
             continue
 
         d_msbna = v_idb - v_msbna if pd.notna(v_idb) and pd.notna(v_msbna) else np.nan
         d_core = v_idb - v_core if pd.notna(v_idb) and pd.notna(v_core) else np.nan
-        d_wealth = v_idb - v_wealth if pd.notna(v_idb) and pd.notna(v_wealth) else np.nan
+        d_allpeers = v_idb - v_allpeers if pd.notna(v_idb) and pd.notna(v_allpeers) else np.nan
 
         if fmt == 'B':
             f = _fmt_money_billions
             rows.append({
                 "Metric": disp,
                 "MSPBNA": f(v_idb), "MSBNA": f(v_msbna),
-                "Core PB": f(v_core), "MS+Wealth": f(v_wealth),
+                "Core PB": f(v_core), "All Peers": f(v_allpeers),
                 "Diff vs MSBNA": _fmt_money_billions_diff(d_msbna),
                 "Diff vs Core": _fmt_money_billions_diff(d_core),
-                "Diff vs MS+": _fmt_money_billions_diff(d_wealth),
+                "Diff vs All Peers": _fmt_money_billions_diff(d_allpeers),
             })
         elif fmt == 'x':
             f = _fmt_multiple
             rows.append({
                 "Metric": disp,
                 "MSPBNA": f(v_idb), "MSBNA": f(v_msbna),
-                "Core PB": f(v_core), "MS+Wealth": f(v_wealth),
+                "Core PB": f(v_core), "All Peers": f(v_allpeers),
                 "Diff vs MSBNA": _fmt_multiple_diff(d_msbna),
                 "Diff vs Core": _fmt_multiple_diff(d_core),
-                "Diff vs MS+": _fmt_multiple_diff(d_wealth),
+                "Diff vs All Peers": _fmt_multiple_diff(d_allpeers),
             })
         else:
             f = _fmt_percent
             rows.append({
                 "Metric": disp,
                 "MSPBNA": f(v_idb), "MSBNA": f(v_msbna),
-                "Core PB": f(v_core), "MS+Wealth": f(v_wealth),
+                "Core PB": f(v_core), "All Peers": f(v_allpeers),
                 "Diff vs MSBNA": _fmt_percent_diff(d_msbna, v_idb),
                 "Diff vs Core": _fmt_percent_diff(d_core, v_idb),
-                "Diff vs MS+": _fmt_percent_diff(d_wealth, v_idb),
+                "Diff vs All Peers": _fmt_percent_diff(d_allpeers, v_idb),
             })
 
     df = pd.DataFrame(rows)
@@ -762,7 +814,7 @@ def generate_flexible_html_table(
     latest_data = proc_df_with_peers[proc_df_with_peers['REPDTE'] == latest_date]
 
     if peer_certs is None:
-        peer_certs = [90001, 90002, 90003]
+        peer_certs = [ACTIVE_STANDARD_COMPOSITES["core_pb"], ACTIVE_STANDARD_COMPOSITES["all_peers"]]
 
     certs_to_include = [subject_bank_cert] + list(peer_certs)
 
@@ -921,13 +973,12 @@ def generate_detailed_peer_table(
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date].copy()
 
-    composite_certs = [90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888]
     msbna_cert = 32992
 
     # 1. Individual peers excluding Subject, MSBNA, and Composites
     individual_peer_certs = [
         c for c in latest_data["CERT"].unique()
-        if c not in composite_certs + [subject_bank_cert, msbna_cert]
+        if c not in ALL_COMPOSITE_CERTS and c not in (subject_bank_cert, msbna_cert)
     ]
 
     col_mapping = {subject_bank_cert: "MSPBNA", msbna_cert: "MSBNA"}
@@ -935,7 +986,7 @@ def generate_detailed_peer_table(
         name = latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]
         col_mapping[c] = str(name).title().replace(" National Association", "").replace(" N.A.", "").strip()
 
-    peer_avg_cert = 90006 if is_normalized else (99999 if 99999 in latest_data["CERT"].values else 90003)
+    peer_avg_cert = ACTIVE_NORMALIZED_COMPOSITES["all_peers"] if is_normalized else ACTIVE_STANDARD_COMPOSITES["all_peers"]
     col_mapping[peer_avg_cert] = "All Peers (Norm)" if is_normalized else "All Peers"
 
     # ORDER: MSPBNA, MSBNA on the LEFT
@@ -996,7 +1047,7 @@ def generate_core_pb_peer_table(
     for c in latest_data["CERT"].unique():
         name = str(latest_data[latest_data["CERT"] == c]["NAME"].iloc[0]).upper()
         if "GOLDMAN" in name or "UBS" in name:
-            if c not in [90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888]:
+            if c not in ALL_COMPOSITE_CERTS:
                 core_pb_certs.append(c)
                 col_mapping[c] = "Goldman Sachs" if "GOLDMAN" in name else "UBS"
 
@@ -1208,7 +1259,7 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
         return None  # Subject bank is strictly required
 
     # Select the appropriate peer composite based on normalized vs standard mode
-    peer_cert = 90006 if is_normalized else (99999 if 99999 in latest_data["CERT"].values else 90003)
+    peer_cert = ACTIVE_NORMALIZED_COMPOSITES["all_peers"] if is_normalized else ACTIVE_STANDARD_COMPOSITES["all_peers"]
     peer_slice = latest_data[latest_data["CERT"] == peer_cert]
     peer = peer_slice.iloc[0] if not peer_slice.empty else pd.Series(dtype=float)
 
@@ -1356,7 +1407,7 @@ def generate_segment_focus_table(
     latest_date = proc_df_with_peers["REPDTE"].max()
     latest_data = proc_df_with_peers[proc_df_with_peers["REPDTE"] == latest_date]
 
-    peer_avg_cert = 90006 if is_normalized else (99999 if 99999 in latest_data["CERT"].values else 90003)
+    peer_avg_cert = ACTIVE_NORMALIZED_COMPOSITES["all_peers"] if is_normalized else ACTIVE_STANDARD_COMPOSITES["all_peers"]
     certs = {"MSPBNA": subject_bank_cert, "MSBNA": 32992, "All Peers": peer_avg_cert}
     row_data = {
         k: latest_data[latest_data["CERT"] == v].iloc[0]
@@ -2044,6 +2095,8 @@ def generate_reports(
             start_date=start_date,
             bar_metric="TTM_NCO_Rate",
             line_metric="NPL_to_Gross_Loans_Rate",
+            bar_entities=[subject_bank_cert, ACTIVE_STANDARD_COMPOSITES["all_peers"], ACTIVE_STANDARD_COMPOSITES["core_pb"]],
+            line_entities=[subject_bank_cert, ACTIVE_STANDARD_COMPOSITES["all_peers"], ACTIVE_STANDARD_COMPOSITES["core_pb"]],
             custom_title="TTM NCO Rate (bars) vs NPL to Gross Loans Rate (lines)",
             save_path=std_chart_path,
         )
@@ -2072,8 +2125,8 @@ def generate_reports(
             start_date=start_date,
             bar_metric="Norm_NCO_Rate",
             line_metric=norm_line_metric,
-            bar_entities=[subject_bank_cert, 90006, 90004],
-            line_entities=[subject_bank_cert, 90006, 90004],
+            bar_entities=[subject_bank_cert, ACTIVE_NORMALIZED_COMPOSITES["all_peers"], ACTIVE_NORMALIZED_COMPOSITES["core_pb"]],
+            line_entities=[subject_bank_cert, ACTIVE_NORMALIZED_COMPOSITES["all_peers"], ACTIVE_NORMALIZED_COMPOSITES["core_pb"]],
             figsize=credit_figsize,
             title_size=title_size,
             axis_label_size=axis_label_size,
@@ -2425,11 +2478,13 @@ def create_credit_deterioration_chart_ppt(
         return None, None
 
     GOLD, BLUE, PURPLE = "#F7A81B", "#4C78A8", "#9C6FB6"
-    default_entities = [subject_bank_cert, 99999, 99998]
+    default_entities = [subject_bank_cert, 90003, 90001]
     bar_entities  = bar_entities  or default_entities
     line_entities = line_entities or list(bar_entities)
-    names  = {subject_bank_cert:"MSPBNA", 99999:"All Peers", 99998:"Peers (Ex. F&V)"}
-    colors = {subject_bank_cert:GOLD,   99999:BLUE,       99998:PURPLE}
+    names  = {subject_bank_cert:"MSPBNA", 90003:"All Peers", 90001:"Core PB",
+              90006:"All Peers (Norm)", 90004:"Core PB (Norm)"}
+    colors = {subject_bank_cert:GOLD, 90003:BLUE, 90001:PURPLE,
+              90006:BLUE, 90004:PURPLE}
 
     all_requested = set(bar_entities + line_entities)
     df = proc_df_with_peers.loc[
@@ -2696,8 +2751,8 @@ def plot_scatter_dynamic(
     x_col: str,
     y_col: str,
     subject_cert: int = 34221,
-    peer_avg_cert_primary: int = 99999,
-    peer_avg_cert_alt: int = 99998,
+    peer_avg_cert_primary: int = 90003,
+    peer_avg_cert_alt: int = 90001,
     use_alt_peer_avg: bool = False,
     composite_certs: Optional[set] = None,
     show_peers_avg_label: bool = True,
@@ -2725,7 +2780,7 @@ def plot_scatter_dynamic(
 
     # Default composite exclusion set: all synthetic CERTs that must never appear as "peer" dots
     if composite_certs is None:
-        composite_certs = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999, 88888}
+        composite_certs = ALL_COMPOSITE_CERTS
 
     peers_cert = peer_avg_cert_alt if use_alt_peer_avg else peer_avg_cert_primary
     df = df.copy()
@@ -3169,7 +3224,7 @@ def plot_growth_vs_deterioration(
         return None
 
     # Exclude composite CERTs from the scatter cloud
-    composite = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999}
+    composite = ALL_COMPOSITE_CERTS
     peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
     subj = latest[latest["CERT"] == subject_bank_cert]
 
@@ -3226,7 +3281,7 @@ def plot_risk_adjusted_return(
         print("  Skipped risk-adjusted return: no valid data")
         return None
 
-    composite = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999}
+    composite = ALL_COMPOSITE_CERTS
     peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
     subj = latest[latest["CERT"] == subject_bank_cert]
 
@@ -3285,7 +3340,7 @@ def plot_concentration_vs_capital(
         print("  Skipped concentration-vs-capital: no valid data")
         return None
 
-    composite = {90001, 90002, 90003, 90004, 90005, 90006, 99998, 99999}
+    composite = ALL_COMPOSITE_CERTS
     peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
     subj = latest[latest["CERT"] == subject_bank_cert]
 

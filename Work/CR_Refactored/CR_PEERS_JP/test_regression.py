@@ -1618,8 +1618,8 @@ class TestHTMLTableResilience(unittest.TestCase):
         func_start = source.index("def generate_ratio_components_table")
         next_def = source.index("\ndef ", func_start + 1)
         func_body = source[func_start:next_def]
-        self.assertIn("90006 if is_normalized", func_body,
-                       "generate_ratio_components_table must select 90006 for normalized mode")
+        self.assertIn("ACTIVE_NORMALIZED_COMPOSITES", func_body,
+                       "generate_ratio_components_table must use ACTIVE_NORMALIZED_COMPOSITES for normalized mode")
 
     def test_peer_slice_safe_fallback(self):
         """Peer lookup must use .empty check, not bare .iloc[0]."""
@@ -1657,6 +1657,121 @@ class TestNormalizedComparisonFlags(unittest.TestCase):
                        "create_normalized_comparison must compute Performance_Flag")
         self.assertIn("_get_performance_flag", func_body,
                        "create_normalized_comparison must use _get_performance_flag")
+
+
+class TestCompositeRegimeCleanup(unittest.TestCase):
+    """Verifies that report_generator.py uses only active composites (90001/90003/90004/90006)
+    and never falls back to legacy CERTs (99998/99999/90002/90005) for chart/table selection."""
+
+    @classmethod
+    def setUpClass(cls):
+        src_path = os.path.join(os.path.dirname(__file__), "report_generator.py")
+        with open(src_path, "r") as f:
+            cls.source = f.read()
+
+    def _get_func_body(self, func_name):
+        start = self.source.index(f"def {func_name}")
+        next_def = self.source.index("\ndef ", start + 1)
+        return self.source[start:next_def]
+
+    # ------------------------------------------------------------------
+    #  1. Active composites are defined as canonical constants
+    # ------------------------------------------------------------------
+    def test_active_composites_defined(self):
+        """ACTIVE_STANDARD_COMPOSITES and ACTIVE_NORMALIZED_COMPOSITES must exist."""
+        self.assertIn("ACTIVE_STANDARD_COMPOSITES", self.source)
+        self.assertIn("ACTIVE_NORMALIZED_COMPOSITES", self.source)
+        self.assertIn("INACTIVE_LEGACY_COMPOSITES", self.source)
+
+    # ------------------------------------------------------------------
+    #  2. No legacy composite used in active selection paths
+    # ------------------------------------------------------------------
+    def test_no_legacy_composite_in_selection_paths(self):
+        """99998, 99999, 90002, 90005 must not appear outside INACTIVE_LEGACY_COMPOSITES."""
+        # Find INACTIVE_LEGACY_COMPOSITES definition line
+        legacy_line_end = self.source.index("INACTIVE_LEGACY_COMPOSITES") + 80
+        after_definition = self.source[legacy_line_end:]
+        for cert in ["99998", "99999"]:
+            self.assertNotIn(cert, after_definition,
+                             f"Legacy CERT {cert} found after INACTIVE_LEGACY_COMPOSITES definition")
+        # 90002 and 90005 should also be gone
+        for cert in ["90002", "90005"]:
+            self.assertNotIn(cert, after_definition,
+                             f"Legacy CERT {cert} found after INACTIVE_LEGACY_COMPOSITES definition")
+
+    # ------------------------------------------------------------------
+    #  3. Standard peer avg cert is 90003
+    # ------------------------------------------------------------------
+    def test_standard_peer_avg_cert_is_90003(self):
+        """Standard All Peers must use 90003, not 99999."""
+        self.assertIn('"all_peers": 90003', self.source)
+
+    # ------------------------------------------------------------------
+    #  4. Standard Core PB cert is 90001
+    # ------------------------------------------------------------------
+    def test_standard_core_pb_cert_is_90001(self):
+        """Standard Core PB must use 90001."""
+        self.assertIn('"core_pb": 90001', self.source)
+
+    # ------------------------------------------------------------------
+    #  5. Normalized peer avg cert is 90006
+    # ------------------------------------------------------------------
+    def test_normalized_peer_avg_cert_is_90006(self):
+        """Normalized All Peers must use 90006."""
+        self.assertIn('"all_peers": 90006', self.source)
+
+    # ------------------------------------------------------------------
+    #  6. Normalized Core PB cert is 90004
+    # ------------------------------------------------------------------
+    def test_normalized_core_pb_cert_is_90004(self):
+        """Normalized Core PB must use 90004."""
+        self.assertIn('"core_pb": 90004', self.source)
+
+    # ------------------------------------------------------------------
+    #  7. Credit chart v3 uses current standard composites
+    # ------------------------------------------------------------------
+    def test_credit_chart_v3_uses_current_composites(self):
+        """create_credit_deterioration_chart_v3 must use 90003/90001, not 99999/99998."""
+        body = self._get_func_body("create_credit_deterioration_chart_v3")
+        self.assertNotIn("99999", body)
+        self.assertNotIn("99998", body)
+        self.assertIn("90003", body)
+        self.assertIn("90001", body)
+
+    # ------------------------------------------------------------------
+    #  8. plot_scatter_dynamic defaults are current regime
+    # ------------------------------------------------------------------
+    def test_scatter_defaults_current_regime(self):
+        """plot_scatter_dynamic defaults must be 90003/90001, not 99999/99998."""
+        body = self._get_func_body("plot_scatter_dynamic")
+        self.assertIn("peer_avg_cert_primary: int = 90003", body)
+        self.assertIn("peer_avg_cert_alt: int = 90001", body)
+
+    # ------------------------------------------------------------------
+    #  9. No legacy fallback in peer_avg selections
+    # ------------------------------------------------------------------
+    def test_no_legacy_fallback_for_peer_avg(self):
+        """Detailed peer, segment, ratio tables must not fall back to 99999."""
+        for func in ["generate_detailed_peer_table", "generate_segment_focus_table",
+                      "generate_ratio_components_table"]:
+            body = self._get_func_body(func)
+            self.assertNotIn("99999", body, f"{func} still falls back to legacy 99999")
+
+    # ------------------------------------------------------------------
+    #  10. validate_composite_cert_regime exists
+    # ------------------------------------------------------------------
+    def test_validate_composite_cert_regime_exists(self):
+        """validate_composite_cert_regime helper must exist."""
+        self.assertIn("def validate_composite_cert_regime", self.source)
+
+    # ------------------------------------------------------------------
+    #  11. chart_ppt defaults use active composites
+    # ------------------------------------------------------------------
+    def test_chart_ppt_defaults_use_active_composites(self):
+        """create_credit_deterioration_chart_ppt defaults must use 90003/90001."""
+        body = self._get_func_body("create_credit_deterioration_chart_ppt")
+        self.assertNotIn("99999", body)
+        self.assertNotIn("99998", body)
 
 
 if __name__ == '__main__':

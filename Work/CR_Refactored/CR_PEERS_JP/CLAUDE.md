@@ -160,8 +160,14 @@ These are **non-negotiable** for any agent editing this codebase:
 
 ### SCATTER & CHART COMPOSITE HANDLING
 
-- Pass true composite CERTs directly: `peer_avg_cert_primary=90006, peer_avg_cert_alt=90004` for normalized, `peer_avg_cert_primary=90003, peer_avg_cert_alt=90001` for standard.
-- `plot_scatter_dynamic()` has a `composite_certs` parameter (default: `{90001..90006, 99998, 99999, 88888}`) that excludes ALL composites from appearing as blue peer dots.
+- **Active composite regime** is defined at the top of `report_generator.py`:
+  - `ACTIVE_STANDARD_COMPOSITES = {"core_pb": 90001, "all_peers": 90003}`
+  - `ACTIVE_NORMALIZED_COMPOSITES = {"core_pb": 90004, "all_peers": 90006}`
+  - `INACTIVE_LEGACY_COMPOSITES = {90002, 90005, 99998, 99999}`
+- All chart/table builders MUST use these canonical constants. **Never** hardcode 99998, 99999, 90002, or 90005 as peer-average selectors.
+- `ALL_COMPOSITE_CERTS` includes both active and legacy CERTs for scatter-dot exclusion only.
+- `plot_scatter_dynamic()` defaults: `peer_avg_cert_primary=90003, peer_avg_cert_alt=90001`. Normalized call sites pass `90006/90004` explicitly.
+- If an active composite is missing from data, the chart/table MUST skip (not silently substitute a legacy CERT). Use `validate_composite_cert_regime()` for preflight checks.
 - The former `build_plot_df_with_alias()` function has been removed — it appended duplicate rows that contaminated scatter plots. Do not re-introduce it.
 
 ### PEER GROUPINGS
@@ -360,6 +366,51 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 6. **Case-Shiller ZIP sheet persistence (MSPBNA_CR_Normalized.py)**: Wrapped `build_case_shiller_zip_sheets()` call in try/except so HUD API failures do not crash the pipeline. Added logging for which ZIP sheets are written. The `**cs_kwargs` unpack in `write_excel_output()` persists non-empty sheets (CaseShiller_Zip_Coverage, CaseShiller_Zip_Summary, CaseShiller_Metro_Map_Audit). When enrichment is disabled or HUD token is missing, only the audit sheet (always non-empty) is written. Added regression tests for resilience and audit sheet presence.
 
 **New Excel sheets:** `Exclusion_Component_Audit`, `Composite_Coverage_Audit`, `Metric_Validation_Audit`
+
+### 2026-03-11 — Composite CERT Regime Cleanup (report_generator.py)
+
+**Root cause**: Upstream peer-group construction was correct (4 groups, 7 peers, active composites 90001/90003/90004/90006 in workbook). But downstream `report_generator.py` was still littered with stale references to legacy composite CERTs from the old scheme (99998, 99999, 90002, 90005). This mismatch prevented many charts and tables from constructing correctly.
+
+**Active composite regime (current):**
+
+| Role | Standard | Normalized |
+|---|---|---|
+| All Peers | 90003 | 90006 |
+| Core PB | 90001 | 90004 |
+
+**Legacy/inactive (must never drive artifact selection):**
+- 90002 (former MSPBNA+Wealth standard)
+- 90005 (former MSPBNA+Wealth normalized)
+- 99998 (former "Peers Ex. F&V")
+- 99999 (former "All Peers" alias)
+
+Legacy CERTs may still appear in `ALL_COMPOSITE_CERTS` for scatter-dot exclusion, but they are never used as peer-average selectors for charts or tables.
+
+**Fixes applied:**
+
+1. **Canonical constants (report_generator.py)**: Added `ACTIVE_STANDARD_COMPOSITES`, `ACTIVE_NORMALIZED_COMPOSITES`, `INACTIVE_LEGACY_COMPOSITES` at module top. `ALL_COMPOSITE_CERTS` is now derived from these.
+
+2. **create_credit_deterioration_chart_v3**: Replaced 99999→90003 (All Peers), 99998→90001 (Core PB).
+
+3. **create_credit_deterioration_chart_ppt**: Default entities changed from `[subject, 99999, 99998]` to `[subject, 90003, 90001]`. Names/colors dict updated for all 4 active composites.
+
+4. **plot_scatter_dynamic**: Default args changed from `peer_avg_cert_primary=99999, peer_avg_cert_alt=99998` to `90003, 90001`.
+
+5. **generate_detailed_peer_table**: Removed 99999 fallback — now uses `ACTIVE_NORMALIZED_COMPOSITES["all_peers"]` or `ACTIVE_STANDARD_COMPOSITES["all_peers"]`.
+
+6. **generate_segment_focus_table**: Same — removed 99999 fallback.
+
+7. **generate_ratio_components_table**: Same — uses canonical constants.
+
+8. **generate_credit_metrics_email_table**: Changed from 90002 (removed "Wealth" composite) to `ACTIVE_STANDARD_COMPOSITES["all_peers"]` (90003). Column header changed from "MS+Wealth" to "All Peers".
+
+9. **generate_flexible_html_table**: Default peer_certs changed from `[90001, 90002, 90003]` to `[90001, 90003]`.
+
+10. **Scatter exclusion sets**: All 3 chart helpers (`build_growth_vs_deterioration_chart`, `build_risk_adjusted_return_chart`, `build_concentration_vs_capital_chart`) now use `ALL_COMPOSITE_CERTS` instead of inline sets.
+
+11. **validate_composite_cert_regime helper**: New function confirms active composites present and flags legacy composites.
+
+12. **Regression tests (test_regression.py)**: Added `TestCompositeRegimeCleanup` (11 tests): canonical constant definitions, no legacy CERTs in selection paths, correct standard/normalized peer avg CERTs, chart v3 uses current composites, scatter defaults current regime, no legacy fallback in table generators, validate helper exists.
 
 ### 2026-03-11 — End-to-End Workbook Output Fix, Display Labels, Matplotlib Suppression
 
