@@ -266,6 +266,39 @@ The former MSPBNA+Wealth groups (90002/90005) were removed as duplicate cert mem
 - CERT `88888` (MS Combined Entity) must be **filtered out** of HTML table listings when `REPORT_VIEW == "MSPBNA_WEALTH_NORM"`.
 - Load via `MS_COMBINED_CERT = int(os.getenv("MS_COMBINED_CERT", "88888"))`.
 
+### COVERAGE vs SHARE vs x-MULTIPLE LABEL RULE (Non-Negotiable)
+
+Every ratio-component row label **must** match its denominator type:
+
+| Denominator Type | Correct Label Term | Display Format | Examples |
+|---|---|---|---|
+| Exposure / loan base (Gross_Loans, RIC_CRE_Cost, Wealth_Resi_Balance, CRE_Investment_Pure_Balance) | **"Coverage"** or **"Ratio"** | % | `RIC_CRE_ACL / RIC_CRE_Cost` → "CRE ACL Coverage" |
+| ACL pool (Total_ACL, Norm_ACL_Balance) | **"Share"** or **"% of ACL"** | % | `RIC_CRE_ACL / Total_ACL` → "CRE % of ACL" |
+| Nonaccrual / NPL base (RIC_CRE_Nonaccrual, RIC_Resi_Nonaccrual) | **"NPL Coverage"** | x-multiple | `RIC_CRE_ACL / RIC_CRE_Nonaccrual` → "CRE NPL Coverage" (1.23x) |
+
+**If denominator is `Total_ACL` or `Norm_ACL_Balance`, the label must NEVER contain "Coverage".**
+
+### `_METRIC_FORMAT_TYPE` MAINTENANCE RULE
+
+`_METRIC_FORMAT_TYPE` in `report_generator.py` is the **explicit registry** for x-multiple formatted metrics. Rules:
+
+1. Only **NPL coverage** metrics (denominator = nonaccrual or past-due) belong in this dict.
+2. Any **new** NPL coverage metric MUST be added here explicitly — there is no auto-detection.
+3. Loan-coverage and share-of-ACL metrics must **NEVER** be added — they default to percent.
+4. Current entries: `RIC_CRE_Risk_Adj_Coverage`, `RIC_Resi_Risk_Adj_Coverage`, `RIC_Comm_Risk_Adj_Coverage`.
+
+### HUD TOKEN — ATTRIBUTE-ONLY ACCESS
+
+`DashboardConfig` is a plain Python class (not a dict). HUD token access rules:
+
+- **Field**: `hud_user_token: Optional[str] = None` on `DashboardConfig`
+- **Write**: `config.hud_user_token = _hud_token` (attribute assignment, **never** `config["..."]`)
+- **Read**: `getattr(self.config, "hud_user_token", None)` (safe attribute access, **never** `.get()`)
+- **Pass**: `build_case_shiller_zip_sheets(hud_user_token=self.config.hud_user_token)` (explicit kwarg)
+- **Resolve**: Single call to `resolve_hud_token()` in `_validate_runtime_env()` — no competing resolution paths
+
+Dict-style access (`config["key"]`, `config.get("key")`) will raise `TypeError` on `DashboardConfig` and is forbidden.
+
 ### CHARTING STYLES
 
 All charts must use this color palette consistently:
