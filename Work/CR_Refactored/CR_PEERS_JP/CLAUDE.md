@@ -207,6 +207,26 @@ All charts must use this color palette consistently:
 - Use `mspbna-row` and `mspbna-value` (not `idb-row` / `idb-value`).
 - All user-facing labels, HTML headers, and filenames must reference **MSPBNA**, never **IDB**.
 
+### ENTITY DISPLAY LABEL POLICY
+
+All table headers, chart legends, and HTML output must use **`resolve_display_label(cert, name)`** from `report_generator.py`. Never hardcode full bank names.
+
+| Entity | Display Label | Rule |
+|---|---|---|
+| Subject bank (CERT 34221) | `MSPBNA` | Subject cert → fixed label |
+| MSBNA (CERT 32992) | `MS` | Secondary cert → ticker |
+| Goldman Sachs | `GS` | `_TICKER_MAP` lookup |
+| UBS | `UBS` | `_TICKER_MAP` lookup |
+| JPMorgan Chase | `JPM` | `_TICKER_MAP` lookup |
+| Bank of America | `BAC` | `_TICKER_MAP` lookup |
+| Citibank | `C` | `_TICKER_MAP` lookup |
+| Wells Fargo | `WFC` | `_TICKER_MAP` lookup |
+| Core PB composites (90001/90004) | `Wealth Peers` | `_COMPOSITE_LABELS` lookup |
+| All Peers composites (90003/90006) | `All Peers` | `_COMPOSITE_LABELS` lookup |
+| MS Combined (88888) | `MS Combined` | `_COMPOSITE_LABELS` lookup |
+
+**Fallback**: If no ticker match, strip "National Association" / "N.A." suffixes and title-case. Last resort: `"CERT {cert}"`.
+
 ### CHART METRICS
 
 **Standard chart:** Bar = `TTM_NCO_Rate`, Line = `NPL_to_Gross_Loans_Rate`
@@ -248,14 +268,15 @@ Three table tiers serve different audiences:
 
 | Table | Columns | Composite Used | Purpose |
 |---|---|---|---|
-| **Executive Summary** | MSPBNA \| Goldman Sachs \| UBS \| Wealth Peers \| Delta | Core PB (90001 std / 90004 norm) | Wealth-focused peer comparison |
-| **Segment Focus** (CRE, Resi) | MSPBNA \| Goldman Sachs \| UBS \| Wealth Peers \| Delta | Core PB (90001 std / 90004 norm) | Segment-specific drill-down |
+| **Executive Summary** | MSPBNA \| GS \| UBS \| Wealth Peers \| Delta MSPBNA vs Wealth Peers | Core PB (90001 std / 90004 norm) | Wealth-focused peer comparison |
+| **Segment Focus** (CRE, Resi) | MSPBNA \| GS \| UBS \| Wealth Peers \| Delta MSPBNA vs Wealth Peers | Core PB (90001 std / 90004 norm) | Segment-specific drill-down |
 | **Detailed Peer Table** | MSPBNA + all individual peers + composites | All Peers (90003 std / 90006 norm) | Full peer landscape |
 
 **Key rules:**
 - Executive summary and segment tables use **"Wealth Peers" = Core PB composite** (90001/90004). Do NOT include MSBNA or All Peers.
 - The detailed peer table is the **only** broad all-peer table.
 - Both standard and normalized versions are generated as **separate artifacts**.
+- Individual banks display as **tickers** (GS, UBS, JPM, BAC, C, WFC), not full names. Composites display as **descriptive labels** (Wealth Peers, All Peers). All labels are resolved via `resolve_display_label()` in `report_generator.py`.
 - Goldman Sachs and UBS are identified dynamically from bank NAME in data, not hardcoded CERTs.
 
 ---
@@ -374,6 +395,29 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-11 — Centralized Label Resolver (Ticker-Style Display Labels)
+
+**Problem**: Bank/comparator labels were hardcoded as full names ("Goldman Sachs", "Core PB Avg") across 6+ table/chart builder functions, producing inconsistent output.
+
+**Solution**: Created `resolve_display_label(cert, name)` — a single centralized resolver in `report_generator.py`.
+
+**Changes by file:**
+
+1. **report_generator.py** — Added `_TICKER_MAP`, `_COMPOSITE_LABELS`, `_SUBJECT_CERT`, `_MSBNA_CERT` constants and `resolve_display_label()` function. Applied resolver to:
+   - `generate_credit_metrics_email_table()` — dynamic peer identification via resolver
+   - `generate_core_pb_peer_table()` — col_mapping uses resolver
+   - `generate_detailed_peer_table()` — col_mapping uses resolver; `_MSBNA_CERT` constant
+   - `generate_segment_focus_table()` — col_certs built via resolver
+   - `_build_dynamic_peer_html()` — uses `_MSBNA_CERT` constant
+   - `create_credit_deterioration_chart_v3()` — entity_names via resolver
+   - `create_credit_deterioration_chart_ppt()` — names dict via resolver
+   - `generate_html_email_table_dynamic()` — CSS class check uses `"MS"` instead of `"MSBNA"`
+   - Years-of-reserves scatter label uses resolver
+
+2. **test_regression.py** — Added `TestLabelResolver` class (11 tests): resolver exists, ticker map entries, composite labels, no hardcoded "Goldman Sachs" in 6 builder functions, chart v3/PPT use resolver, detailed/segment tables use resolver, subject→MSPBNA, MSBNA→MS, _MSBNA_CERT constant usage. Updated 3 existing TestDirectiveC tests for resolver checks.
+
+3. **CLAUDE.md** — Added ENTITY DISPLAY LABEL POLICY section with full label map. Updated table column examples from full names to tickers. Added naming convention documentation.
 
 ### 2026-03-11 — Wealth-Focused Tables, Data Integrity, Stock vs Flow
 
