@@ -634,6 +634,88 @@ def test_claude_md_no_stale_19977_defaults():
     print("  [PASS] test_claude_md_no_stale_19977_defaults")
 
 
+def test_curated_summary_dashboard_metrics():
+    """Summary_Dashboard must use SUMMARY_DASHBOARD_METRICS allowlist, not all numeric cols."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "SUMMARY_DASHBOARD_METRICS" in source, (
+        "SUMMARY_DASHBOARD_METRICS allowlist not defined"
+    )
+    assert "for m in SUMMARY_DASHBOARD_METRICS" in source, (
+        "create_peer_comparison must iterate SUMMARY_DASHBOARD_METRICS"
+    )
+    print("  [PASS] test_curated_summary_dashboard_metrics")
+
+
+def test_curated_normalized_comparison_metrics():
+    """Normalized_Comparison must use NORMALIZED_COMPARISON_METRICS allowlist."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "NORMALIZED_COMPARISON_METRICS" in source
+    assert "for m in NORMALIZED_COMPARISON_METRICS" in source
+    # Norm_Provision_Rate must NOT be in the allowlist
+    assert "'Norm_Provision_Rate'" not in source.split("NORMALIZED_COMPARISON_METRICS")[1].split("]")[0], (
+        "Norm_Provision_Rate should be excluded from NORMALIZED_COMPARISON_METRICS"
+    )
+    print("  [PASS] test_curated_normalized_comparison_metrics")
+
+
+def test_descriptive_metrics_no_evaluative_flag():
+    """Descriptive metrics (ASSET, LNLS, etc.) must return blank from _get_performance_flag."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "DESCRIPTIVE_METRICS" in source, "DESCRIPTIVE_METRICS set not defined"
+    assert "if metric_code in DESCRIPTIVE_METRICS" in source, (
+        "_get_performance_flag must check DESCRIPTIVE_METRICS"
+    )
+    # Verify key descriptive metrics are in the set
+    for m in ["ASSET", "LNLS", "Norm_Gross_Loans", "SBL_Composition"]:
+        assert f'"{m}"' in source, f"{m} missing from DESCRIPTIVE_METRICS"
+    print("  [PASS] test_descriptive_metrics_no_evaluative_flag")
+
+
+def test_display_labels_applied():
+    """Metric Name column must be populated via _get_metric_short_name (FDIC_Metric_Descriptions)."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MSPBNA_CR_Normalized.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    # Both create_peer_comparison and create_normalized_comparison must use _get_metric_short_name
+    assert '"Metric Name": _get_metric_short_name(metric)' in source, (
+        "Display labels not applied via _get_metric_short_name"
+    )
+    print("  [PASS] test_display_labels_applied")
+
+
+def test_preflight_contains_hardened_logic():
+    """report_generator.py must contain hardened preflight with period-scoped blocking."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_generator.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "latest_repdte" in source, "Preflight must use latest_repdte for period scoping"
+    assert "_NORMALIZED_COMPOSITES" in source, "Preflight must reference _NORMALIZED_COMPOSITES"
+    assert "blocking_certs" in source, "Preflight must define blocking_certs"
+    print("  [PASS] test_preflight_contains_hardened_logic")
+
+
+def test_tight_layout_removed_from_ppt_chart():
+    """create_credit_deterioration_chart_ppt must not call fig.tight_layout()."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_generator.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    # Find the function body
+    func_start = source.index("def create_credit_deterioration_chart_ppt")
+    # Find the next top-level def
+    next_def = source.index("\ndef ", func_start + 1)
+    func_body = source[func_start:next_def]
+    assert "fig.tight_layout()" not in func_body, (
+        "fig.tight_layout() still present in create_credit_deterioration_chart_ppt"
+    )
+    print("  [PASS] test_tight_layout_removed_from_ppt_chart")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
@@ -686,6 +768,13 @@ def run_all_tests():
         test_validation_suite_wired_in_pipeline,
         test_no_stale_19977_in_report_generator,
         test_claude_md_no_stale_19977_defaults,
+        # 11. Presentation curation, metric roles, display labels
+        test_curated_summary_dashboard_metrics,
+        test_curated_normalized_comparison_metrics,
+        test_descriptive_metrics_no_evaluative_flag,
+        test_display_labels_applied,
+        test_preflight_contains_hardened_logic,
+        test_tight_layout_removed_from_ppt_chart,
     ]
 
     passed = 0
@@ -1309,6 +1398,59 @@ class TestNoStaleDefaults(unittest.TestCase):
             if "| `MSPBNA_CERT`" in line or "| `MSBNA_CERT`" in line:
                 self.assertNotIn("19977", line,
                     f"Line {i} still shows 19977: {line.strip()}")
+
+
+class TestPresentationCuration(unittest.TestCase):
+    """Tests for curated presentation tabs and metric role policy."""
+
+    def _read_source(self, filename="MSPBNA_CR_Normalized.py"):
+        src_path = os.path.join(os.path.dirname(__file__), filename)
+        with open(src_path, "r") as f:
+            return f.read()
+
+    def test_summary_dashboard_curated(self):
+        """create_peer_comparison must use SUMMARY_DASHBOARD_METRICS."""
+        source = self._read_source()
+        self.assertIn("SUMMARY_DASHBOARD_METRICS", source)
+        self.assertIn("for m in SUMMARY_DASHBOARD_METRICS", source)
+
+    def test_normalized_comparison_curated(self):
+        """create_normalized_comparison must use NORMALIZED_COMPARISON_METRICS."""
+        source = self._read_source()
+        self.assertIn("NORMALIZED_COMPARISON_METRICS", source)
+        self.assertIn("for m in NORMALIZED_COMPARISON_METRICS", source)
+
+    def test_norm_provision_rate_excluded(self):
+        """Norm_Provision_Rate must not be in NORMALIZED_COMPARISON_METRICS."""
+        source = self._read_source()
+        allowlist_section = source.split("NORMALIZED_COMPARISON_METRICS")[1].split("]")[0]
+        self.assertNotIn("'Norm_Provision_Rate'", allowlist_section)
+        self.assertNotIn('"Norm_Provision_Rate"', allowlist_section)
+
+    def test_descriptive_metrics_set_exists(self):
+        """DESCRIPTIVE_METRICS frozenset must contain key size/balance metrics."""
+        source = self._read_source()
+        self.assertIn("DESCRIPTIVE_METRICS", source)
+        for m in ["ASSET", "LNLS", "Gross_Loans", "SBL_Composition"]:
+            self.assertIn(f'"{m}"', source)
+
+    def test_performance_flag_checks_descriptive(self):
+        """_get_performance_flag must check DESCRIPTIVE_METRICS."""
+        source = self._read_source()
+        self.assertIn("if metric_code in DESCRIPTIVE_METRICS", source)
+
+    def test_tight_layout_not_in_ppt_chart(self):
+        """create_credit_deterioration_chart_ppt must not call fig.tight_layout()."""
+        source = self._read_source("report_generator.py")
+        func_start = source.index("def create_credit_deterioration_chart_ppt")
+        next_def = source.index("\ndef ", func_start + 1)
+        func_body = source[func_start:next_def]
+        self.assertNotIn("fig.tight_layout()", func_body)
+
+    def test_ratio_components_safe_peer_lookup(self):
+        """generate_ratio_components_table must not abort when peer is missing."""
+        source = self._read_source("report_generator.py")
+        self.assertIn("peer_cert in latest_data[\"CERT\"].values else pd.Series()", source)
 
 
 if __name__ == '__main__':

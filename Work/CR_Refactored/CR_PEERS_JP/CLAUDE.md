@@ -393,6 +393,22 @@ Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` env var (default `true`). Whe
 
 Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` prefix. All former `IDB_*` keys have been renamed (e.g., `IDB_CRE_Growth_TTM` → `CRE_Growth_TTM`). User-facing labels, CSS classes, and HTML headers must reference **MSPBNA**, never **IDB**.
 
+### Curated Presentation Tabs
+
+`Summary_Dashboard` and `Normalized_Comparison` use curated metric allowlists (`SUMMARY_DASHBOARD_METRICS` and `NORMALIZED_COMPARISON_METRICS` in `MSPBNA_CR_Normalized.py`). Only approved KPIs appear in these presentation-facing tabs. Raw MDRM fields and internal pipeline columns are excluded. The full dataset remains available in the `FDIC_Data` sheet.
+
+### Display Label Policy
+
+All presentation tabs use `_get_metric_short_name(code)` to resolve display names from `FDIC_Metric_Descriptions` (via `MasterDataDictionary`). Columns: `Metric Code` (technical field name) + `Metric Name` (display label). Falls back to the code itself when no display label exists.
+
+### Metric Role Classification
+
+Metrics are classified as **evaluative** (risk/return/coverage — receives performance flags) or **descriptive** (size/balance/composition — no evaluative flags). `DESCRIPTIVE_METRICS` frozenset in `MSPBNA_CR_Normalized.py` lists all descriptive metrics. `_get_performance_flag()` returns blank for descriptive metrics to prevent misleading "Top Quartile" / "Bottom Quartile" flags on non-evaluative fields like ASSET or LNLS.
+
+### Norm_Provision_Rate Treatment
+
+`Norm_Provision_Rate` is intentionally set to NaN in the pipeline — provision expense (`ELNATR`) is not segment-specific in call reports, so a normalized rate would be semantically misleading. It is excluded from `NORMALIZED_COMPARISON_METRICS` (presentation tab), and dead-metric suppression in HTML tables catches any remaining instances. It should never be presented as a normal KPI or as a silent zero.
+
 ---
 
 ## 7. Changelog / Recent Fixes
@@ -419,6 +435,22 @@ Dictionary keys in `master_data_dictionary.py` must **never** use the `IDB_` pre
 6. **Case-Shiller ZIP sheet persistence (MSPBNA_CR_Normalized.py)**: Wrapped `build_case_shiller_zip_sheets()` call in try/except so HUD API failures do not crash the pipeline. Added logging for which ZIP sheets are written. The `**cs_kwargs` unpack in `write_excel_output()` persists non-empty sheets (CaseShiller_Zip_Coverage, CaseShiller_Zip_Summary, CaseShiller_Metro_Map_Audit). When enrichment is disabled or HUD token is missing, only the audit sheet (always non-empty) is written. Added regression tests for resilience and audit sheet presence.
 
 **New Excel sheets:** `Exclusion_Component_Audit`, `Composite_Coverage_Audit`, `Metric_Validation_Audit`
+
+### 2026-03-11 — Presentation Curation, Metric Roles, Chart Resilience
+
+1. **Curated presentation tabs (MSPBNA_CR_Normalized.py)**: `Summary_Dashboard` now uses `SUMMARY_DASHBOARD_METRICS` allowlist (22 curated KPIs) instead of dumping all numeric columns. `Normalized_Comparison` uses `NORMALIZED_COMPARISON_METRICS` (14 curated normalized KPIs). Raw MDRM fields and internal pipeline columns are excluded from presentation tabs.
+
+2. **Metric-role classification (MSPBNA_CR_Normalized.py)**: Added `DESCRIPTIVE_METRICS` frozenset containing size/balance/composition metrics (ASSET, LNLS, Gross_Loans, SBL_Composition, etc.). `_get_performance_flag()` returns blank for descriptive metrics — prevents misleading "Top Quartile" / "Bottom Quartile" flags on non-evaluative fields.
+
+3. **Norm_Provision_Rate suppressed from presentation**: Excluded from `NORMALIZED_COMPARISON_METRICS` since it is intentionally NaN (provision expense is not segment-specific). Dead-metric suppression in HTML tables also catches it.
+
+4. **Display labels**: Both `create_peer_comparison` and `create_normalized_comparison` use `_get_metric_short_name(metric)` which resolves display names from `FDIC_Metric_Descriptions` (via `MasterDataDictionary.lookup_metric`). Falls back to the metric code itself when no display label exists.
+
+5. **Chart resilience (report_generator.py)**: `create_credit_deterioration_chart_ppt` filters out CERTs missing from data before plotting. Uses `colors.get(c, fallback)` instead of `colors[c]`. Skips all-NaN peer lines with warning. Removed `fig.tight_layout()` call that conflicted with `twinx()` + `GridSpec`.
+
+6. **Ratio components table resilience (report_generator.py)**: `generate_ratio_components_table` no longer aborts when peer composite is missing. Subject bank is required; peer defaults to `pd.Series()` (renders as N/A).
+
+7. **Regression tests (test_regression.py)**: Added 6 function-based tests + 8 unittest methods covering curated allowlists, metric-role policy, display labels, preflight logic, tight_layout removal, and ratio components safe lookup.
 
 ### 2026-03-10 — Consistency Pass: TTM Fix, Validation Wiring, Doc Cleanup
 
