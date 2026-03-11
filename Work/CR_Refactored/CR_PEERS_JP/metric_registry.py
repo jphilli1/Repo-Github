@@ -288,6 +288,17 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
         max_value=1.0,
         consumers=["ratio_components_normalized", "segment_focus_cre", "detailed_peer_table"],
     ),
+    "Norm_CRE_ACL_Coverage": MetricSpec(
+        code="Norm_CRE_ACL_Coverage",
+        dependencies=["RIC_CRE_ACL", "CRE_Investment_Pure_Balance"],
+        compute=lambda df: pd.Series(
+            _safe_div(df["RIC_CRE_ACL"], df["CRE_Investment_Pure_Balance"]),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        consumers=["segment_focus_cre", "detailed_peer_table"],
+    ),
 
     # ── Upstream Choke-Point Placeholders ────────────────────────────────
     # These are *source* columns, not derived.  Registered so the reverse-

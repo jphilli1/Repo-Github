@@ -479,6 +479,28 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-11 — Final Consistency Pass (HUD Token + ACL Semantics)
+
+**Objective**: Verify code, tests, and CLAUDE.md all agree after the DashboardConfig HUD token fix and ACL coverage/share semantics fix.
+
+**Gaps found and fixed:**
+1. **`Norm_CRE_ACL_Coverage` missing from metric_registry.py** — Computed in MSPBNA_CR_Normalized.py (`RIC_CRE_ACL / CRE_Investment_Pure_Balance`) but had no `MetricSpec`. Added with correct exposure-base dependency.
+2. **`RIC_Comm_Risk_Adj_Coverage` missing from `_METRIC_FORMAT_TYPE`** — C&I NPL coverage metric (ACL / Nonaccrual) was not registered for x-format. Added alongside the existing CRE and Resi NPL coverage entries.
+
+**Verified clean (no changes needed):**
+- No dict-style `config[...]` writes in MSPBNA_CR_Normalized.py
+- No `self.config.get()` calls
+- Single `resolve_hud_token()` call path (in `_validate_runtime_env()` only)
+- All ratio-components labels match denominators (no "Coverage" on ACL-pool denominator)
+- CLAUDE.md accurately documents `DashboardConfig.hud_user_token`, `_METRIC_FORMAT_TYPE`, coverage/share rule, enrichment status codes
+
+**Changes:**
+1. **metric_registry.py** — Added `Norm_CRE_ACL_Coverage` MetricSpec (deps: `RIC_CRE_ACL`, `CRE_Investment_Pure_Balance`)
+2. **report_generator.py** — Added `RIC_Comm_Risk_Adj_Coverage: "x"` to `_METRIC_FORMAT_TYPE`
+3. **test_regression.py** — Added `TestConsistencyPass` (10 tests): no dict config access, single token resolution path, all Risk_Adj_Coverage in x-format, Norm_CRE_ACL_Coverage in registry with exposure denominator, CLAUDE.md documents DashboardConfig token + _METRIC_FORMAT_TYPE + coverage/share rule, no stale dict references in docs, enrichment status codes match code and docs
+
+**Test baseline**: 224 tests (previous 213 + 10 new + 1 pre-existing Norm_CRE_ACL_Coverage test now passes).
+
 ### 2026-03-11 — ACL Ratio Semantic Integrity & Metric Registry Completeness
 
 **Problem**: Missing metric registry entries for `RIC_CRE_ACL_Share`, `RIC_Resi_ACL_Share`, and `Norm_CRE_ACL_Share`. The `_METRIC_FORMAT_TYPE` maintenance rule needed explicit exclusion examples.

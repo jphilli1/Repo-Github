@@ -665,9 +665,10 @@ def _fmt_multiple_diff(v: float) -> str:
 # to x-format — only NPL/nonaccrual coverage ratios belong here.
 # ---------------------------------------------------------------------------
 _METRIC_FORMAT_TYPE: Dict[str, str] = {
-    # NPL coverage metrics: display as x-multiples
-    "RIC_CRE_Risk_Adj_Coverage": "x",       # CRE ACL / CRE Nonaccrual
-    "RIC_Resi_Risk_Adj_Coverage": "x",       # Resi ACL / Resi Nonaccrual
+    # NPL coverage metrics: display as x-multiples (ACL / Nonaccrual)
+    "RIC_CRE_Risk_Adj_Coverage": "x",        # CRE ACL / CRE Nonaccrual
+    "RIC_Resi_Risk_Adj_Coverage": "x",        # Resi ACL / Resi Nonaccrual
+    "RIC_Comm_Risk_Adj_Coverage": "x",        # C&I ACL / C&I Nonaccrual
     # Everything else (loan coverage, share, composition) → percent (default).
     # DO NOT add here: RIC_CRE_ACL_Coverage, RIC_Resi_ACL_Coverage (loan coverage → %),
     #   RIC_CRE_ACL_Share, RIC_Resi_ACL_Share, Norm_CRE_ACL_Share (share of ACL → %).

@@ -3369,6 +3369,113 @@ class TestACLRatioSemanticIntegrity(unittest.TestCase):
             "Norm_CRE_ACL_Share must depend on Norm_ACL_Balance")
 
 
+class TestConsistencyPass(unittest.TestCase):
+    """Cross-file consistency: code, tests, and CLAUDE.md must all agree."""
+
+    def test_no_dict_style_config_access_in_main(self):
+        """No config['...'] or self.config.get( patterns in MSPBNA_CR_Normalized.py."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        dict_writes = re.findall(r'config\[[\"\'].*[\"\']\]\s*=', source)
+        dict_gets = re.findall(r'self\.config\.get\(', source)
+        self.assertEqual(len(dict_writes), 0,
+            f"Stale dict-style config writes: {dict_writes}")
+        self.assertEqual(len(dict_gets), 0,
+            f"Stale self.config.get() calls: {dict_gets}")
+
+    def test_single_hud_token_resolution_path(self):
+        """Only one actual call to resolve_hud_token in MSPBNA_CR_Normalized.py."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        # Count actual calls (= resolve_hud_token(...)), not docstring mentions
+        calls = [m for m in re.finditer(r'=\s*resolve_hud_token\(', source)]
+        self.assertEqual(len(calls), 1,
+            f"Expected exactly 1 resolve_hud_token assignment call, found {len(calls)}")
+
+    def test_all_risk_adj_coverage_in_x_format(self):
+        """Every *_Risk_Adj_Coverage metric must be in _METRIC_FORMAT_TYPE as 'x'."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        main_src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        main_source = main_src.read_text(encoding="utf-8")
+        import re
+        # Find all Risk_Adj_Coverage metric codes in MSPBNA_CR_Normalized
+        metrics = set(re.findall(r'(RIC_\w+_Risk_Adj_Coverage)', main_source))
+        for m in metrics:
+            self.assertIn(f'"{m}": "x"', source,
+                f"NPL coverage metric {m} missing from _METRIC_FORMAT_TYPE")
+
+    def test_norm_cre_acl_coverage_in_registry(self):
+        """Norm_CRE_ACL_Coverage must have a MetricSpec in metric_registry.py."""
+        src = Path(__file__).parent / "metric_registry.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn('"Norm_CRE_ACL_Coverage"', source,
+            "Norm_CRE_ACL_Coverage missing from metric_registry.py")
+
+    def test_norm_cre_acl_coverage_uses_exposure_denominator(self):
+        """Norm_CRE_ACL_Coverage must depend on CRE_Investment_Pure_Balance (exposure), not ACL."""
+        src = Path(__file__).parent / "metric_registry.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        match = re.search(r'"Norm_CRE_ACL_Coverage".*?consumers=', source, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertIn("CRE_Investment_Pure_Balance", match.group(0),
+            "Norm_CRE_ACL_Coverage must use CRE exposure as denominator")
+        self.assertNotIn("Norm_ACL_Balance", match.group(0),
+            "Norm_CRE_ACL_Coverage must NOT use ACL as denominator")
+
+    def test_claude_md_documents_dashboardconfig_token(self):
+        """CLAUDE.md must document DashboardConfig.hud_user_token attribute assignment."""
+        src = Path(__file__).parent / "CLAUDE.md"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("DashboardConfig.hud_user_token", source,
+            "CLAUDE.md must document DashboardConfig.hud_user_token")
+        self.assertIn("attribute assignment", source,
+            "CLAUDE.md must mention attribute assignment (not dict-style)")
+
+    def test_claude_md_documents_metric_format_type(self):
+        """CLAUDE.md must document _METRIC_FORMAT_TYPE and its maintenance rule."""
+        src = Path(__file__).parent / "CLAUDE.md"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("_METRIC_FORMAT_TYPE", source,
+            "CLAUDE.md must reference _METRIC_FORMAT_TYPE")
+        self.assertIn("x-multiple", source,
+            "CLAUDE.md must explain x-multiple formatting")
+
+    def test_claude_md_no_stale_dict_config_references(self):
+        """CLAUDE.md must not reference the old config['_hud_user_token'] pattern."""
+        src = Path(__file__).parent / "CLAUDE.md"
+        source = src.read_text(encoding="utf-8")
+        # Allow references in changelog explaining the fix, but ensure no
+        # current-state docs suggest using dict assignment
+        integration_section = source.split("## 11.")[1] if "## 11." in source else ""
+        self.assertNotIn('config["_hud_user_token"]', integration_section,
+            "CLAUDE.md integration section still references dict-style config access")
+
+    def test_claude_md_documents_coverage_vs_share_rule(self):
+        """CLAUDE.md must document the coverage vs share labeling rule."""
+        src = Path(__file__).parent / "CLAUDE.md"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("Coverage", source)
+        self.assertIn("Share", source)
+        self.assertIn("Exposure/loan base", source,
+            "CLAUDE.md must document that Coverage = ACL / exposure base")
+
+    def test_enrichment_status_codes_match_code_and_docs(self):
+        """All enrichment status codes in case_shiller_zip_mapper.py must appear in CLAUDE.md."""
+        mapper = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        mapper_src = mapper.read_text(encoding="utf-8")
+        claude = Path(__file__).parent / "CLAUDE.md"
+        claude_src = claude.read_text(encoding="utf-8")
+        codes = ["SKIPPED_NO_TOKEN", "FAILED_TOKEN_AUTH", "FAILED_HTTP",
+                 "FAILED_EMPTY_RESPONSE", "SUCCESS_NO_ZIPS", "SUCCESS_WITH_ZIPS"]
+        for code in codes:
+            self.assertIn(code, mapper_src, f"Status code {code} missing from case_shiller_zip_mapper.py")
+            self.assertIn(code, claude_src, f"Status code {code} missing from CLAUDE.md")
+
+
 class TestHUDTokenDiscovery(unittest.TestCase):
     """HUD token resolver must support multi-source discovery with diagnostics."""
 
