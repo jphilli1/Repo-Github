@@ -479,6 +479,40 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-11 — Output Quality Fixes (Directive 6)
+
+**8-part directive** covering FDIC history, chart quality, formatting, logging, and label accuracy.
+
+**Changes:**
+
+1. **FDIC history extended to 48 quarters (MSPBNA_CR_Normalized.py)**: `quarters_back` changed from 30 to 48 (12 years). Removed hardcoded `[:30]` slice in FFIEC healing so the full date range is retained.
+
+2. **Scatter outlier labels use tickers (report_generator.py)**: `plot_scatter_dynamic()` outlier annotations now use `resolve_display_label(cert, name)` instead of raw bank names. This produces ticker-style labels (GS, UBS, JPM) consistent with table output.
+
+3. **Comparative migration ladder (report_generator.py)**: `plot_migration_ladder()` rewritten as a comparative chart plotting MSPBNA (solid), Wealth Peers (dashed), and All Peers (dotted). Uses `ACTIVE_STANDARD_COMPOSITES` for peer CERTs. Title updated to "Early-Warning Migration Ladder — MSPBNA vs Peers".
+
+4. **Low-coverage bar series suppression (report_generator.py)**: `create_credit_deterioration_chart_ppt()` now checks `vals.isna().all()` for each bar entity. All-NaN series are excluded from the chart and tracked in `suppressed_series`. A footnote ("Suppressed (low coverage): ...") is added when series are suppressed.
+
+5. **Coverage metric x-format (report_generator.py)**: `generate_ratio_components_table()` now detects coverage metrics via `_COVERAGE_KEYWORDS` ("Coverage", "ACL Ratio", "Risk-Adj ACL") and formats them as x-multiples (0.62x) via `_fmt_multiple()` instead of percentages (61.71%).
+
+6. **Normalized CRE label fix (report_generator.py)**: "Norm CRE ACL Coverage" renamed to "Norm CRE % of ACL" — the metric is `Norm_CRE_ACL_Share` (share of ACL allocated to CRE), not a coverage ratio.
+
+7. **CSV log severity classification (logging_utils.py)**: `TeeToLogger._classify_level()` rewritten with `_PROGRESS_PATTERNS` regex. Progress bars and tqdm output on stderr are now classified as INFO (not ERROR). Explicit error keywords → ERROR. Other stderr → WARNING.
+
+8. **Duplicate-date artifact paths confirmed fixed**: Verified no `{stamp}` variable usage in `report_generator.py` — all artifact paths use the dashboard stem which already contains the date.
+
+**Tests (test_regression.py)**: 15 new tests across 8 classes:
+- `TestFDICHistoryHorizon` (2): quarters_back=48, no hardcoded [:30]
+- `TestScatterTickerLabels` (2): resolve_display_label in scatter annotations
+- `TestMigrationLadderComparative` (2): ACTIVE_STANDARD_COMPOSITES usage, title mentions Peers
+- `TestLowCoverageChartSuppression` (2): suppressed_series tracking, footnote annotation
+- `TestCoverageMetricFormatting` (2): _fmt_multiple usage, _COVERAGE_KEYWORDS presence
+- `TestNormalizedRatioLabels` (1): CRE ACL share not labeled "Coverage"
+- `TestCsvLogSeverityClassification` (3): _classify_level heuristics, no blind ERROR, progress pattern detection
+- `TestNoDoubleDateArtifactPaths` (1): no {stamp} variable in report_generator.py
+
+**Test baseline**: 180 tests — 168 passing, 0 failures, 10 pre-existing errors (missing matplotlib/aiohttp), 2 skipped.
+
 ### 2026-03-11 — FRED Frequency Inference Bugfix
 
 **Bug**: `_infer_freq_from_index()` crashed with `TypeError: 'int' object is not subscriptable` during the last-resort fallback branch. The old code built a `pd.Series` of `(year, month)` tuples, then did `.groupby(lambda x: x[0])` — but `groupby` passes the **Series index label** (an integer) into the lambda, not the tuple value. So `x[0]` tried to subscript an `int`.

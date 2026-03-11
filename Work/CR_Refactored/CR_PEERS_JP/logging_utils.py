@@ -351,12 +351,41 @@ class TeeToLogger:
         sys.stderr = TeeToLogger(sys.stderr, csv_logger, stream_name="STDERR")
     """
 
+    # Patterns that indicate a progress bar / tqdm line on stderr (not a real error)
+    import re as _re
+    _PROGRESS_PATTERNS = _re.compile(
+        r"(\d+%\|)"          # tqdm: "  5%|███"
+        r"|(\|[▏▎▍▌▋▊▉█ ]+\|)"  # tqdm bar characters
+        r"|(it/s|s/it)"      # tqdm throughput suffix
+        r"|(\d+/\d+\s*\[)"   # tqdm: "15/100 ["
+        r"|(\r)"             # carriage-return progress overwrites
+    )
+
     def __init__(self, original_stream, csv_logger: CsvLogger, stream_name: str = "STDOUT"):
         self._original = original_stream
         self._csv_logger = csv_logger
         self._stream_name = stream_name
         self._event_type = stream_name  # "STDOUT" or "STDERR"
-        self._level = "INFO" if stream_name == "STDOUT" else "ERROR"
+        self._is_stderr = (stream_name == "STDERR")
+
+    def _classify_level(self, text: str) -> str:
+        """Classify log level for captured text.
+
+        STDOUT is always INFO. STDERR uses heuristics: progress bars and
+        tqdm output are downgraded to INFO; everything else stays WARNING
+        (not ERROR — stderr is often used for non-error diagnostics).
+        """
+        if not self._is_stderr:
+            return "INFO"
+        # Progress bars / tqdm lines → INFO (not real errors)
+        if self._PROGRESS_PATTERNS.search(text):
+            return "INFO"
+        # Explicit error keywords in the text → ERROR
+        text_lower = text.lower()
+        if any(kw in text_lower for kw in ("error", "exception", "traceback", "failed")):
+            return "ERROR"
+        # Default stderr to WARNING (diagnostic, not necessarily an error)
+        return "WARNING"
 
     def write(self, text: str) -> int:
         # Always write to original stream first (preserve console output)
@@ -367,7 +396,7 @@ class TeeToLogger:
             if stripped:
                 try:
                     self._csv_logger.log(
-                        level=self._level,
+                        level=self._classify_level(stripped),
                         message=stripped,
                         event_type=self._event_type,
                         component="console_capture",

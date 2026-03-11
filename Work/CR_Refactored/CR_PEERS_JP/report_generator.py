@@ -1396,7 +1396,7 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
             ("Norm SBL %", "SBL Balance", "SBL_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_SBL_Composition"),
             ("Norm Wealth Resi %", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Wealth_Resi_Composition"),
             ("Norm CRE % (Ex-ADC)", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
-            ("Norm CRE ACL Coverage", "CRE ACL", "RIC_CRE_ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
+            ("Norm CRE % of ACL", "CRE ACL", "RIC_CRE_ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
             ("Norm Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm_Resi_ACL_Coverage"),
             ("Excluded % of Total", "Excluded Balance", "Excluded_Balance", "Gross Loans", "LNLS", "Norm_Exclusion_Pct")
         ]
@@ -1463,8 +1463,15 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
 
         f_num = "N/A" if pd.isna(v_num) else _fmt_money_billions(v_num)
         f_den = "N/A" if pd.isna(v_den) else _fmt_money_billions(v_den)
-        f_rat = f"{v_rat*100:.2f}%" if pd.notna(v_rat) and abs(v_rat) < 1.0 else (f"{v_rat:.2f}%" if pd.notna(v_rat) else "N/A")
-        f_prat = f"{p_rat*100:.2f}%" if pd.notna(p_rat) and abs(p_rat) < 1.0 else (f"{p_rat:.2f}%" if pd.notna(p_rat) else "N/A")
+        # Coverage metrics (ACL/NPL ratios, ACL coverage) display as x-multiples, not %
+        _COVERAGE_KEYWORDS = ("Coverage", "ACL Ratio", "Risk-Adj ACL")
+        is_coverage = any(kw in disp for kw in _COVERAGE_KEYWORDS)
+        if is_coverage:
+            f_rat = _fmt_multiple(v_rat)
+            f_prat = _fmt_multiple(p_rat)
+        else:
+            f_rat = f"{v_rat*100:.2f}%" if pd.notna(v_rat) and abs(v_rat) < 1.0 else (f"{v_rat:.2f}%" if pd.notna(v_rat) else "N/A")
+            f_prat = f"{p_rat*100:.2f}%" if pd.notna(p_rat) and abs(p_rat) < 1.0 else (f"{p_rat:.2f}%" if pd.notna(p_rat) else "N/A")
 
         html += f"""<tr>
             <td class="ratio-name">{disp}</td>
@@ -2694,8 +2701,15 @@ def create_credit_deterioration_chart_ppt(
     offsets = {c: (i - (n - 1) / 2) * bar_w for i, c in enumerate(bar_entities)}
 
     bar_handles, bar_labels, line_handles, line_labels = [], [], [], []
+    suppressed_series = []
     for c in bar_entities:
         vals = series_for(c, bar_metric)
+        # Suppress all-NaN / low-coverage series: do not plot or add to legend
+        if vals.isna().all():
+            ent_name = names.get(c, f"CERT {c}")
+            suppressed_series.append(f"{ent_name} {bar_metric.replace('_', ' ')}")
+            print(f"    [SUPPRESSED] {ent_name} {bar_metric} — all NaN (low coverage)")
+            continue
         b = ax.bar(x + offsets[c], vals, width=bar_w, color=colors.get(c, "#7F8C8D"), alpha=0.92,
                    label=f"{names.get(c,f'CERT {c}')} {bar_metric.replace('_',' ')}", zorder=2)
         bar_handles.append(b[0]); bar_labels.append(f"{names.get(c,f'CERT {c}')} {bar_metric.replace('_',' ')}")
@@ -2864,6 +2878,9 @@ def create_credit_deterioration_chart_ppt(
     title = custom_title or f"{bar_metric.replace('_',' ')} (bars) vs {line_metric.replace('_',' ')} (lines)"
     fig.text(0.5, 0.97, title, ha="center", va="top",
              fontsize=title_size, fontweight="bold", color="#2B2B2B")
+    if suppressed_series:
+        fig.text(0.5, 0.93, f"Suppressed (low coverage): {', '.join(suppressed_series)}",
+                 ha="center", va="top", fontsize=10, color="#7F8C8D", style="italic")
 
     handles = bar_handles + line_handles
     labels  = bar_labels  + line_labels
@@ -2994,7 +3011,9 @@ def plot_scatter_dynamic(
         for i in top_idx:
             ox = float(to_decimals_series(pd.Series([df.loc[i, x_col]])).iloc[0])
             oy = float(to_decimals_series(pd.Series([df.loc[i, y_col]])).iloc[0])
-            label = short_name(df.loc[i, "NAME"]) if "NAME" in df.columns else str(df.loc[i, "CERT"])
+            cert_i = int(df.loc[i, "CERT"]) if "CERT" in df.columns else None
+            name_i = df.loc[i, "NAME"] if "NAME" in df.columns else None
+            label = resolve_display_label(cert_i, name=name_i, subject_cert=subject_cert) if cert_i is not None else (short_name(str(name_i)) if name_i else str(i))
             dx, dy = pick_offset(ox, oy); tag(ox, oy, label, (dx, dy), color="black", box=True)
 
     all_x = pd.concat([Xo, pd.Series([xi]) if xi is not None else pd.Series(dtype=float),
@@ -3207,7 +3226,12 @@ def plot_migration_ladder(
     subject_bank_cert: int,
     save_path: Optional[str] = None,
 ) -> Optional[plt.Figure]:
-    """Line chart showing the early-warning pipeline progression over time."""
+    """Comparative line chart: early-warning migration ladder for MSPBNA,
+    Wealth Peers, and All Peers.
+
+    Plots each metric as a solid line for the subject bank and dashed lines
+    for Wealth Peers (Core PB, 90001) and All Peers (90003).
+    """
     series_map = {
         "TTM_PD30_Rate": ("Past Due 30-90d", "#3498DB"),
         "TTM_PD90_Rate": ("Past Due 90d+", "#F39C12"),
@@ -3219,28 +3243,59 @@ def plot_migration_ladder(
         print("  Skipped migration ladder: no pipeline columns found")
         return None
 
+    # Entities: subject + composites
+    wealth_cert = ACTIVE_STANDARD_COMPOSITES["core_pb"]   # 90001
+    all_peers_cert = ACTIVE_STANDARD_COMPOSITES["all_peers"]  # 90003
+    entity_map = {
+        subject_bank_cert: ("MSPBNA", "-", 2.4),
+        wealth_cert: ("Wealth Peers", "--", 1.6),
+        all_peers_cert: ("All Peers", ":", 1.6),
+    }
+
     subj = df[df["CERT"] == subject_bank_cert].copy()
     if subj.empty:
         print("  Skipped migration ladder: no subject bank data")
         return None
 
-    subj = subj.sort_values("REPDTE")
-    for c in available:
-        subj[c] = pd.to_numeric(subj[c], errors="coerce")
-
     fig, ax = plt.subplots(figsize=(14, 7))
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
 
-    for col, (label, color) in available.items():
-        ax.plot(subj["REPDTE"], subj[col], label=label, color=color,
-                linewidth=2.2, marker="o", markersize=4)
+    for cert, (ent_label, lstyle, lw) in entity_map.items():
+        ent = df[df["CERT"] == cert].copy()
+        if ent.empty:
+            continue
+        ent = ent.sort_values("REPDTE")
+        for c in available:
+            ent[c] = pd.to_numeric(ent[c], errors="coerce")
+        for col, (metric_label, color) in available.items():
+            vals = ent[col]
+            if vals.isna().all():
+                continue
+            label = f"{ent_label} — {metric_label}" if cert == subject_bank_cert else None
+            ax.plot(ent["REPDTE"], vals, color=color, linewidth=lw,
+                    linestyle=lstyle, marker="o" if cert == subject_bank_cert else None,
+                    markersize=4, label=label, alpha=1.0 if cert == subject_bank_cert else 0.6)
 
-    ax.set_title("Early-Warning Migration Ladder", fontsize=18, fontweight="bold", color="#2B2B2B")
+    # Add entity legend entries (one per entity for line-style identification)
+    from matplotlib.lines import Line2D
+    entity_handles = [
+        Line2D([0], [0], color="black", linewidth=2.4, linestyle="-", label="MSPBNA"),
+        Line2D([0], [0], color="black", linewidth=1.6, linestyle="--", label="Wealth Peers"),
+        Line2D([0], [0], color="black", linewidth=1.6, linestyle=":", label="All Peers"),
+    ]
+    metric_handles = [
+        Line2D([0], [0], color=color, linewidth=2.0, label=label)
+        for _, (label, color) in available.items()
+    ]
+    ax.legend(handles=metric_handles + entity_handles, loc="upper left",
+              frameon=True, fontsize=10, ncol=2)
+
+    ax.set_title("Early-Warning Migration Ladder — MSPBNA vs Peers",
+                 fontsize=18, fontweight="bold", color="#2B2B2B")
     ax.set_xlabel("Reporting Period", fontsize=13, fontweight="bold")
     ax.set_ylabel("Rate", fontsize=13, fontweight="bold")
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2%}"))
-    ax.legend(loc="upper left", frameon=True, fontsize=11)
     for sp in ["top", "right"]:
         ax.spines[sp].set_visible(False)
     ax.grid(True, alpha=0.3)

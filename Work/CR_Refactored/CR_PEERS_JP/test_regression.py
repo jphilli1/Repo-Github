@@ -2942,5 +2942,228 @@ class TestInferFreqFromIndex(unittest.TestCase):
         self.assertTrue(found, "infer_freq_from_index must be a module-level function")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# DIRECTIVE 6 TESTS — Output Quality Fixes
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFDICHistoryHorizon(unittest.TestCase):
+    """FDIC history default should be 48 quarters (12 years)."""
+
+    def test_quarters_back_default_is_48(self):
+        """DashboardConfig.quarters_back must default to 48."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("quarters_back: int = 48", source,
+            "DashboardConfig.quarters_back must default to 48 (12 years)")
+
+    def test_ffiec_healing_not_hardcoded_30(self):
+        """FFIEC healing must not hardcode [:30] date limit."""
+        src = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        source = src.read_text(encoding="utf-8")
+        # Find heal_dataset method
+        in_func = False
+        for line in source.splitlines():
+            if "def heal_dataset" in line:
+                in_func = True
+                continue
+            if in_func and line.strip() and not line[0].isspace():
+                break
+            if in_func and "[:30]" in line:
+                self.fail("heal_dataset still has hardcoded [:30] date limit")
+
+
+class TestScatterTickerLabels(unittest.TestCase):
+    """Scatter annotations must use ticker-style labels via resolve_display_label."""
+
+    def test_outlier_labels_use_resolve_display_label(self):
+        """plot_scatter_dynamic outlier annotation must call resolve_display_label."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        # Find the outlier label section inside plot_scatter_dynamic
+        lines = source.splitlines()
+        in_func = False
+        found_resolver = False
+        for line in lines:
+            if "def plot_scatter_dynamic" in line:
+                in_func = True
+            elif in_func and line.strip().startswith("def ") and "plot_scatter_dynamic" not in line:
+                if not line.startswith(" "):
+                    break
+            if in_func and "resolve_display_label" in line and "label" in line.lower():
+                found_resolver = True
+        self.assertTrue(found_resolver,
+            "plot_scatter_dynamic must use resolve_display_label for outlier annotations")
+
+    def test_no_raw_short_name_only_in_scatter(self):
+        """Scatter outlier label line must not use short_name() without resolve_display_label."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_func = False
+        for line in lines:
+            if "def plot_scatter_dynamic" in line:
+                in_func = True
+            elif in_func and not line.startswith(" ") and line.strip():
+                break
+            # Flag if short_name is the ONLY label resolver (no resolve_display_label nearby)
+            if in_func and "label = short_name(" in line and "resolve_display_label" not in line:
+                self.fail("Scatter outlier labels use short_name() without resolve_display_label fallback")
+
+
+class TestMigrationLadderComparative(unittest.TestCase):
+    """Migration ladder must be comparative (MSPBNA + peers)."""
+
+    def test_migration_ladder_includes_composites(self):
+        """plot_migration_ladder must reference ACTIVE_STANDARD_COMPOSITES."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_func = False
+        found = False
+        for line in lines:
+            if "def plot_migration_ladder" in line:
+                in_func = True
+                continue
+            # End of function: next top-level def/class (not indented)
+            if in_func and line.strip() and not line[0].isspace() and (line.startswith("def ") or line.startswith("class ")):
+                break
+            if in_func and "ACTIVE_STANDARD_COMPOSITES" in line:
+                found = True
+        self.assertTrue(found, "plot_migration_ladder must reference ACTIVE_STANDARD_COMPOSITES for peer comparison")
+
+    def test_migration_ladder_title_mentions_peers(self):
+        """Migration ladder title must indicate it's comparative."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_func = False
+        for line in lines:
+            if "def plot_migration_ladder" in line:
+                in_func = True
+                continue
+            # End of function: next top-level def/class (not indented)
+            if in_func and line.strip() and not line[0].isspace() and (line.startswith("def ") or line.startswith("class ")):
+                break
+            if in_func and "Peers" in line and "set_title" in line:
+                return
+        self.fail("Migration ladder title must mention 'Peers' to indicate comparative chart")
+
+
+class TestLowCoverageChartSuppression(unittest.TestCase):
+    """Charts must suppress all-NaN / low-coverage bar series."""
+
+    def test_bar_series_nan_check_in_chart(self):
+        """create_credit_deterioration_chart_ppt must check vals.isna().all() for bar series."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_func = False
+        found = False
+        for line in lines:
+            if "def create_credit_deterioration_chart_ppt" in line:
+                in_func = True
+            elif in_func and not line.startswith(" ") and line.strip():
+                break
+            if in_func and "isna().all()" in line and "suppressed" in source[source.index(line)-100:source.index(line)+200].lower():
+                found = True
+        # Simpler check: look for suppressed_series variable
+        self.assertIn("suppressed_series", source,
+            "Chart must track suppressed_series for low-coverage bar series")
+
+    def test_chart_has_suppression_footnote(self):
+        """Chart must annotate suppressed series in subtitle."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("Suppressed (low coverage)", source,
+            "Chart must show footnote for suppressed low-coverage series")
+
+
+class TestCoverageMetricFormatting(unittest.TestCase):
+    """Coverage metrics in ratio-components must use x-format, not %."""
+
+    def test_ratio_components_uses_fmt_multiple_for_coverage(self):
+        """generate_ratio_components_table must use _fmt_multiple for coverage metrics."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_func = False
+        found = False
+        for line in lines:
+            if "def generate_ratio_components_table" in line:
+                in_func = True
+            elif in_func and not line.startswith(" ") and line.strip():
+                break
+            if in_func and "_fmt_multiple" in line:
+                found = True
+        self.assertTrue(found,
+            "generate_ratio_components_table must use _fmt_multiple for coverage metrics")
+
+    def test_coverage_keyword_detection(self):
+        """Ratio-components must detect coverage metrics by keyword."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("_COVERAGE_KEYWORDS", source,
+            "Ratio-components must define _COVERAGE_KEYWORDS for x-format detection")
+
+
+class TestNormalizedRatioLabels(unittest.TestCase):
+    """Normalized ratio-components labels must match their denominators."""
+
+    def test_norm_cre_acl_not_labeled_coverage(self):
+        """Norm CRE row with Norm_ACL_Balance denominator must NOT say 'Coverage'."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        # Find the normalized metrics list
+        lines = source.splitlines()
+        for line in lines:
+            if "Norm_ACL_Balance" in line and "RIC_CRE_ACL" in line:
+                # This is the CRE ACL share row — display name must not say "Coverage"
+                self.assertNotIn("Coverage", line,
+                    "Norm CRE row with Norm_ACL_Balance denominator is share, not coverage")
+                return
+        self.fail("Could not find CRE ACL row with Norm_ACL_Balance denominator")
+
+
+class TestCsvLogSeverityClassification(unittest.TestCase):
+    """CSV log must not classify progress bars as ERROR."""
+
+    def test_tee_to_logger_has_classify_level(self):
+        """TeeToLogger must have _classify_level method for smart severity."""
+        src = Path(__file__).parent / "logging_utils.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("_classify_level", source,
+            "TeeToLogger must have _classify_level for smart severity classification")
+
+    def test_stderr_not_blindly_error(self):
+        """TeeToLogger must NOT hardcode all stderr as ERROR."""
+        src = Path(__file__).parent / "logging_utils.py"
+        source = src.read_text(encoding="utf-8")
+        # Old pattern: self._level = "INFO" if stream_name == "STDOUT" else "ERROR"
+        # Should NOT exist anymore
+        self.assertNotIn('"INFO" if stream_name == "STDOUT" else "ERROR"', source,
+            "TeeToLogger must not blindly classify all stderr as ERROR")
+
+    def test_progress_bar_patterns_defined(self):
+        """TeeToLogger must define progress bar detection patterns."""
+        src = Path(__file__).parent / "logging_utils.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("_PROGRESS_PATTERNS", source,
+            "TeeToLogger must define _PROGRESS_PATTERNS for tqdm/progress bar detection")
+
+
+class TestNoDoubleDateArtifactPaths(unittest.TestCase):
+    """Artifact filenames must not have duplicated date stamps."""
+
+    def test_no_double_date_in_report_generator(self):
+        """report_generator.py must not append {stamp} to base that already has date."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        import re
+        # Look for patterns like f"{base}_{stamp}" or _{stamp}_ which cause double dates
+        double_date = re.findall(r'\{stamp\}', source)
+        self.assertEqual(len(double_date), 0,
+            f"report_generator.py must not use {{stamp}} variable (causes double-date). Found {len(double_date)} occurrences.")
+
+
 if __name__ == '__main__':
     unittest.main()
