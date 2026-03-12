@@ -4086,6 +4086,54 @@ class TestHUDResponseParsing(unittest.TestCase):
         result = self.extract(payload)
         self.assertEqual(len(result), 1)
 
+    def test_extract_hud_rows_shape_f_data_dict_with_results_list(self):
+        """Shape F: payload = {"data": {"results": [row, ...]}}."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {
+            "data": {
+                "crosswalk_type": "7", "input": "06037",
+                "quarter": "4", "year": "2025",
+                "results": [
+                    {"zip": "90001", "county": "06037", "res_ratio": 0.85},
+                    {"zip": "90002", "county": "06037", "res_ratio": 0.72},
+                ]
+            }
+        }
+        result = self.extract(payload)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["zip"], "90001")
+
+    def test_extract_hud_rows_shape_f_data_dict_with_results_rows(self):
+        """Shape F variant: payload = {"data": {"results": {"rows": [row, ...]}}}."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {
+            "data": {
+                "results": {
+                    "rows": [{"zip": "10001", "county": "36061"}]
+                }
+            }
+        }
+        result = self.extract(payload)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["county"], "36061")
+
+    def test_extract_hud_rows_shape_f_data_dict_with_results_data(self):
+        """Shape F variant: payload = {"data": {"results": {"data": [row, ...]}}}."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {
+            "data": {
+                "results": {
+                    "data": [{"zip": "60601", "county": "17031"}]
+                }
+            }
+        }
+        result = self.extract(payload)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["zip"], "60601")
+
     def test_extract_hud_rows_empty_payload(self):
         """Empty or unrecognized payload returns empty list."""
         if not self.available:
