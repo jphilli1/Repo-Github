@@ -3679,12 +3679,15 @@ class TestHUDResponseParsing(unittest.TestCase):
         try:
             from case_shiller_zip_mapper import (
                 extract_hud_result_rows, canonicalize_hud_columns,
-                _describe_payload, _HUD_COLUMN_MAP,
+                flatten_hud_rows, _describe_payload,
+                _HUD_COLUMN_MAP, _HUD_WRAPPER_KEYS,
             )
             cls.extract = staticmethod(extract_hud_result_rows)
+            cls.flatten = staticmethod(flatten_hud_rows)
             cls.canonicalize = staticmethod(canonicalize_hud_columns)
             cls.describe = staticmethod(_describe_payload)
             cls.col_map = _HUD_COLUMN_MAP
+            cls.wrapper_keys = _HUD_WRAPPER_KEYS
             cls.available = True
         except ImportError:
             cls.available = False
@@ -3827,6 +3830,160 @@ class TestHUDResponseParsing(unittest.TestCase):
         src = Path(__file__).parent / "report_generator.py"
         source = src.read_text(encoding="utf-8")
         self.assertIn("MUST be added here explicitly", source)
+
+    # --- flatten_hud_rows tests (Part 7) ---
+
+    def test_extract_hud_rows_wrapper_results_list(self):
+        """Wrapper rows with nested results lists must be recognized as Shape B."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        # This is the actual HUD type=7 response shape:
+        # {"results": [{"year":2025,"quarter":4,"input":"06037","crosswalk_type":"7",
+        #               "results":[{"zip":"90001","county":"06037",...},...]}]}
+        payload = {
+            "results": [
+                {
+                    "year": 2025, "quarter": 4, "input": "06037",
+                    "crosswalk_type": "7",
+                    "results": [
+                        {"zip": "90001", "county": "06037", "res_ratio": 0.85},
+                        {"zip": "90002", "county": "06037", "res_ratio": 0.72},
+                    ]
+                }
+            ]
+        }
+        # extract_hud_result_rows returns the wrapper rows (Shape B)
+        rows = self.extract(payload)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("results", rows[0])
+        # flatten_hud_rows explodes them into actual data rows
+        flat = self.flatten(rows)
+        self.assertEqual(len(flat), 2)
+        self.assertEqual(flat[0]["zip"], "90001")
+        self.assertEqual(flat[1]["zip"], "90002")
+
+    def test_flatten_hud_rows_propagates_parent_metadata(self):
+        """Parent metadata (year, quarter, input) propagates to child rows."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        wrapper_rows = [
+            {
+                "year": 2025, "quarter": 4, "input": "17031",
+                "crosswalk_type": "7",
+                "results": [
+                    {"zip": "60601", "county": "17031", "res_ratio": 0.90},
+                ]
+            }
+        ]
+        flat = self.flatten(wrapper_rows)
+        self.assertEqual(len(flat), 1)
+        # Parent metadata propagated
+        self.assertEqual(flat[0]["year"], 2025)
+        self.assertEqual(flat[0]["quarter"], 4)
+        self.assertEqual(flat[0]["input"], "17031")
+        # Actual data fields present
+        self.assertEqual(flat[0]["zip"], "60601")
+        self.assertEqual(flat[0]["county"], "17031")
+
+    def test_flatten_hud_rows_already_flat(self):
+        """Rows without nested results are returned unchanged."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        flat_rows = [
+            {"zip": "10001", "county": "36061", "res_ratio": 0.85},
+            {"zip": "10002", "county": "36061", "res_ratio": 0.72},
+        ]
+        result = self.flatten(flat_rows)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["zip"], "10001")
+
+    def test_flatten_hud_rows_multiple_wrappers(self):
+        """Multiple wrapper rows from different counties all get flattened."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        wrapper_rows = [
+            {
+                "year": 2025, "quarter": 4, "input": "06037",
+                "crosswalk_type": "7",
+                "results": [
+                    {"zip": "90001", "county": "06037"},
+                    {"zip": "90002", "county": "06037"},
+                ]
+            },
+            {
+                "year": 2025, "quarter": 4, "input": "06059",
+                "crosswalk_type": "7",
+                "results": [
+                    {"zip": "92801", "county": "06059"},
+                ]
+            },
+        ]
+        flat = self.flatten(wrapper_rows)
+        self.assertEqual(len(flat), 3)
+        counties = {r["county"] for r in flat}
+        self.assertEqual(counties, {"06037", "06059"})
+
+    def test_fetch_hud_crosswalk_uses_flatten(self):
+        """fetch_hud_crosswalk must call flatten_hud_rows."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("flatten_hud_rows", source,
+            "fetch_hud_crosswalk must call flatten_hud_rows")
+
+    def test_wrapper_keys_constant_exists(self):
+        """_HUD_WRAPPER_KEYS must define the known wrapper metadata fields."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        expected = {"year", "quarter", "input", "crosswalk_type", "results"}
+        self.assertEqual(self.wrapper_keys, expected)
+
+    def test_failed_parse_not_misclassified_as_success_no_zips(self):
+        """Wrapper-only columns must produce FAILED_PARSE, not SUCCESS_NO_ZIPS."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        # The orchestrator must check for wrapper-only columns BEFORE calling
+        # build_case_shiller_zip_coverage, and return FAILED_PARSE
+        self.assertIn("ENRICH_FAILED_PARSE", source)
+        self.assertIn("ENRICH_SUCCESS_NO_MATCHES", source)
+        # FAILED_PARSE must appear before the coverage build call
+        parse_idx = source.index("ENRICH_FAILED_PARSE")
+        coverage_idx = source.index("build_case_shiller_zip_coverage(combined_xwalk")
+        self.assertLess(parse_idx, coverage_idx,
+            "FAILED_PARSE check must occur before coverage build")
+
+    def test_end_to_end_nested_wrapper_to_canonical_columns(self):
+        """Full pipeline: nested wrapper → extract → flatten → normalize → canonicalize."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {
+            "data": {
+                "results": "not_a_list"  # red herring
+            },
+            "results": [
+                {
+                    "year": 2025, "quarter": 4, "input": "25005",
+                    "crosswalk_type": "7",
+                    "results": [
+                        {"zip": "2301", "county": "25005", "residential_ratio": 0.95,
+                         "business_ratio": 0.04, "other_ratio": 0.01, "total_ratio": 1.0},
+                    ]
+                }
+            ]
+        }
+        rows = self.extract(payload)
+        flat = self.flatten(rows)
+        self.assertEqual(len(flat), 1)
+        df = pd.DataFrame(flat)
+        df = self.canonicalize(df)
+        # Canonical columns present
+        self.assertIn("zip", df.columns)
+        self.assertIn("county_fips", df.columns)
+        self.assertIn("res_ratio", df.columns)
+        self.assertIn("bus_ratio", df.columns)
+        # ZIP zero-padded
+        self.assertEqual(df.iloc[0]["zip"], "02301")
+        # FIPS zero-padded
+        self.assertEqual(df.iloc[0]["county_fips"], "25005")
 
 
 if __name__ == '__main__':
