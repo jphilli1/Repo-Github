@@ -61,6 +61,18 @@ ENRICH_SUCCESS_NO_MATCHES = "SUCCESS_NO_MATCHES"
 ENRICH_SUCCESS_NO_ZIPS = "SUCCESS_NO_ZIPS"
 ENRICH_SUCCESS_WITH_ZIPS = "SUCCESS_WITH_ZIPS"
 
+# ---------------------------------------------------------------------------
+# Query-level HTTP failure classifications (Part 4)
+# ---------------------------------------------------------------------------
+QUERY_FAILED_TOKEN_AUTH = "FAILED_TOKEN_AUTH"
+QUERY_FAILED_HTTP_NOT_FOUND = "FAILED_HTTP_NOT_FOUND"
+QUERY_FAILED_HTTP_BAD_REQUEST = "FAILED_HTTP_BAD_REQUEST"
+QUERY_FAILED_HTTP_RATE_LIMIT = "FAILED_HTTP_RATE_LIMIT"
+QUERY_FAILED_HTTP_SERVER = "FAILED_HTTP_SERVER"
+QUERY_FAILED_HTTP_EXCEPTION = "FAILED_HTTP_EXCEPTION"
+QUERY_FAILED_PARSE = "FAILED_PARSE"
+QUERY_SUCCESS = "SUCCESS"
+
 
 def is_zip_enrichment_enabled() -> bool:
     """Check whether Case-Shiller ZIP enrichment is enabled via env flag."""
@@ -382,10 +394,90 @@ _HUD_TYPE_COUNTY_ZIP = 7
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = [2, 4, 8]
 
+# User-Agent for HUD requests
+_HUD_USER_AGENT = "CaseShillerZipMapper/1.0 (Python/requests)"
+
+# Module-level session (lazy-initialized)
+_hud_session: Optional[Any] = None
+_first_request_logged = False
+
+
+def _get_hud_session() -> "requests.Session":
+    """Return a module-level requests.Session with hardened default headers."""
+    global _hud_session
+    if _hud_session is None:
+        _hud_session = requests.Session()
+        _hud_session.headers.update({
+            "Accept": "application/json",
+            "User-Agent": _HUD_USER_AGENT,
+        })
+    return _hud_session
+
 
 def _get_hud_token() -> Optional[str]:
     """Read HUD API token from environment."""
     return os.getenv("HUD_USER_TOKEN")
+
+
+def build_hud_crosswalk_request(
+    query: str,
+    crosswalk_type: int = _HUD_TYPE_COUNTY_ZIP,
+    year: Optional[int] = None,
+    quarter: Optional[int] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Validate and build HUD crosswalk request components.
+
+    Returns dict with keys: url, params, headers, errors.
+    If errors is non-empty, the request should not be sent.
+    """
+    errors: List[str] = []
+    tok = token or _get_hud_token()
+    if not tok:
+        errors.append("HUD_USER_TOKEN is not set")
+
+    if not query or not query.strip():
+        errors.append("query must be a non-empty string")
+
+    if crosswalk_type not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+        errors.append(f"crosswalk_type={crosswalk_type} is not a valid HUD type (1-9)")
+
+    if year is not None and (year < 2010 or year > 2050):
+        errors.append(f"year={year} is outside expected range [2010, 2050]")
+
+    if quarter is not None and quarter not in (1, 2, 3, 4):
+        errors.append(f"quarter={quarter} must be 1-4")
+
+    params: Dict[str, Any] = {"type": crosswalk_type, "query": query.strip()}
+    if year is not None:
+        params["year"] = year
+    if quarter is not None:
+        params["quarter"] = quarter
+
+    headers = {"Authorization": f"Bearer {tok}"} if tok else {}
+
+    return {
+        "url": HUD_API_BASE,
+        "params": params,
+        "headers": headers,
+        "errors": errors,
+    }
+
+
+def _classify_http_status(status_code: int) -> str:
+    """Map HTTP status code to a query-level failure classification."""
+    if status_code in (401, 403):
+        return QUERY_FAILED_TOKEN_AUTH
+    elif status_code == 404:
+        return QUERY_FAILED_HTTP_NOT_FOUND
+    elif status_code == 400:
+        return QUERY_FAILED_HTTP_BAD_REQUEST
+    elif status_code == 429:
+        return QUERY_FAILED_HTTP_RATE_LIMIT
+    elif 500 <= status_code < 600:
+        return QUERY_FAILED_HTTP_SERVER
+    else:
+        return f"FAILED_HTTP_{status_code}"
 
 
 # ---------------------------------------------------------------------------
@@ -635,7 +727,7 @@ def fetch_hud_crosswalk(
     year: Optional[int] = None,
     quarter: Optional[int] = None,
     token: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Fetch HUD USPS ZIP Crosswalk data via REST API.
 
     Parameters
@@ -651,29 +743,48 @@ def fetch_hud_crosswalk(
 
     Returns
     -------
-    dict with keys:
-        "dataframe"   — pd.DataFrame (may be empty on failure)
-        "status"      — one of QUERY_* constants
-        "diagnostics" — dict with parse diagnostics
+    (pd.DataFrame, diagnostics_dict)
+        DataFrame with columns normalised to lowercase.
+        Diagnostics dict with keys: query, status, failure_class, status_code,
+        url, params, response_preview, exception_info, retry_count.
     """
-    def _outcome(status: str, df: pd.DataFrame = None,
-                 diag: Dict = None) -> Dict[str, Any]:
-        return {
-            "dataframe": df if df is not None else pd.DataFrame(),
-            "status": status,
-            "diagnostics": diag or {},
-        }
+    global _first_request_logged
+
+    # Build structured diagnostics dict
+    diag: Dict[str, Any] = {
+        "query": query,
+        "status": "pending",
+        "failure_class": None,
+        "status_code": None,
+        "url": HUD_API_BASE,
+        "params": {"type": crosswalk_type, "query": query},
+        "response_preview": None,
+        "exception_info": None,
+        "retry_count": 0,
+    }
+    if year is not None:
+        diag["params"]["year"] = year
+    if quarter is not None:
+        diag["params"]["quarter"] = quarter
 
     if not _HAS_REQUESTS:
+        diag["status"] = "error"
+        diag["failure_class"] = "MISSING_REQUESTS_LIB"
         raise ImportError("'requests' library is required for HUD API calls")
 
     tok = token or _get_hud_token()
     if not tok:
+        diag["status"] = "error"
+        diag["failure_class"] = QUERY_FAILED_TOKEN_AUTH
         raise EnvironmentError(
             "HUD_USER_TOKEN environment variable is not set. "
             "Register at https://www.huduser.gov/hudapi/public/register "
             "and set HUD_USER_TOKEN=<your-token>."
         )
+
+    # Use Session with hardened headers
+    session = _get_hud_session()
+    session.headers["Authorization"] = f"Bearer {tok}"
 
     params: Dict[str, Any] = {"type": crosswalk_type, "query": query}
     if year is not None:
@@ -681,19 +792,31 @@ def fetch_hud_crosswalk(
     if quarter is not None:
         params["quarter"] = quarter
 
-    headers = {"Authorization": f"Bearer {tok}"}
+    # First-request debug log with masked token
+    if not _first_request_logged:
+        token_prefix = tok[:6] if len(tok) >= 6 else tok[:3]
+        logger.info(
+            f"HUD crosswalk first request: url={HUD_API_BASE}, "
+            f"params={params}, token_prefix={token_prefix}..., "
+            f"session_headers={dict(session.headers)!r}"
+        )
+        _first_request_logged = True
+
     logger.info(f"Fetching HUD crosswalk: type=county-zip(7), query={query}, year={year}, quarter={quarter}")
+
+    last_status_code = None
+    last_failure_class = None
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            resp = requests.get(HUD_API_BASE, params=params, headers=headers, timeout=120)
-
-            if resp.status_code in (401, 403):
-                diag = {"http_status": resp.status_code, "query": query}
-                logger.error(f"HUD API auth failure for query={query}: HTTP {resp.status_code}")
-                return _outcome(QUERY_FAILED_TOKEN_AUTH, diag=diag)
+            resp = session.get(HUD_API_BASE, params=params, timeout=120)
+            last_status_code = resp.status_code
+            diag["status_code"] = resp.status_code
+            diag["retry_count"] = attempt - 1
 
             if resp.status_code == 200:
+                diag["status"] = "success"
+                diag["failure_class"] = None
                 data = resp.json()
 
                 # Step 1: Extract row list from top-level payload shape
@@ -704,22 +827,23 @@ def fetch_hud_crosswalk(
                 records = flatten_hud_rows(records)
                 n_after_flatten = len(records)
 
-                # Step 3: Build per-query diagnostics
-                diag = _describe_payload(data)
-                diag["query"] = query
-                diag["extracted_row_count_before_flatten"] = n_before_flatten
-                diag["extracted_row_count_after_flatten"] = n_after_flatten
+                # Step 3: Log payload diagnostics
+                payload_diag = _describe_payload(data)
+                payload_diag["extracted_row_count_before_flatten"] = n_before_flatten
+                payload_diag["extracted_row_count_after_flatten"] = n_after_flatten
                 if records and isinstance(records[0], dict):
-                    diag["has_zip_column"] = any("zip" in k.lower() for k in records[0].keys())
-                    diag["has_fips_column"] = bool(
+                    payload_diag["first_row_keys"] = sorted(records[0].keys())
+                    payload_diag["has_zip_column"] = any("zip" in k.lower() for k in records[0].keys())
+                    payload_diag["has_fips_column"] = bool(
                         set(k.lower() for k in records[0].keys()) &
                         {"county", "county_fips", "geoid", "countyfips", "fips"}
                     )
+                logger.info(f"HUD response parsed: query={query}, diagnostics={payload_diag}")
 
                 if not records:
                     logger.warning(f"HUD API returned empty/unparseable result for query={query}")
-                    diag["query_status"] = QUERY_FAILED_EMPTY_RESPONSE
-                    return _outcome(QUERY_FAILED_EMPTY_RESPONSE, diag=diag)
+                    diag["status"] = "empty"
+                    return pd.DataFrame(), diag
 
                 # Step 4: Normalize nested dicts into flat DataFrame columns
                 try:
@@ -743,35 +867,62 @@ def fetch_hud_crosswalk(
                         f"HUD response flattened to wrapper-only columns {sorted(actual_cols)} — "
                         f"query={query}, rows_before={n_before_flatten}, rows_after={n_after_flatten}"
                     )
-                    diag["query_status"] = QUERY_FAILED_PARSE
-                    return _outcome(QUERY_FAILED_PARSE, diag=diag)
+                    diag["status"] = "error"
+                    diag["failure_class"] = QUERY_FAILED_PARSE
+                    return pd.DataFrame(), diag
 
                 logger.info(
                     f"HUD crosswalk fetched: {len(df)} rows, query={query}, "
                     f"has_zip={has_zip_col}, has_fips={has_fips_col}"
                 )
-                diag["query_status"] = QUERY_SUCCESS_ROWS
-                return _outcome(QUERY_SUCCESS_ROWS, df=df, diag=diag)
+                return df, diag
+
+            # Non-200 response
+            last_failure_class = _classify_http_status(resp.status_code)
+            diag["failure_class"] = last_failure_class
+            diag["response_preview"] = resp.text[:500] if resp.text else None
 
             if resp.status_code in (429, 500, 502, 503, 504):
-                logger.warning(f"HUD API {resp.status_code}, retry {attempt}/{_MAX_RETRIES}")
+                logger.warning(
+                    f"HUD API {resp.status_code} ({last_failure_class}), "
+                    f"retry {attempt}/{_MAX_RETRIES}, query={query}"
+                )
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_BACKOFF[attempt - 1])
                     continue
+
             # Non-retryable error
-            diag = {"http_status": resp.status_code, "query": query}
-            logger.error(f"HUD API error {resp.status_code}: {resp.text[:500]}")
-            return _outcome(QUERY_FAILED_HTTP, diag=diag)
+            logger.error(
+                f"HUD API error: status={resp.status_code}, "
+                f"class={last_failure_class}, query={query}, "
+                f"url={HUD_API_BASE}, params={params}, "
+                f"response_preview={resp.text[:200] if resp.text else 'empty'}"
+            )
+            diag["status"] = "error"
+            return pd.DataFrame(), diag
 
         except requests.exceptions.RequestException as e:
-            logger.warning(f"HUD API request failed (attempt {attempt}): {e}")
+            diag["retry_count"] = attempt - 1
+            diag["exception_info"] = f"{type(e).__name__}: {e}"
+            diag["failure_class"] = QUERY_FAILED_HTTP_EXCEPTION
+            last_failure_class = QUERY_FAILED_HTTP_EXCEPTION
+            logger.warning(
+                f"HUD API request failed (attempt {attempt}): "
+                f"{type(e).__name__}: {e}, query={query}"
+            )
             if attempt < _MAX_RETRIES:
                 time.sleep(_RETRY_BACKOFF[attempt - 1])
                 continue
-            logger.error(f"HUD API request failed after {_MAX_RETRIES} attempts")
-            return _outcome(QUERY_FAILED_HTTP, diag={"query": query, "error": str(e)})
+            logger.error(
+                f"HUD API request failed after {_MAX_RETRIES} attempts: "
+                f"query={query}, exception={type(e).__name__}: {e}"
+            )
+            diag["status"] = "error"
+            return pd.DataFrame(), diag
 
-    return _outcome(QUERY_FAILED_HTTP, diag={"query": query, "error": "max_retries_exhausted"})
+    diag["status"] = "error"
+    diag["failure_class"] = last_failure_class or "FAILED_HTTP_EXHAUSTED"
+    return pd.DataFrame(), diag
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1157,37 +1308,59 @@ def build_case_shiller_zip_sheets(
 
     # --- Per-query fetch with structured outcome tracking ---
     all_xwalk_frames = []
-    query_outcomes: List[Dict[str, Any]] = []  # per-county diagnostics
-    counts = {
-        "success": 0, "failed_parse": 0,
-        "failed_http": 0, "failed_empty": 0, "failed_auth": 0,
-    }
+    county_diagnostics: List[Dict[str, Any]] = []
     auth_failed = False
+
+    # Failure counters for county-level summary (Part 5)
+    failure_counts = {
+        "total": len(unique_fips),
+        "success": 0,
+        "failed_auth": 0,
+        "failed_bad_request": 0,
+        "failed_not_found": 0,
+        "failed_rate_limit": 0,
+        "failed_server": 0,
+        "failed_exception": 0,
+        "failed_parse": 0,
+        "failed_empty": 0,
+    }
 
     for fips_code in unique_fips:
         try:
-            outcome = fetch_hud_crosswalk(
+            xwalk, query_diag = fetch_hud_crosswalk(
                 query=fips_code, crosswalk_type=_HUD_TYPE_COUNTY_ZIP,
                 year=year, quarter=quarter, token=tok,
             )
-            qstatus = outcome["status"]
-            qdf = outcome["dataframe"]
-            qdiag = outcome["diagnostics"]
-            query_outcomes.append(qdiag)
+            county_diagnostics.append(query_diag)
 
-            if qstatus == QUERY_SUCCESS_ROWS and not qdf.empty:
-                all_xwalk_frames.append(qdf)
-                counts["success"] += 1
-            elif qstatus == QUERY_FAILED_TOKEN_AUTH:
+            if query_diag.get("failure_class") == QUERY_FAILED_TOKEN_AUTH:
                 auth_failed = True
-                counts["failed_auth"] += 1
+                failure_counts["failed_auth"] += 1
+                logger.error(f"HUD API auth failure for FIPS {fips_code}: {query_diag}")
                 break
-            elif qstatus == QUERY_FAILED_PARSE:
-                counts["failed_parse"] += 1
-            elif qstatus == QUERY_FAILED_HTTP:
-                counts["failed_http"] += 1
+
+            if not xwalk.empty:
+                all_xwalk_frames.append(xwalk)
+                failure_counts["success"] += 1
             else:
-                counts["failed_empty"] += 1
+                # Classify the failure from diagnostics
+                fc = query_diag.get("failure_class")
+                if fc == QUERY_FAILED_HTTP_BAD_REQUEST:
+                    failure_counts["failed_bad_request"] += 1
+                elif fc == QUERY_FAILED_HTTP_NOT_FOUND:
+                    failure_counts["failed_not_found"] += 1
+                elif fc == QUERY_FAILED_HTTP_RATE_LIMIT:
+                    failure_counts["failed_rate_limit"] += 1
+                elif fc == QUERY_FAILED_HTTP_SERVER:
+                    failure_counts["failed_server"] += 1
+                elif fc == QUERY_FAILED_HTTP_EXCEPTION:
+                    failure_counts["failed_exception"] += 1
+                elif fc == QUERY_FAILED_PARSE:
+                    failure_counts["failed_parse"] += 1
+                elif fc is None and query_diag.get("status") == "empty":
+                    failure_counts["failed_empty"] += 1
+                elif fc is not None:
+                    failure_counts["failed_server"] += 1  # catchall for unmapped HTTP errors
 
         except EnvironmentError:
             raise  # token missing — should not happen since we checked above
@@ -1195,11 +1368,33 @@ def build_case_shiller_zip_sheets(
             err_str = str(e).lower()
             if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
                 auth_failed = True
-                counts["failed_auth"] += 1
+                failure_counts["failed_auth"] += 1
                 logger.error(f"HUD API auth failure for FIPS {fips_code}: {e}")
                 break
-            counts["failed_http"] += 1
-            query_outcomes.append({"query": fips_code, "error": str(e)})
+            failure_counts["failed_exception"] += 1
+            county_diagnostics.append({
+                "query": fips_code, "status": "error",
+                "failure_class": QUERY_FAILED_HTTP_EXCEPTION,
+                "exception_info": f"{type(e).__name__}: {e}",
+            })
+
+    # Part 5: Log county-level failure summary breakdown
+    n_failed = failure_counts["total"] - failure_counts["success"]
+    logger.info(
+        f"HUD county-ZIP fetch summary: "
+        f"total={failure_counts['total']}, "
+        f"success={failure_counts['success']}, "
+        f"failed={n_failed}, "
+        f"breakdown={{ "
+        f"auth={failure_counts['failed_auth']}, "
+        f"bad_request={failure_counts['failed_bad_request']}, "
+        f"not_found={failure_counts['failed_not_found']}, "
+        f"rate_limit={failure_counts['failed_rate_limit']}, "
+        f"server={failure_counts['failed_server']}, "
+        f"exception={failure_counts['failed_exception']}, "
+        f"parse={failure_counts['failed_parse']}, "
+        f"empty={failure_counts['failed_empty']} }}"
+    )
 
     # --- Orchestration-level diagnostics ---
     orch_diag = {
@@ -1223,13 +1418,30 @@ def build_case_shiller_zip_sheets(
         orch_diag["final_enrichment_status"] = ENRICH_FAILED_TOKEN_AUTH
         return _result(ENRICH_FAILED_TOKEN_AUTH, diag={**diag, **orch_diag})
 
-    if counts["failed_http"] > 0 and not all_xwalk_frames:
+    # Part 6: Detect all-HTTP-fail — check if ANY county had a non-None failure_class
+    any_http_failure = any(
+        d.get("failure_class") is not None
+        for d in county_diagnostics
+    )
+    all_failed_http = (
+        any_http_failure
+        and failure_counts["success"] == 0
+        and not all_xwalk_frames
+    )
+
+    if all_failed_http:
+        # Determine dominant failure class for the enrichment status
+        dominant = "FAILED_HTTP"
+        if failure_counts["failed_auth"] > 0:
+            dominant = ENRICH_FAILED_TOKEN_AUTH
         logger.error(
-            f"All HUD API calls failed ({counts['failed_http']} HTTP errors)."
+            f"All HUD API calls failed with HTTP errors "
+            f"({n_failed}/{failure_counts['total']} counties). "
+            f"Failure breakdown: {failure_counts}. "
+            f"First diagnostic: {county_diagnostics[0] if county_diagnostics else 'none'}"
         )
         audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_HTTP}"
-        orch_diag["final_enrichment_status"] = ENRICH_FAILED_HTTP
-        return _result(ENRICH_FAILED_HTTP, diag={**diag, **orch_diag})
+        return _result(dominant if dominant != "FAILED_HTTP" else ENRICH_FAILED_HTTP, diag=diag)
 
     if not all_xwalk_frames:
         # All empty — classify reason correctly
@@ -1316,6 +1528,71 @@ def build_case_shiller_zip_sheets(
 
     orch_diag["final_enrichment_status"] = status
     return _result(status, cov=coverage_df, summ=summary_df, diag={**diag, **orch_diag})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STANDALONE SMOKE TEST HELPER (Part 7)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_hud_smoke_test(
+    fips_code: str = "06037",
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run a single HUD API request as a smoke test for local debugging.
+
+    Parameters
+    ----------
+    fips_code : str
+        A 5-digit county FIPS code to test with (default: LA County 06037).
+    token : str or None
+        Explicit token; falls back to HUD_USER_TOKEN env var.
+
+    Returns
+    -------
+    dict with keys: success, status_code, failure_class, row_count,
+        columns, response_preview, exception_info, diagnostics.
+    """
+    result: Dict[str, Any] = {
+        "success": False,
+        "fips_code": fips_code,
+        "status_code": None,
+        "failure_class": None,
+        "row_count": 0,
+        "columns": [],
+        "response_preview": None,
+        "exception_info": None,
+        "diagnostics": {},
+    }
+
+    # Validate request first
+    req = build_hud_crosswalk_request(query=fips_code, token=token)
+    if req["errors"]:
+        result["failure_class"] = "VALIDATION_ERROR"
+        result["exception_info"] = "; ".join(req["errors"])
+        return result
+
+    try:
+        df, diag = fetch_hud_crosswalk(
+            query=fips_code,
+            crosswalk_type=_HUD_TYPE_COUNTY_ZIP,
+            token=token,
+        )
+        result["diagnostics"] = diag
+        result["status_code"] = diag.get("status_code")
+        result["failure_class"] = diag.get("failure_class")
+
+        if not df.empty:
+            result["success"] = True
+            result["row_count"] = len(df)
+            result["columns"] = sorted(df.columns.tolist())
+        else:
+            result["response_preview"] = diag.get("response_preview")
+
+    except Exception as e:
+        result["exception_info"] = f"{type(e).__name__}: {e}"
+        result["failure_class"] = QUERY_FAILED_HTTP_EXCEPTION
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
