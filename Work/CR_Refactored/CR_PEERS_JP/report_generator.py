@@ -72,6 +72,8 @@ try:
         generate_yoy_heatmap,
         generate_kri_bullet_chart,
         generate_sparkline_table,
+        BULLET_METRICS_NORMALIZED_RATES,
+        BULLET_METRICS_NORMALIZED_COMPOSITION,
     )
     _HAS_EXECUTIVE_CHARTS = True
 except ImportError:
@@ -2609,21 +2611,50 @@ def generate_reports(
                         manifest.record_failed(art_name, str(exc))
                         print(f"  Failed {art_name}: {exc}")
 
-            # KRI Bullet Charts — standard and normalized (matplotlib — full_local only)
-            for is_norm in [False, True]:
-                norm_str = "normalized" if is_norm else "standard"
-                art_name = f"kri_bullet_{norm_str}"
+            # KRI Bullet Chart — standard (single artifact, matplotlib — full_local only)
+            art_name = "kri_bullet_standard"
+            if should_produce(art_name, mode, manifest, suppressed_charts):
+                try:
+                    save = str(charts_dir / f"{base}_kri_bullet_standard.png")
+                    fig = generate_kri_bullet_chart(
+                        proc_df_with_peers, subject_bank_cert,
+                        wealth_cert=ACTIVE_STANDARD_COMPOSITES["core_pb"],
+                        all_peers_cert=ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                        is_normalized=False,
+                        save_path=save,
+                    )
+                    if fig is not None:
+                        manifest.record_generated(art_name, save)
+                        print(f"  Generated: {art_name}")
+                        csv_log.log_file_written(save, phase="executive_charts",
+                                                 component=art_name)
+                    else:
+                        manifest.record_failed(art_name, "insufficient data")
+                except Exception as exc:
+                    manifest.record_failed(art_name, str(exc))
+                    print(f"  Failed {art_name}: {exc}")
+
+            # KRI Bullet Charts — normalized rates + normalized composition (two separate artifacts)
+            _norm_bullet_specs = [
+                ("kri_bullet_normalized_rates",
+                 BULLET_METRICS_NORMALIZED_RATES,
+                 "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)"),
+                ("kri_bullet_normalized_composition",
+                 BULLET_METRICS_NORMALIZED_COMPOSITION,
+                 "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)"),
+            ]
+            for art_name, metric_list, chart_title in _norm_bullet_specs:
                 if should_produce(art_name, mode, manifest, suppressed_charts):
                     try:
-                        save = str(charts_dir / f"{base}_kri_bullet_{norm_str}.png")
-                        composites = (ACTIVE_NORMALIZED_COMPOSITES if is_norm
-                                      else ACTIVE_STANDARD_COMPOSITES)
+                        save = str(charts_dir / f"{base}_{art_name}.png")
                         fig = generate_kri_bullet_chart(
                             proc_df_with_peers, subject_bank_cert,
-                            wealth_cert=composites["core_pb"],
-                            all_peers_cert=composites["all_peers"],
-                            is_normalized=is_norm,
+                            wealth_cert=ACTIVE_NORMALIZED_COMPOSITES["core_pb"],
+                            all_peers_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"],
+                            metrics=metric_list,
+                            is_normalized=True,
                             save_path=save,
+                            title_override=chart_title,
                         )
                         if fig is not None:
                             manifest.record_generated(art_name, save)

@@ -163,7 +163,8 @@ report_generator.py
   - `{stem}_yoy_heatmap_standard.html`
   - `{stem}_yoy_heatmap_normalized.html`
   - `{stem}_kri_bullet_standard.png`
-  - `{stem}_kri_bullet_normalized.png`
+  - `{stem}_kri_bullet_normalized_rates.png`
+  - `{stem}_kri_bullet_normalized_composition.png`
   - `{stem}_sparkline_summary.html`
   - `{stem}_macro_corr_heatmap_lag1.html`
   - `{stem}_macro_overlay_credit_stress.png`
@@ -329,7 +330,7 @@ python report_generator.py
 
 All of these must be imported from `rendering_mode.py`. The `_ReportContext` dataclass in `report_generator.py` is a lightweight internal carrier and is NOT a duplicate of any rendering-mode type.
 
-### Executive Chart Artifacts (5 Artifacts)
+### Executive Chart Artifacts (6 Artifacts)
 
 Implemented in `executive_charts.py`, integrated into `report_generator.py` Phase 8.
 
@@ -338,14 +339,25 @@ Implemented in `executive_charts.py`, integrated into `report_generator.py` Phas
 | `yoy_heatmap_standard` | `{stem}_yoy_heatmap_standard.html` | BOTH | HTML |
 | `yoy_heatmap_normalized` | `{stem}_yoy_heatmap_normalized.html` | BOTH | HTML |
 | `kri_bullet_standard` | `{stem}_kri_bullet_standard.png` | FULL_LOCAL_ONLY | PNG |
-| `kri_bullet_normalized` | `{stem}_kri_bullet_normalized.png` | FULL_LOCAL_ONLY | PNG |
+| `kri_bullet_normalized_rates` | `{stem}_kri_bullet_normalized_rates.png` | FULL_LOCAL_ONLY | PNG |
+| `kri_bullet_normalized_composition` | `{stem}_kri_bullet_normalized_composition.png` | FULL_LOCAL_ONLY | PNG |
 | `sparkline_summary` | `{stem}_sparkline_summary.html` | BOTH | HTML |
 
 **Integration pattern:**
-- Heatmaps and bullet charts loop over `[False, True]` for standard/normalized variants
+- Heatmaps loop over `[False, True]` for standard/normalized variants
+- Standard bullet chart is a single artifact; normalized is split into two (rates vs composition) with separate metric lists and axis scales
 - Bullet charts use correct composite CERTs per variant: standard → 90001/90003, normalized → 90004/90006
 - Sparkline passes `norm_peer_cert=90006` for Norm_ metric rows, `peer_cert=90003` for standard rows
-- The obsolete single artifact name `kri_bullet_chart` is removed from both the registry and report_generator.py
+- The obsolete single artifact names `kri_bullet_chart` and `kri_bullet_normalized` are removed from the registry
+
+**Normalized bullet chart split:**
+- `kri_bullet_normalized_rates` — 5 rate metrics: Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage
+- `kri_bullet_normalized_composition` — 5 composition metrics: Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share
+
+**Comparator fallback behavior:**
+- Both comparators available → gray band between min and max
+- Single comparator available → thin vertical reference marker (NOT collapse to subject value)
+- Neither comparator available → metric row skipped entirely (NOT drawn with subject-to-subject band)
 
 ### Deterministic Macro Chart Artifacts (3 Artifacts)
 
@@ -751,6 +763,40 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-12 — Normalized KRI Bullet Chart Split (Rates vs Composition)
+
+**Problem**: The single `kri_bullet_normalized` artifact mixed rate metrics (0.xx% scale) and composition metrics (xx% scale) on a shared x-axis, making the chart unreadable. Additionally, the comparator fallback collapsed the gray band to the subject value when both peer composites were NaN, which was visually misleading.
+
+**3-part fix:**
+
+1. **Artifact split**: Replaced `kri_bullet_normalized` with two new artifacts:
+   - `kri_bullet_normalized_rates` — 5 rate metrics (Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage)
+   - `kri_bullet_normalized_composition` — 5 composition metrics (Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share)
+   - Each gets its own axes, avoiding the mixed-scale problem
+   - Exact titles: "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)" and "(Normalized Composition)"
+
+2. **Comparator fallback fix** in `generate_kri_bullet_chart()`:
+   - Both comparators available → gray band between min and max (unchanged)
+   - Single comparator available → thin vertical reference marker (new behavior)
+   - Neither comparator available → metric row skipped entirely (was: collapsed to subject value)
+   - Legend includes "Single Comparator Ref." when applicable
+
+3. **Integration update**: `report_generator.py` Phase 8 now produces 3 bullet artifacts (1 standard + 2 normalized) instead of 2. Each normalized artifact passes its own `metrics` list and `title_override`.
+
+**Changes:**
+
+1. **rendering_mode.py** — Replaced `kri_bullet_normalized` registration with `kri_bullet_normalized_rates` and `kri_bullet_normalized_composition` (both FULL_LOCAL_ONLY).
+
+2. **executive_charts.py** — Added `BULLET_METRICS_NORMALIZED_RATES` (5 metrics) and `BULLET_METRICS_NORMALIZED_COMPOSITION` (5 metrics). Added `title_override` parameter to `generate_kri_bullet_chart()`. Refactored comparator fallback: `ref_markers` dict tracks single-comparator rows; thin vertical line drawn instead of zero-width gray band. Neither-available rows skipped entirely via `continue`.
+
+3. **report_generator.py** — Phase 8 bullet chart section rewritten: standard bullet produced as single artifact; normalized produced via loop over `_norm_bullet_specs` list with separate metric lists and titles. Imports `BULLET_METRICS_NORMALIZED_RATES` and `BULLET_METRICS_NORMALIZED_COMPOSITION` from `executive_charts`.
+
+4. **test_regression.py** — Updated 8 existing tests to reference new artifact names. Added 8 new tests: `test_no_obsolete_kri_bullet_normalized_artifact`, `test_normalized_rates_metric_list`, `test_normalized_composition_metric_list`, `test_no_overlap_between_rates_and_composition`, `test_bullet_chart_has_title_override_param`, `test_comparator_fallback_neither_skips_row`, `test_comparator_fallback_single_uses_ref_marker`, `test_exact_normalized_rates_title`, `test_exact_normalized_composition_title`.
+
+5. **CLAUDE.md** — Updated executive artifacts table (5→6 artifacts), bullet metric lists, output filenames, comparator fallback documentation. Added changelog.
+
+**Files changed:** `rendering_mode.py`, `executive_charts.py`, `report_generator.py`, `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-12 — Rendering Architecture Reconciliation (Final Verification)
 
 **Objective**: Verify that `report_generator.py` is fully aligned with the canonical rendering architecture in `rendering_mode.py`, and that executive/macro chart integration matches the documented target state.
@@ -972,7 +1018,8 @@ The old `plot_macro_overlay()` used: `target_names = ["Fed Funds", "Unemployment
 | `yoy_heatmap_standard` | `{stem}_yoy_heatmap_standard.html` | BOTH | HTML table |
 | `yoy_heatmap_normalized` | `{stem}_yoy_heatmap_normalized.html` | BOTH | HTML table |
 | `kri_bullet_standard` | `{stem}_kri_bullet_standard.png` | FULL_LOCAL_ONLY | PNG chart |
-| `kri_bullet_normalized` | `{stem}_kri_bullet_normalized.png` | FULL_LOCAL_ONLY | PNG chart |
+| `kri_bullet_normalized_rates` | `{stem}_kri_bullet_normalized_rates.png` | FULL_LOCAL_ONLY | PNG chart |
+| `kri_bullet_normalized_composition` | `{stem}_kri_bullet_normalized_composition.png` | FULL_LOCAL_ONLY | PNG chart |
 | `sparkline_summary` | `{stem}_sparkline_summary.html` | BOTH | HTML table |
 
 **Exact metric lists:**
@@ -982,7 +1029,8 @@ The old `plot_macro_overlay()` used: `target_names = ["Fed Funds", "Unemployment
 | Standard heatmap (12) | TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Past_Due_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, SBL_Composition, RIC_CRE_Loan_Share, RIC_Resi_Loan_Share, RIC_CRE_ACL_Coverage, RIC_CRE_Risk_Adj_Coverage, RIC_CRE_Nonaccrual_Rate, RIC_CRE_NCO_Rate |
 | Normalized heatmap (10) | Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share |
 | Standard bullet (7) | TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Past_Due_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, RIC_CRE_ACL_Coverage, RIC_CRE_Risk_Adj_Coverage |
-| Normalized bullet (7) | Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share |
+| Normalized bullet — rates (5) | Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage |
+| Normalized bullet — composition (5) | Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share |
 | Sparkline (10) | TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, Past_Due_Rate, Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_ACL_Coverage, RIC_CRE_Nonaccrual_Rate, RIC_CRE_ACL_Coverage |
 
 **Comparator CERTs:**

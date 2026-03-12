@@ -967,7 +967,8 @@ def test_executive_chart_artifacts_registered():
     """All 5 executive chart artifacts must be registered in ARTIFACT_REGISTRY."""
     from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
     expected_both = ["yoy_heatmap_standard", "yoy_heatmap_normalized", "sparkline_summary"]
-    expected_full = ["kri_bullet_standard", "kri_bullet_normalized"]
+    expected_full = ["kri_bullet_standard", "kri_bullet_normalized_rates",
+                     "kri_bullet_normalized_composition"]
     for name in expected_both:
         assert name in ARTIFACT_REGISTRY, f"Missing artifact: {name}"
         assert ARTIFACT_REGISTRY[name].availability == ArtifactAvailability.BOTH
@@ -991,9 +992,11 @@ def test_executive_charts_integrated_in_report_generator():
     assert "kri_bullet_standard" in source or "kri_bullet_" in source, \
         "Missing kri_bullet artifact reference"
     assert "sparkline_summary" in source, "Missing sparkline_summary artifact reference"
-    # Both bullet chart variants must be produced
-    assert "kri_bullet_normalized" in source or 'kri_bullet_{norm_str}' in source, \
-        "Missing kri_bullet_normalized in report generator"
+    # Both normalized bullet chart variants must be produced
+    assert "kri_bullet_normalized_rates" in source, \
+        "Missing kri_bullet_normalized_rates in report generator"
+    assert "kri_bullet_normalized_composition" in source, \
+        "Missing kri_bullet_normalized_composition in report generator"
     print("  [PASS] test_executive_charts_integrated_in_report_generator")
 
 
@@ -1002,7 +1005,8 @@ def test_corp_safe_skips_bullet_chart():
     from rendering_mode import (
         RenderMode, ArtifactManifest, should_produce, ARTIFACT_REGISTRY
     )
-    for variant in ["kri_bullet_standard", "kri_bullet_normalized"]:
+    for variant in ["kri_bullet_standard", "kri_bullet_normalized_rates",
+                    "kri_bullet_normalized_composition"]:
         m = ArtifactManifest(RenderMode.CORP_SAFE)
         result = should_produce(variant, RenderMode.CORP_SAFE, m)
         assert result is False, f"{variant} should be skipped in corp_safe"
@@ -4735,7 +4739,8 @@ class TestArtifactRegistryCanonical(unittest.TestCase):
             "scatter_nco_vs_npl", "scatter_pd_vs_npl",
             "scatter_norm_nco_vs_nonaccrual",
             "portfolio_mix", "migration_ladder", "fred_table",
-            "yoy_heatmap_standard", "kri_bullet_standard", "kri_bullet_normalized",
+            "yoy_heatmap_standard", "kri_bullet_standard",
+            "kri_bullet_normalized_rates", "kri_bullet_normalized_composition",
             "sparkline_summary",
             "macro_corr_heatmap_lag1", "macro_overlay_credit_stress",
             "macro_overlay_rates_housing",
@@ -4899,12 +4904,13 @@ class TestDocumentationCoherence(unittest.TestCase):
 class TestExecutiveChartTranche(unittest.TestCase):
     """Regression tests for the 5-artifact executive chart tranche."""
 
-    def test_all_five_artifacts_registered(self):
-        """All 5 executive artifacts must exist in ARTIFACT_REGISTRY."""
+    def test_all_six_artifacts_registered(self):
+        """All 6 executive artifacts must exist in ARTIFACT_REGISTRY."""
         from rendering_mode import ARTIFACT_REGISTRY
         expected = [
             "yoy_heatmap_standard", "yoy_heatmap_normalized",
-            "kri_bullet_standard", "kri_bullet_normalized",
+            "kri_bullet_standard",
+            "kri_bullet_normalized_rates", "kri_bullet_normalized_composition",
             "sparkline_summary",
         ]
         for name in expected:
@@ -4978,7 +4984,8 @@ class TestExecutiveChartTranche(unittest.TestCase):
         """Heatmaps + sparkline = BOTH; bullets = FULL_LOCAL_ONLY."""
         from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
         both_arts = ["yoy_heatmap_standard", "yoy_heatmap_normalized", "sparkline_summary"]
-        full_arts = ["kri_bullet_standard", "kri_bullet_normalized"]
+        full_arts = ["kri_bullet_standard", "kri_bullet_normalized_rates",
+                     "kri_bullet_normalized_composition"]
         for name in both_arts:
             self.assertEqual(ARTIFACT_REGISTRY[name].availability,
                              ArtifactAvailability.BOTH,
@@ -5035,17 +5042,22 @@ class TestExecutiveChartTranche(unittest.TestCase):
             source = f.read()
         self.assertIn("ordered_metrics", source)
 
-    def test_report_generator_produces_both_bullet_variants(self):
-        """report_generator.py must produce both kri_bullet_standard and kri_bullet_normalized."""
+    def test_report_generator_produces_all_bullet_variants(self):
+        """report_generator.py must produce kri_bullet_standard, normalized_rates, normalized_composition."""
         src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "report_generator.py")
         with open(src_path, "r") as f:
             source = f.read()
-        # Should loop over both variants
-        self.assertIn("is_normalized=is_norm", source)
+        # All three artifact names must appear
+        self.assertIn("kri_bullet_standard", source)
+        self.assertIn("kri_bullet_normalized_rates", source)
+        self.assertIn("kri_bullet_normalized_composition", source)
         # Should use correct composites for each variant
         self.assertIn("ACTIVE_NORMALIZED_COMPOSITES", source)
         self.assertIn("ACTIVE_STANDARD_COMPOSITES", source)
+        # Normalized bullets must import and use the split metric lists
+        self.assertIn("BULLET_METRICS_NORMALIZED_RATES", source)
+        self.assertIn("BULLET_METRICS_NORMALIZED_COMPOSITION", source)
 
     def test_sparkline_uses_norm_peer_for_norm_metrics(self):
         """Sparkline peer lookup must use 90006 for Norm_ metrics, 90003 for standard."""
@@ -5070,12 +5082,98 @@ class TestExecutiveChartTranche(unittest.TestCase):
         self.assertNotIn("kri_bullet_chart", ARTIFACT_REGISTRY,
                          "Old kri_bullet_chart should be replaced by standard/normalized")
 
+    def test_no_obsolete_kri_bullet_normalized_artifact(self):
+        """The old single 'kri_bullet_normalized' must no longer exist in the registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertNotIn("kri_bullet_normalized", ARTIFACT_REGISTRY,
+                         "Old kri_bullet_normalized should be replaced by _rates/_composition")
+
     def test_all_bullet_metrics_in_semantics(self):
         """All bullet chart metrics must be registered in metric_semantics."""
         from executive_charts import BULLET_METRICS_STANDARD, BULLET_METRICS_NORMALIZED
         from metric_semantics import METRIC_SEMANTICS
         for code in BULLET_METRICS_STANDARD + BULLET_METRICS_NORMALIZED:
             self.assertIn(code, METRIC_SEMANTICS, f"Missing semantic: {code}")
+
+    def test_normalized_rates_metric_list(self):
+        """BULLET_METRICS_NORMALIZED_RATES must contain exactly the 5 rate metrics."""
+        from executive_charts import BULLET_METRICS_NORMALIZED_RATES
+        expected = [
+            "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+            "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+        ]
+        self.assertEqual(BULLET_METRICS_NORMALIZED_RATES, expected)
+
+    def test_normalized_composition_metric_list(self):
+        """BULLET_METRICS_NORMALIZED_COMPOSITION must contain exactly the 5 composition metrics."""
+        from executive_charts import BULLET_METRICS_NORMALIZED_COMPOSITION
+        expected = [
+            "Norm_SBL_Composition", "Norm_Wealth_Resi_Composition",
+            "Norm_CRE_Investment_Composition",
+            "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+        ]
+        self.assertEqual(BULLET_METRICS_NORMALIZED_COMPOSITION, expected)
+
+    def test_no_overlap_between_rates_and_composition(self):
+        """Rates and composition metric lists must be disjoint."""
+        from executive_charts import (
+            BULLET_METRICS_NORMALIZED_RATES,
+            BULLET_METRICS_NORMALIZED_COMPOSITION,
+        )
+        overlap = set(BULLET_METRICS_NORMALIZED_RATES) & set(BULLET_METRICS_NORMALIZED_COMPOSITION)
+        self.assertEqual(overlap, set(), f"Overlap found: {overlap}")
+
+    def test_bullet_chart_has_title_override_param(self):
+        """generate_kri_bullet_chart must accept title_override parameter."""
+        import inspect
+        from executive_charts import generate_kri_bullet_chart
+        sig = inspect.signature(generate_kri_bullet_chart)
+        self.assertIn("title_override", sig.parameters)
+
+    def test_comparator_fallback_neither_skips_row(self):
+        """When both comparators are NaN, the metric row must be skipped.
+        Verified via source inspection since matplotlib may not be available."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "executive_charts.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # The 'neither comparator' branch must skip (continue), not fallback to subject
+        self.assertIn("# Neither comparator available: skip this metric row entirely",
+                       source)
+        self.assertNotIn("lo_vals.append(min(wv, av) if pd.notna(wv) and pd.notna(av) else sv)",
+                          source,
+                          "Old bug: collapsing to subject value when both peers NaN")
+
+    def test_comparator_fallback_single_uses_ref_marker(self):
+        """When only one comparator is present, should NOT collapse band to subject value."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "executive_charts.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # The ref_markers dict tracks single-comparator rows
+        self.assertIn("ref_markers", source)
+        # Thin reference line drawn for single-comparator metrics
+        self.assertIn("Single Comparator Ref.", source)
+
+    def test_exact_normalized_rates_title(self):
+        """Normalized rates chart must use exact title."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn(
+            "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)",
+            source)
+
+    def test_exact_normalized_composition_title(self):
+        """Normalized composition chart must use exact title."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn(
+            "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)",
+            source)
 
     def test_all_heatmap_metrics_in_semantics(self):
         """All heatmap metrics must be registered in metric_semantics."""
@@ -5899,15 +5997,17 @@ class TestRenderingReconciliation(unittest.TestCase):
 
     # --- Canonical executive artifact names are present ---
     def test_canonical_executive_artifacts_in_report_generator(self):
-        """report_generator.py must produce all 5 executive artifacts.
+        """report_generator.py must produce all 6 executive artifacts.
         Names are constructed dynamically via f-string, so check patterns."""
         # Heatmaps: f"yoy_heatmap_{norm_str}" for standard/normalized
         self.assertIn("yoy_heatmap_", self._rg_src)
-        # Bullet charts: f"kri_bullet_{norm_str}" for standard/normalized
-        self.assertIn("kri_bullet_", self._rg_src)
+        # Bullet charts: standard + two normalized splits
+        self.assertIn("kri_bullet_standard", self._rg_src)
+        self.assertIn("kri_bullet_normalized_rates", self._rg_src)
+        self.assertIn("kri_bullet_normalized_composition", self._rg_src)
         # Sparkline: literal name
         self.assertIn("sparkline_summary", self._rg_src)
-        # Both loops iterate [False, True] for standard and normalized
+        # Heatmap loops iterate [False, True] for standard and normalized
         self.assertIn("for is_norm in [False, True]", self._rg_src)
 
     # --- Deterministic macro artifact names are present ---
@@ -5942,10 +6042,11 @@ class TestRenderingReconciliation(unittest.TestCase):
         self.assertIn("def should_produce(", self._rm_src)
 
     def test_rendering_mode_has_all_executive_artifacts(self):
-        """rendering_mode.py registry must contain all 5 executive chart artifacts."""
+        """rendering_mode.py registry must contain all 6 executive chart artifacts."""
         from rendering_mode import ARTIFACT_REGISTRY
         for name in ["yoy_heatmap_standard", "yoy_heatmap_normalized",
-                      "kri_bullet_standard", "kri_bullet_normalized",
+                      "kri_bullet_standard",
+                      "kri_bullet_normalized_rates", "kri_bullet_normalized_composition",
                       "sparkline_summary"]:
             self.assertIn(name, ARTIFACT_REGISTRY,
                           f"Registry missing executive artifact: {name}")
