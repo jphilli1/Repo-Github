@@ -652,6 +652,67 @@ to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-12 — HUD HTTP Failure Diagnostics & Request Hardening
+
+**Problem**: All HUD county crosswalk HTTP requests were failing (`FAILED_HTTP`), preventing `CaseShiller_Zip_Coverage` and `CaseShiller_Zip_Summary` sheets from being produced. The root cause was twofold: (1) `fetch_hud_crosswalk()` returned empty DataFrames on HTTP failure without propagating diagnostics, and (2) the orchestrator's `http_errors` list stayed empty even when all requests failed because the function never raised exceptions on HTTP errors, causing misclassification as `FAILED_EMPTY_RESPONSE` instead of `FAILED_HTTP`.
+
+**9-part fix:**
+
+1. **HTTP failure diagnostics (Part 1)**: `fetch_hud_crosswalk()` now returns `(DataFrame, diagnostics_dict)` tuple. Diagnostics include: `query`, `status`, `failure_class`, `status_code`, `url`, `params`, `response_preview`, `exception_info`, `retry_count`.
+
+2. **Request hardening (Part 2)**: Switched from bare `requests.get()` to `requests.Session()` with persistent `Accept: application/json` and `User-Agent` headers. Module-level session is lazy-initialized via `_get_hud_session()`.
+
+3. **Request validation (Part 3)**: Added `build_hud_crosswalk_request()` helper that validates query, crosswalk_type, year, quarter, and token before sending. First-request debug log shows masked token prefix and full session headers.
+
+4. **Status code classification (Part 4)**: Added `_classify_http_status()` mapping HTTP codes to query-level failure constants: `QUERY_FAILED_TOKEN_AUTH` (401/403), `QUERY_FAILED_HTTP_NOT_FOUND` (404), `QUERY_FAILED_HTTP_BAD_REQUEST` (400), `QUERY_FAILED_HTTP_RATE_LIMIT` (429), `QUERY_FAILED_HTTP_SERVER` (5xx), `QUERY_FAILED_HTTP_EXCEPTION` (connection/timeout errors).
+
+5. **County-level failure summary (Part 5)**: Orchestrator logs breakdown at end: total, success, failed_auth, failed_bad_request, failed_not_found, failed_rate_limit, failed_server, failed_exception, failed_parse, failed_empty.
+
+6. **Misclassification fix (Part 6)**: Orchestrator now tracks `county_diagnostics` list and checks `any_http_failure` + `all_failed_http` guards. When all county requests fail HTTP, final status is `FAILED_HTTP` (not `FAILED_EMPTY_RESPONSE` / `SUCCESS_NO_MATCHES` / `SUCCESS_NO_ZIPS`).
+
+7. **Smoke test helper (Part 7)**: `run_hud_smoke_test(fips_code, token)` runs a single HUD request for local debugging. Returns structured result dict with success, status_code, failure_class, row_count, columns.
+
+8. **Regression tests (Part 8)**: 9 new tests in `TestHUDHTTPDiagnosticsAndHardening`: tuple return, diagnostics keys, session headers, request validation, status classification, constants, misclassification guard, smoke test, failure summary logging.
+
+9. **Documentation (Part 9)**: Updated CLAUDE.md with HTTP failure blocker documentation and new diagnostics.
+
+**Query-level failure constants:**
+
+| Constant | HTTP Code | Meaning |
+|---|---|---|
+| `QUERY_FAILED_TOKEN_AUTH` | 401, 403 | Bearer token invalid or expired |
+| `QUERY_FAILED_HTTP_NOT_FOUND` | 404 | Endpoint or resource not found |
+| `QUERY_FAILED_HTTP_BAD_REQUEST` | 400 | Malformed request parameters |
+| `QUERY_FAILED_HTTP_RATE_LIMIT` | 429 | Rate limited by HUD API |
+| `QUERY_FAILED_HTTP_SERVER` | 5xx | Server-side error |
+| `QUERY_FAILED_HTTP_EXCEPTION` | N/A | Connection timeout, DNS failure, etc. |
+| `QUERY_FAILED_PARSE` | 200 | Response parsed but has wrapper-only columns |
+| `QUERY_SUCCESS` | 200 | Successful fetch with usable data |
+
+**Example diagnostics dict:**
+```python
+{
+    "query": "06037",
+    "status": "error",
+    "failure_class": "FAILED_HTTP_SERVER",
+    "status_code": 500,
+    "url": "https://www.huduser.gov/hudapi/public/usps",
+    "params": {"type": 7, "query": "06037"},
+    "response_preview": "Internal Server Error",
+    "exception_info": None,
+    "retry_count": 2
+}
+```
+
+**Example county-level failure summary log:**
+```
+HUD county-ZIP fetch summary: total=160, success=0, failed=160,
+breakdown={ auth=0, bad_request=0, not_found=0, rate_limit=0,
+server=160, exception=0, parse=0, empty=0 }
+```
+
+**Files changed:** `case_shiller_zip_mapper.py`, `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-12 — Corp-Safe Overlay Workflow (4 Artifacts, Separate Module)
 
 **Objective**: Build a dedicated corp-safe overlay layer as a separate module/workflow. Joins local Bank_Performance_Dashboard output with internal loan-level extracts to produce 4 corp-safe artifacts. NOT integrated into report_generator.py or MSPBNA_CR_Normalized.py.
@@ -1937,6 +1998,12 @@ ZIP codes are zero-padded to 5 chars. County FIPS are zero-padded to 5 chars.
 ### HUD API: County-to-ZIP (Type 7)
 
 The HUD USPS Crosswalk API is called with `type=7` (county-to-ZIP) for each unique FIPS code in `CASE_SHILLER_COUNTY_MAP`. The API returns all ZIP codes that overlap each county along with allocation ratios (`tot_ratio`, `res_ratio`, `bus_ratio`, `oth_ratio`). Results are joined strictly on 5-digit FIPS code. After fetching, the combined frame is validated for usable columns before proceeding to the coverage join.
+
+**Request hardening**: All HUD requests use a `requests.Session()` with `Accept: application/json` and `User-Agent` headers. The session is lazy-initialized at module level. `fetch_hud_crosswalk()` returns `(DataFrame, diagnostics_dict)` — the diagnostics dict contains: query, status, failure_class, status_code, url, params, response_preview, exception_info, retry_count. HTTP status codes are classified via `_classify_http_status()` into query-level failure constants (QUERY_FAILED_TOKEN_AUTH, QUERY_FAILED_HTTP_NOT_FOUND, etc.).
+
+**Misclassification prevention**: The orchestrator tracks `county_diagnostics` for every FIPS fetch and checks `any_http_failure` from those diagnostics. When all county requests fail HTTP (failure_class is non-None for every query AND success count is 0), the enrichment status is `FAILED_HTTP` — it will NOT drift to `FAILED_EMPTY_RESPONSE`, `SUCCESS_NO_MATCHES`, or `SUCCESS_NO_ZIPS`.
+
+**Smoke test**: `run_hud_smoke_test(fips_code, token)` runs a single HUD request for local debugging. Use it to verify token validity and API connectivity before running the full pipeline.
 
 ### Output Sheets
 

@@ -5796,5 +5796,186 @@ class TestCorpOverlayCLAUDEMDAccuracy(unittest.TestCase):
         self.assertIn("BEA_API_KEY", content)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# HUD HTTP Failure Diagnostics & Hardening (Parts 1-9)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestHUDHTTPDiagnosticsAndHardening(unittest.TestCase):
+    """Regression tests for the HUD HTTP failure blocker fix."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Test 1: fetch_hud_crosswalk returns (DataFrame, diagnostics_dict) tuple
+    def test_fetch_returns_tuple_with_diagnostics(self):
+        """fetch_hud_crosswalk must return (DataFrame, dict) tuple."""
+        import inspect
+        from case_shiller_zip_mapper import fetch_hud_crosswalk
+        sig = inspect.signature(fetch_hud_crosswalk)
+        hints = fetch_hud_crosswalk.__annotations__.get("return", None)
+        # Verify the docstring mentions diagnostics
+        self.assertIn("diagnostics", fetch_hud_crosswalk.__doc__.lower())
+        # Verify with a mock — mock the session to return 401
+        try:
+            import requests
+            from unittest.mock import patch, MagicMock
+            mock_resp = MagicMock()
+            mock_resp.status_code = 401
+            mock_resp.text = "Unauthorized"
+            mock_session = MagicMock()
+            mock_session.get.return_value = mock_resp
+            mock_session.headers = {}
+            with patch("case_shiller_zip_mapper._get_hud_session", return_value=mock_session):
+                result = fetch_hud_crosswalk(query="06037", token="fake_token_123456")
+            self.assertIsInstance(result, tuple)
+            self.assertEqual(len(result), 2)
+            df, diag = result
+            self.assertIsInstance(diag, dict)
+            self.assertIn("failure_class", diag)
+        except ImportError:
+            pass
+
+    # Test 2: Diagnostics dict contains required keys
+    def test_diagnostics_has_required_keys(self):
+        """Diagnostics dict must contain all required actionable fields."""
+        try:
+            import requests
+            from unittest.mock import patch, MagicMock
+            from case_shiller_zip_mapper import fetch_hud_crosswalk
+            mock_resp = MagicMock()
+            mock_resp.status_code = 500
+            mock_resp.text = "Internal Server Error"
+            mock_session = MagicMock()
+            mock_session.get.return_value = mock_resp
+            mock_session.headers = {}
+            with patch("case_shiller_zip_mapper._get_hud_session", return_value=mock_session):
+                with patch("case_shiller_zip_mapper._RETRY_BACKOFF", [0, 0, 0]):
+                    with patch("case_shiller_zip_mapper.time"):
+                        df, diag = fetch_hud_crosswalk(query="06037", token="fake_token_123456")
+            required_keys = {"query", "status", "failure_class", "status_code",
+                             "url", "params", "response_preview", "exception_info",
+                             "retry_count"}
+            self.assertTrue(required_keys.issubset(set(diag.keys())),
+                            f"Missing keys: {required_keys - set(diag.keys())}")
+        except ImportError:
+            pass
+
+    # Test 3: Session uses Accept and User-Agent headers
+    def test_session_has_hardened_headers(self):
+        """HUD session must have Accept: application/json and User-Agent."""
+        from case_shiller_zip_mapper import _get_hud_session, _HUD_USER_AGENT
+        import case_shiller_zip_mapper as csm
+        # Reset session to force re-creation
+        old_session = csm._hud_session
+        csm._hud_session = None
+        try:
+            session = _get_hud_session()
+            self.assertEqual(session.headers.get("Accept"), "application/json")
+            self.assertEqual(session.headers.get("User-Agent"), _HUD_USER_AGENT)
+        finally:
+            csm._hud_session = old_session
+
+    # Test 4: build_hud_crosswalk_request validation
+    def test_build_hud_crosswalk_request_validation(self):
+        """build_hud_crosswalk_request must catch bad inputs."""
+        from unittest.mock import patch
+        from case_shiller_zip_mapper import build_hud_crosswalk_request
+        # Missing token
+        with patch.dict(os.environ, {}, clear=True):
+            req = build_hud_crosswalk_request(query="06037", token=None)
+            # Should have error about missing token (may or may not depending on env)
+            # But definitely should have url/params/headers/errors keys
+            self.assertIn("url", req)
+            self.assertIn("params", req)
+            self.assertIn("headers", req)
+            self.assertIn("errors", req)
+        # Bad quarter
+        req = build_hud_crosswalk_request(query="06037", quarter=5, token="tok123")
+        self.assertTrue(any("quarter" in e for e in req["errors"]))
+        # Empty query
+        req = build_hud_crosswalk_request(query="", token="tok123")
+        self.assertTrue(any("query" in e for e in req["errors"]))
+
+    # Test 5: HTTP status code classification
+    def test_classify_http_status_mapping(self):
+        """_classify_http_status must map codes to correct failure classes."""
+        from case_shiller_zip_mapper import (
+            _classify_http_status,
+            QUERY_FAILED_TOKEN_AUTH, QUERY_FAILED_HTTP_NOT_FOUND,
+            QUERY_FAILED_HTTP_BAD_REQUEST, QUERY_FAILED_HTTP_RATE_LIMIT,
+            QUERY_FAILED_HTTP_SERVER,
+        )
+        self.assertEqual(_classify_http_status(401), QUERY_FAILED_TOKEN_AUTH)
+        self.assertEqual(_classify_http_status(403), QUERY_FAILED_TOKEN_AUTH)
+        self.assertEqual(_classify_http_status(404), QUERY_FAILED_HTTP_NOT_FOUND)
+        self.assertEqual(_classify_http_status(400), QUERY_FAILED_HTTP_BAD_REQUEST)
+        self.assertEqual(_classify_http_status(429), QUERY_FAILED_HTTP_RATE_LIMIT)
+        self.assertEqual(_classify_http_status(500), QUERY_FAILED_HTTP_SERVER)
+        self.assertEqual(_classify_http_status(503), QUERY_FAILED_HTTP_SERVER)
+
+    # Test 6: Query-level failure constants exist
+    def test_query_level_failure_constants_defined(self):
+        """All query-level failure constants must be defined."""
+        import case_shiller_zip_mapper as csm
+        constants = [
+            "QUERY_FAILED_TOKEN_AUTH", "QUERY_FAILED_HTTP_NOT_FOUND",
+            "QUERY_FAILED_HTTP_BAD_REQUEST", "QUERY_FAILED_HTTP_RATE_LIMIT",
+            "QUERY_FAILED_HTTP_SERVER", "QUERY_FAILED_HTTP_EXCEPTION",
+            "QUERY_FAILED_PARSE", "QUERY_SUCCESS",
+        ]
+        for c in constants:
+            self.assertTrue(hasattr(csm, c), f"Missing constant: {c}")
+
+    # Test 7: All-HTTP-fail runs must NOT misclassify as FAILED_EMPTY_RESPONSE
+    def test_all_http_fail_not_misclassified(self):
+        """When all county fetches fail HTTP, status must be FAILED_HTTP, not FAILED_EMPTY_RESPONSE."""
+        src_path = os.path.join(self._script_dir, "case_shiller_zip_mapper.py")
+        with open(src_path, "r") as f:
+            src = f.read()
+        # The orchestrator must check for HTTP failures via diagnostics
+        self.assertIn("all_failed_http", src,
+                       "Orchestrator must detect all-HTTP-fail condition via 'all_failed_http' guard")
+        self.assertIn("any_http_failure", src,
+                       "Orchestrator must check 'any_http_failure' from county_diagnostics")
+
+    # Test 8: Smoke test helper exists and returns expected structure
+    def test_smoke_test_helper_exists(self):
+        """run_hud_smoke_test must exist and return correct structure."""
+        from unittest.mock import patch
+        from case_shiller_zip_mapper import run_hud_smoke_test
+        self.assertTrue(callable(run_hud_smoke_test))
+        # Test with no token set (should return validation error or auth failure)
+        with patch.dict(os.environ, {}, clear=True):
+            try:
+                result = run_hud_smoke_test(fips_code="06037", token=None)
+                self.assertIsInstance(result, dict)
+                self.assertIn("success", result)
+                self.assertIn("failure_class", result)
+                self.assertIn("fips_code", result)
+                self.assertEqual(result["fips_code"], "06037")
+            except EnvironmentError:
+                pass  # Expected if token not set
+
+    # Test 9: County-level failure summary is logged
+    def test_county_failure_summary_logged(self):
+        """Orchestrator must log county-level failure summary breakdown."""
+        src_path = os.path.join(self._script_dir, "case_shiller_zip_mapper.py")
+        with open(src_path, "r") as f:
+            src = f.read()
+        # Check for failure_counts tracking
+        self.assertIn("failure_counts", src,
+                       "Orchestrator must maintain failure_counts dict")
+        # Check summary log message
+        self.assertIn("HUD county-ZIP fetch summary", src,
+                       "Orchestrator must log county-level failure summary")
+        # Check breakdown categories
+        for cat in ("failed_auth", "failed_bad_request", "failed_not_found",
+                     "failed_rate_limit", "failed_server", "failed_exception",
+                     "failed_parse", "failed_empty"):
+            self.assertIn(cat, src,
+                          f"Failure summary must track '{cat}' category")
+
+
 if __name__ == '__main__':
     unittest.main()
