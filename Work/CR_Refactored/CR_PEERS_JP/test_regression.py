@@ -718,6 +718,218 @@ def test_tight_layout_removed_from_ppt_chart():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 12. DUAL-MODE ARCHITECTURE (rendering_mode.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_render_mode_select_default():
+    """select_mode() with no args defaults to full_local."""
+    from rendering_mode import select_mode, RenderMode
+    old = os.environ.pop("REPORT_RENDER_MODE", None)
+    try:
+        assert select_mode() == RenderMode.FULL_LOCAL, "Default should be full_local"
+        assert select_mode("full_local") == RenderMode.FULL_LOCAL
+    finally:
+        if old is not None:
+            os.environ["REPORT_RENDER_MODE"] = old
+    print("  [PASS] test_render_mode_select_default")
+
+
+def test_render_mode_select_corp_safe():
+    """select_mode('corp_safe') returns CORP_SAFE."""
+    from rendering_mode import select_mode, RenderMode
+    assert select_mode("corp_safe") == RenderMode.CORP_SAFE
+    print("  [PASS] test_render_mode_select_corp_safe")
+
+
+def test_render_mode_select_env_var():
+    """select_mode() reads from REPORT_RENDER_MODE env var."""
+    from rendering_mode import select_mode, RenderMode
+    old = os.environ.get("REPORT_RENDER_MODE")
+    try:
+        os.environ["REPORT_RENDER_MODE"] = "corp_safe"
+        assert select_mode() == RenderMode.CORP_SAFE
+    finally:
+        if old is None:
+            os.environ.pop("REPORT_RENDER_MODE", None)
+        else:
+            os.environ["REPORT_RENDER_MODE"] = old
+    print("  [PASS] test_render_mode_select_env_var")
+
+
+def test_render_mode_select_invalid():
+    """select_mode() raises ValueError for unknown mode."""
+    from rendering_mode import select_mode
+    try:
+        select_mode("nonexistent_mode")
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+    print("  [PASS] test_render_mode_select_invalid")
+
+
+def test_capability_matrix_tables_both_modes():
+    """All table artifacts must be available in both modes."""
+    from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+    for name, cap in ARTIFACT_REGISTRY.items():
+        if cap.category == "table":
+            assert cap.is_available(RenderMode.FULL_LOCAL), (
+                f"Table {name} not available in full_local"
+            )
+            assert cap.is_available(RenderMode.CORP_SAFE), (
+                f"Table {name} not available in corp_safe"
+            )
+    print("  [PASS] test_capability_matrix_tables_both_modes")
+
+
+def test_capability_matrix_charts_full_local_only():
+    """Chart/scatter artifacts must be available only in full_local."""
+    from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+    chart_types = {"chart", "scatter", "fred_chart"}
+    for name, cap in ARTIFACT_REGISTRY.items():
+        if cap.category in chart_types:
+            assert cap.is_available(RenderMode.FULL_LOCAL), (
+                f"Chart {name} should be available in full_local"
+            )
+            assert not cap.is_available(RenderMode.CORP_SAFE), (
+                f"Chart {name} should NOT be available in corp_safe"
+            )
+    print("  [PASS] test_capability_matrix_charts_full_local_only")
+
+
+def test_capability_skip_reason():
+    """skip_reason returns None when available, descriptive string when not."""
+    from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+    # Table → available in both → skip_reason is None for both
+    table_cap = ARTIFACT_REGISTRY["executive_summary_standard"]
+    assert table_cap.skip_reason(RenderMode.FULL_LOCAL) is None
+    assert table_cap.skip_reason(RenderMode.CORP_SAFE) is None
+
+    # Chart → full_local only → skip_reason is None for full_local, string for corp_safe
+    chart_cap = ARTIFACT_REGISTRY["standard_credit_chart"]
+    assert chart_cap.skip_reason(RenderMode.FULL_LOCAL) is None
+    reason = chart_cap.skip_reason(RenderMode.CORP_SAFE)
+    assert reason is not None
+    assert "corp_safe" in reason
+    print("  [PASS] test_capability_skip_reason")
+
+
+def test_manifest_record_and_summary():
+    """ArtifactManifest records outcomes and produces a summary table."""
+    from rendering_mode import ArtifactManifest, RenderMode, ArtifactStatus
+    m = ArtifactManifest(RenderMode.FULL_LOCAL)
+    m.record_generated("test_chart", "/path/to/chart.png")
+    m.record_skipped("test_table", "not available in this mode")
+    m.record_failed("test_scatter", "data missing")
+
+    assert len(m.outcomes) == 3
+    assert m.outcomes[0].status == ArtifactStatus.GENERATED
+    assert m.outcomes[0].path == "/path/to/chart.png"
+    assert m.outcomes[1].status == ArtifactStatus.SKIPPED
+    assert m.outcomes[1].skip_reason == "not available in this mode"
+    assert m.outcomes[2].status == ArtifactStatus.FAILED
+    assert m.outcomes[2].error == "data missing"
+
+    counts = m.counts()
+    assert counts == {"generated": 1, "skipped": 1, "failed": 1, "total": 3}
+
+    summary = m.summary_table()
+    assert "test_chart" in summary
+    assert "generated" in summary
+    assert "skipped" in summary
+    print("  [PASS] test_manifest_record_and_summary")
+
+
+def test_should_produce_full_local():
+    """should_produce allows all artifacts in full_local mode."""
+    from rendering_mode import should_produce, ArtifactManifest, RenderMode
+    m = ArtifactManifest(RenderMode.FULL_LOCAL)
+    assert should_produce("standard_credit_chart", RenderMode.FULL_LOCAL, m) is True
+    assert should_produce("executive_summary_standard", RenderMode.FULL_LOCAL, m) is True
+    # No skips recorded
+    assert len(m.outcomes) == 0
+    print("  [PASS] test_should_produce_full_local")
+
+
+def test_should_produce_corp_safe_skips_charts():
+    """should_produce skips chart artifacts in corp_safe mode."""
+    from rendering_mode import should_produce, ArtifactManifest, RenderMode
+    m = ArtifactManifest(RenderMode.CORP_SAFE)
+    assert should_produce("standard_credit_chart", RenderMode.CORP_SAFE, m) is False
+    assert should_produce("scatter_nco_vs_npl", RenderMode.CORP_SAFE, m) is False
+    # Tables should pass
+    assert should_produce("executive_summary_standard", RenderMode.CORP_SAFE, m) is True
+    # 2 skips recorded for charts
+    assert len(m.outcomes) == 2
+    print("  [PASS] test_should_produce_corp_safe_skips_charts")
+
+
+def test_should_produce_preflight_suppression():
+    """should_produce honours preflight suppression set."""
+    from rendering_mode import should_produce, ArtifactManifest, RenderMode
+    m = ArtifactManifest(RenderMode.FULL_LOCAL)
+    suppressed = {"normalized_credit_chart"}
+    assert should_produce("normalized_credit_chart", RenderMode.FULL_LOCAL, m, suppressed) is False
+    assert len(m.outcomes) == 1
+    assert "suppressed by preflight" in m.outcomes[0].skip_reason
+    print("  [PASS] test_should_produce_preflight_suppression")
+
+
+def test_artifact_registry_completeness():
+    """ARTIFACT_REGISTRY must contain all expected artifacts from CLAUDE.md output list."""
+    from rendering_mode import ARTIFACT_REGISTRY
+    expected = [
+        "executive_summary_standard", "executive_summary_normalized",
+        "detailed_peer_table_standard", "detailed_peer_table_normalized",
+        "standard_credit_chart", "normalized_credit_chart",
+        "scatter_nco_vs_npl", "scatter_pd_vs_npl", "scatter_norm_nco_vs_nonaccrual",
+        "portfolio_mix", "problem_asset_attribution", "reserve_risk_allocation",
+        "migration_ladder", "fred_table",
+    ]
+    for name in expected:
+        assert name in ARTIFACT_REGISTRY, (
+            f"Artifact '{name}' missing from ARTIFACT_REGISTRY"
+        )
+    print("  [PASS] test_artifact_registry_completeness")
+
+
+def test_report_generator_has_render_mode_param():
+    """generate_reports() must accept render_mode parameter."""
+    import inspect
+    from report_generator import generate_reports
+    sig = inspect.signature(generate_reports)
+    assert "render_mode" in sig.parameters, (
+        "generate_reports() missing render_mode parameter"
+    )
+    print("  [PASS] test_report_generator_has_render_mode_param")
+
+
+def test_report_generator_returns_manifest():
+    """generate_reports() return type annotation includes ArtifactManifest."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_generator.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    assert "ArtifactManifest" in source, (
+        "report_generator.py must reference ArtifactManifest"
+    )
+    assert "manifest.summary_table()" in source, (
+        "report_generator.py must print manifest summary"
+    )
+    print("  [PASS] test_report_generator_returns_manifest")
+
+
+def test_active_composites_preserved():
+    """Active composite CERTs must not change in the refactored code."""
+    from report_generator import (
+        ACTIVE_STANDARD_COMPOSITES, ACTIVE_NORMALIZED_COMPOSITES,
+        ALL_COMPOSITE_CERTS
+    )
+    assert ACTIVE_STANDARD_COMPOSITES == {"core_pb": 90001, "all_peers": 90003}
+    assert ACTIVE_NORMALIZED_COMPOSITES == {"core_pb": 90004, "all_peers": 90006}
+    assert {90001, 90003, 90004, 90006}.issubset(ALL_COMPOSITE_CERTS)
+    print("  [PASS] test_active_composites_preserved")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -776,6 +988,22 @@ def run_all_tests():
         test_display_labels_applied,
         test_preflight_contains_hardened_logic,
         test_tight_layout_removed_from_ppt_chart,
+        # 12. Dual-mode architecture
+        test_render_mode_select_default,
+        test_render_mode_select_corp_safe,
+        test_render_mode_select_env_var,
+        test_render_mode_select_invalid,
+        test_capability_matrix_tables_both_modes,
+        test_capability_matrix_charts_full_local_only,
+        test_capability_skip_reason,
+        test_manifest_record_and_summary,
+        test_should_produce_full_local,
+        test_should_produce_corp_safe_skips_charts,
+        test_should_produce_preflight_suppression,
+        test_artifact_registry_completeness,
+        test_report_generator_has_render_mode_param,
+        test_report_generator_returns_manifest,
+        test_active_composites_preserved,
     ]
 
     passed = 0
