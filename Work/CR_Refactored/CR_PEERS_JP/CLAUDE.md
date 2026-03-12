@@ -23,6 +23,8 @@ The two core scripts are:
 | `test_regression.py` | Regression tests: scatter integrity, peer groups, over-exclusion, validation |
 | `logging_utils.py` | Centralized CSV logging, date-only artifact naming, stdout/stderr tee capture |
 | `case_shiller_zip_mapper.py` | HUD USPS ZIP Crosswalk enrichment for Case-Shiller metros |
+| `corp_overlay.py` | Corp-safe overlay: loan-file ingestion, schema contracts, peer-vs-internal join, 4 artifacts |
+| `corp_overlay_runner.py` | Standalone CLI entrypoint for corp overlay workflow (not in report_generator.py) |
 
 ---
 
@@ -649,6 +651,65 @@ to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Corp-Safe Overlay Workflow (4 Artifacts, Separate Module)
+
+**Objective**: Build a dedicated corp-safe overlay layer as a separate module/workflow. Joins local Bank_Performance_Dashboard output with internal loan-level extracts to produce 4 corp-safe artifacts. NOT integrated into report_generator.py or MSPBNA_CR_Normalized.py.
+
+**New modules:**
+
+| Module | Role |
+|---|---|
+| `corp_overlay.py` | Schema contracts, loan-file ingestion, dashboard ingestion, join logic, optional enrichment hooks, 4 artifact generators, orchestrator |
+| `corp_overlay_runner.py` | Standalone CLI entrypoint with argparse (separate from report_generator.py) |
+
+**4 Artifacts:**
+
+| Artifact | File | Mode | Type |
+|---|---|---|---|
+| `loan_balance_by_product` | `corp_overlay_YYYYMMDD_loan_balance_by_product.png` | FULL_LOCAL_ONLY | PNG chart |
+| `top10_geography_by_balance` | `corp_overlay_YYYYMMDD_top10_geography_by_balance.png` | FULL_LOCAL_ONLY | PNG chart |
+| `internal_credit_flags_summary` | `corp_overlay_YYYYMMDD_internal_credit_flags_summary.html` | BOTH | HTML table |
+| `peer_vs_internal_mix_bridge` | `corp_overlay_YYYYMMDD_peer_vs_internal_mix_bridge.html` | BOTH | HTML table |
+
+**Input contracts:**
+
+- Input A: `Bank_Performance_Dashboard_YYYYMMDD.xlsx` (auto-discovered from `output/`)
+- Input B: Internal loan-level CSV or Excel with required columns:
+  - `loan_id` — unique loan identifier (required)
+  - `current_balance` — outstanding balance in $ (required)
+  - `product_type` — loan product classification (required)
+  - At least one geo field: `msa` (preferred), `zip_code`, or `county` (required)
+  - Optional: `risk_rating`, `delinquency_status`, `nonaccrual_flag`, `segment`, `portfolio`, `collateral_type`
+
+**Contract validation:** `validate_loan_file()` raises `LoanFileContractError` if required columns or all geo fields are missing. Geo priority: MSA > zip_code > county. Optional columns degrade gracefully — reduced output when absent.
+
+**Optional enrichment hooks:**
+- Census (`CENSUS_API_KEY`): population/income by geography — hook point, not yet implemented
+- BEA (`BEA_API_KEY` → `BEA_USER_ID` fallback): GDP/employment by MSA/county — hook point, not yet implemented
+- Case-Shiller: `map_zip_to_metro()` from existing `case_shiller_zip_mapper.py` for ZIP → metro tagging
+- All enrichment is optional — workflow runs fully offline without any API keys
+
+**Reduced-mode behavior:**
+- No `risk_rating` → credit flags summary shows portfolio summary only, no rating distribution
+- No `delinquency_status` → no delinquency section
+- No `nonaccrual_flag` → no nonaccrual section
+- No dashboard found → bridge table shows "not available" for peer composition
+- corp_safe mode → PNG charts skipped, HTML tables produced
+
+**Changes:**
+
+1. **corp_overlay.py** (NEW) — Full module: `REQUIRED_COLUMNS`, `GEO_COLUMNS`, `OPTIONAL_COLUMNS` contracts; `LoanFileContractError`; `validate_loan_file()`; `find_latest_dashboard()`; `load_dashboard_composition()`; `load_loan_file()`; `enrich_geography()` with Census/BEA/Case-Shiller hooks; `generate_loan_balance_by_product()`; `generate_top10_geography()`; `generate_credit_flags_summary()`; `generate_peer_vs_internal_bridge()`; `run_corp_overlay()` orchestrator.
+
+2. **corp_overlay_runner.py** (NEW) — CLI entrypoint with argparse: `loan_file` (required), `--dashboard`, `--output-dir`, `--mode`. Validates loan file existence before importing corp_overlay.
+
+3. **rendering_mode.py** — Added 4 artifact registrations: `loan_balance_by_product` (FULL_LOCAL_ONLY), `top10_geography_by_balance` (FULL_LOCAL_ONLY), `internal_credit_flags_summary` (BOTH), `peer_vs_internal_mix_bridge` (BOTH).
+
+4. **test_regression.py** — Added 6 test classes (31 tests): `TestCorpOverlayContractValidation` (10): required/geo/optional column validation, case-insensitive, priority order. `TestCorpOverlayArtifactRegistration` (5): all 4 registered, mode availability correct. `TestCorpOverlayOfflineOperation` (4): enrichment without keys, key resolution fallback. `TestCorpOverlayReducedMode` (5): HTML output with/without optional columns, bridge with/without dashboard. `TestCorpOverlayNoMergeConflicts` (3): no conflict markers in report_generator.py, corp_overlay not referenced in existing scripts. `TestCorpOverlayCLAUDEMDAccuracy` (4): documentation completeness.
+
+5. **CLAUDE.md** — Added Section 12 (Corp-Safe Overlay Architecture), script table entries, changelog.
+
+**Files changed:** `corp_overlay.py` (NEW), `corp_overlay_runner.py` (NEW), `rendering_mode.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Macro Chart Tranche (3 Artifacts, Deterministic Series Selection)
 
@@ -1894,3 +1955,94 @@ The HUD USPS Crosswalk API is called with `type=7` (county-to-ZIP) for each uniq
 5. All FIPS codes in county map are valid 5-digit strings
 6. All 20 metros have at least one ZIP row
 7. HUD ratio columns are not entirely null
+
+---
+
+## 12. Corp-Safe Overlay Architecture
+
+### Overview
+
+`corp_overlay.py` is a **standalone module** that joins the local `Bank_Performance_Dashboard_YYYYMMDD.xlsx` output with an internal loan-level extract to produce corp-safe artifacts. It runs via its own CLI entrypoint (`corp_overlay_runner.py`) and is **NOT** integrated into `report_generator.py` or `MSPBNA_CR_Normalized.py`.
+
+### Data Flow
+
+```
+Bank_Performance_Dashboard_YYYYMMDD.xlsx (Input A — from MSPBNA_CR_Normalized.py)
+        │
+        ├─── Summary_Dashboard sheet → peer composition metrics
+        │
+Internal Loan File (Input B — CSV or Excel)
+        │
+        ├─── Required: loan_id, current_balance, product_type, geo field
+        │
+        ▼
+corp_overlay.py
+        │
+        ├──► output/Peers/corp_overlay/  loan_balance_by_product.png
+        ├──► output/Peers/corp_overlay/  top10_geography_by_balance.png
+        ├──► output/Peers/corp_overlay/  internal_credit_flags_summary.html
+        └──► output/Peers/corp_overlay/  peer_vs_internal_mix_bridge.html
+```
+
+### Input Contract (Loan File)
+
+| Column | Required | Description |
+|---|---|---|
+| `loan_id` | Yes | Unique loan identifier |
+| `current_balance` | Yes | Outstanding balance ($) |
+| `product_type` | Yes | Loan product classification |
+| `msa` | At least one geo | Metropolitan Statistical Area code (preferred) |
+| `zip_code` | At least one geo | 5-digit ZIP code |
+| `county` | At least one geo | County FIPS or name |
+| `risk_rating` | Optional | Internal risk rating |
+| `delinquency_status` | Optional | Delinquency bucket (current, 30dpd, 60dpd, etc.) |
+| `nonaccrual_flag` | Optional | Y/N nonaccrual indicator |
+| `segment` | Optional | Business segment tag |
+| `portfolio` | Optional | Portfolio identifier |
+| `collateral_type` | Optional | Collateral classification |
+
+**Validation:** `validate_loan_file()` raises `LoanFileContractError` on missing required columns or missing all geo fields. Column matching is case-insensitive.
+
+**Geo priority:** MSA > zip_code > county. The first available is used for geographic aggregation.
+
+### Optional Enrichment Hooks
+
+| Source | Env Var | Resolution | Status |
+|---|---|---|---|
+| Census | `CENSUS_API_KEY` | Direct env lookup → None | Hook point (not yet implemented) |
+| BEA | `BEA_API_KEY` → `BEA_USER_ID` | Canonical → alias → None | Hook point (not yet implemented) |
+| Case-Shiller | (uses existing mapper) | `map_zip_to_metro()` from `case_shiller_zip_mapper.py` | Implemented (ZIP → metro tagging) |
+
+All enrichment is **optional**. The workflow runs fully offline without any API keys or internet access.
+
+### CLI Usage
+
+```bash
+# Basic — auto-discovers dashboard, full_local mode
+python corp_overlay_runner.py data/internal_loans.csv
+
+# Explicit dashboard and corp_safe mode
+python corp_overlay_runner.py data/loans.xlsx \
+    --dashboard output/Bank_Performance_Dashboard_20260312.xlsx \
+    --mode corp_safe
+
+# Via environment variable
+export REPORT_MODE=corp_safe
+python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
+```
+
+### Artifact Details
+
+| Artifact | Description | Mode |
+|---|---|---|
+| `loan_balance_by_product.png` | Descending horizontal bar chart of `current_balance` aggregated by `product_type` | FULL_LOCAL_ONLY |
+| `top10_geography_by_balance.png` | Top 10 geographies (by resolved geo field) ranked by aggregate balance | FULL_LOCAL_ONLY |
+| `internal_credit_flags_summary.html` | Distribution tables for risk_rating, delinquency_status, nonaccrual_flag; reduced to portfolio summary if optional columns absent | BOTH |
+| `peer_vs_internal_mix_bridge.html` | Side-by-side: MSPBNA peer-report composition (SBL/CRE/Resi shares from dashboard) vs internal loan product/geography mix | BOTH |
+
+### Known Limitations
+
+- Census and BEA enrichment hooks are stub implementations — they return no-op results. When API integrations are needed, implement the actual API calls inside `enrich_geography()`.
+- The bridge table extracts composition from `Summary_Dashboard` sheet only. If the dashboard uses a different sheet layout, `load_dashboard_composition()` falls back to `FDIC_Data`.
+- Dashboard auto-discovery uses the same `Bank_Performance_Dashboard_*.xlsx` glob pattern as `report_generator.py`.
+- Loan file must be CSV, TSV, or Excel (.xlsx/.xls). Other formats are rejected.

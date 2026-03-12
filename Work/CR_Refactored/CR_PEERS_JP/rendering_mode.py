@@ -217,6 +217,16 @@ _reg("kri_bullet_normalized", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
 _reg("sparkline_summary", ArtifactAvailability.BOTH, "table",
      "Sparkline-enhanced summary table with trailing 8Q trends")
 
+# --- Corp Overlay Artifacts (separate workflow: corp_overlay_runner.py) ---
+_reg("loan_balance_by_product", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "Descending bar chart of current_balance by product_type")
+_reg("top10_geography_by_balance", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "Top 10 geographies by aggregate loan balance")
+_reg("internal_credit_flags_summary", ArtifactAvailability.BOTH, "table",
+     "Internal delinquency/nonaccrual/risk-rating distribution summary")
+_reg("peer_vs_internal_mix_bridge", ArtifactAvailability.BOTH, "table",
+     "Peer-report composition vs internal loan product/geography mix")
+
 
 # =====================================================================
 # Artifact Manifest — per-run outcome tracking

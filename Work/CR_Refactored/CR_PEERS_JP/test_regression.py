@@ -5433,5 +5433,368 @@ class TestMacroChartTranche(unittest.TestCase):
         self.assertIn("'CSUSHPISA'", source, "CSUSHPISA missing from MSPBNA_CR_Normalized.py")
 
 
+# =====================================================================
+# Corp Overlay Module Tests
+# =====================================================================
+
+class TestCorpOverlayContractValidation(unittest.TestCase):
+    """Test loan file schema contract validation."""
+
+    def test_corp_overlay_module_exists(self):
+        """corp_overlay.py must exist."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "corp_overlay.py")
+        self.assertTrue(os.path.isfile(path), "corp_overlay.py missing")
+
+    def test_corp_overlay_runner_exists(self):
+        """corp_overlay_runner.py must exist."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "corp_overlay_runner.py")
+        self.assertTrue(os.path.isfile(path), "corp_overlay_runner.py missing")
+
+    def test_required_columns_defined(self):
+        """Required columns contract must include loan_id, current_balance, product_type."""
+        from corp_overlay import REQUIRED_COLUMNS
+        self.assertEqual(REQUIRED_COLUMNS,
+                         frozenset({"loan_id", "current_balance", "product_type"}))
+
+    def test_geo_columns_defined(self):
+        """Geo columns must be defined with priority order msa > zip_code > county."""
+        from corp_overlay import GEO_COLUMNS
+        self.assertEqual(GEO_COLUMNS, ("msa", "zip_code", "county"))
+
+    def test_validate_missing_required_raises(self):
+        """Missing required columns must raise LoanFileContractError."""
+        from corp_overlay import validate_loan_file, LoanFileContractError
+        df = pd.DataFrame({"loan_id": [1], "product_type": ["CRE"]})
+        with self.assertRaises(LoanFileContractError) as ctx:
+            validate_loan_file(df)
+        self.assertIn("current_balance", str(ctx.exception))
+
+    def test_validate_missing_all_geo_raises(self):
+        """Missing all geo columns must raise LoanFileContractError."""
+        from corp_overlay import validate_loan_file, LoanFileContractError
+        df = pd.DataFrame({
+            "loan_id": [1], "current_balance": [100.0], "product_type": ["CRE"],
+        })
+        with self.assertRaises(LoanFileContractError) as ctx:
+            validate_loan_file(df)
+        self.assertIn("geographic", str(ctx.exception).lower())
+
+    def test_validate_valid_minimal(self):
+        """Minimal valid loan file passes validation."""
+        from corp_overlay import validate_loan_file
+        df = pd.DataFrame({
+            "loan_id": [1, 2], "current_balance": [100.0, 200.0],
+            "product_type": ["CRE", "Resi"], "zip_code": ["10001", "90210"],
+        })
+        result = validate_loan_file(df)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["geo_field"], "zip_code")
+        self.assertEqual(result["row_count"], 2)
+
+    def test_validate_geo_priority_msa_first(self):
+        """MSA is preferred over zip_code when both present."""
+        from corp_overlay import validate_loan_file
+        df = pd.DataFrame({
+            "loan_id": [1], "current_balance": [100.0],
+            "product_type": ["CRE"], "msa": ["35620"], "zip_code": ["10001"],
+        })
+        result = validate_loan_file(df)
+        self.assertEqual(result["geo_field"], "msa")
+
+    def test_validate_optional_columns_detected(self):
+        """Optional columns are reported in diagnostics."""
+        from corp_overlay import validate_loan_file
+        df = pd.DataFrame({
+            "loan_id": [1], "current_balance": [100.0],
+            "product_type": ["CRE"], "county": ["06037"],
+            "risk_rating": [3], "nonaccrual_flag": ["N"],
+        })
+        result = validate_loan_file(df)
+        self.assertIn("risk_rating", result["available_optional"])
+        self.assertIn("nonaccrual_flag", result["available_optional"])
+        self.assertIn("delinquency_status", result["missing_optional"])
+
+    def test_validate_case_insensitive_columns(self):
+        """Column validation is case-insensitive."""
+        from corp_overlay import validate_loan_file
+        df = pd.DataFrame({
+            "Loan_ID": [1], "CURRENT_BALANCE": [100.0],
+            "Product_Type": ["CRE"], "ZIP_CODE": ["10001"],
+        })
+        result = validate_loan_file(df)
+        self.assertTrue(result["valid"])
+
+
+class TestCorpOverlayArtifactRegistration(unittest.TestCase):
+    """Test that corp overlay artifacts are registered in rendering_mode.py."""
+
+    def test_all_4_artifacts_registered(self):
+        """All 4 corp overlay artifacts must be in ARTIFACT_REGISTRY."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        expected = [
+            "loan_balance_by_product",
+            "top10_geography_by_balance",
+            "internal_credit_flags_summary",
+            "peer_vs_internal_mix_bridge",
+        ]
+        for name in expected:
+            self.assertIn(name, ARTIFACT_REGISTRY,
+                          f"{name} not in ARTIFACT_REGISTRY")
+
+    def test_chart_artifacts_full_local_only(self):
+        """PNG chart artifacts must be FULL_LOCAL_ONLY."""
+        from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
+        for name in ("loan_balance_by_product", "top10_geography_by_balance"):
+            cap = ARTIFACT_REGISTRY[name]
+            self.assertEqual(cap.availability, ArtifactAvailability.FULL_LOCAL_ONLY,
+                             f"{name} should be FULL_LOCAL_ONLY")
+
+    def test_table_artifacts_both_modes(self):
+        """HTML table artifacts must be available in BOTH modes."""
+        from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
+        for name in ("internal_credit_flags_summary", "peer_vs_internal_mix_bridge"):
+            cap = ARTIFACT_REGISTRY[name]
+            self.assertEqual(cap.availability, ArtifactAvailability.BOTH,
+                             f"{name} should be BOTH")
+
+    def test_corp_safe_skips_chart_artifacts(self):
+        """In corp_safe mode, chart artifacts must not be available."""
+        from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+        mode = RenderMode.CORP_SAFE
+        for name in ("loan_balance_by_product", "top10_geography_by_balance"):
+            cap = ARTIFACT_REGISTRY[name]
+            self.assertFalse(cap.is_available(mode),
+                             f"{name} should not be available in corp_safe")
+
+    def test_corp_safe_allows_table_artifacts(self):
+        """In corp_safe mode, HTML table artifacts must be available."""
+        from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+        mode = RenderMode.CORP_SAFE
+        for name in ("internal_credit_flags_summary", "peer_vs_internal_mix_bridge"):
+            cap = ARTIFACT_REGISTRY[name]
+            self.assertTrue(cap.is_available(mode),
+                            f"{name} should be available in corp_safe")
+
+
+class TestCorpOverlayOfflineOperation(unittest.TestCase):
+    """Test that corp overlay runs without external API keys."""
+
+    def test_enrichment_without_census_key(self):
+        """Enrichment must succeed (no-op) when CENSUS_API_KEY is absent."""
+        from corp_overlay import enrich_geography
+        df = pd.DataFrame({
+            "loan_id": [1], "current_balance": [100.0],
+            "product_type": ["CRE"], "zip_code": ["10001"],
+        })
+        result_df, diag = enrich_geography(df, "zip_code", census_key=None, bea_key=None)
+        self.assertFalse(diag["census_attempted"])
+        self.assertFalse(diag["bea_attempted"])
+        self.assertEqual(len(result_df), 1)
+
+    def test_enrichment_without_bea_key(self):
+        """Enrichment must succeed (no-op) when BEA_API_KEY is absent."""
+        from corp_overlay import enrich_geography
+        df = pd.DataFrame({
+            "loan_id": [1], "current_balance": [100.0],
+            "product_type": ["CRE"], "msa": ["35620"],
+        })
+        result_df, diag = enrich_geography(df, "msa", census_key=None, bea_key=None)
+        self.assertFalse(diag["bea_attempted"])
+        self.assertEqual(len(result_df), 1)
+
+    def test_resolve_census_key_returns_none_without_env(self):
+        """_resolve_census_key returns None when env var not set."""
+        from corp_overlay import _resolve_census_key
+        import os
+        old = os.environ.pop("CENSUS_API_KEY", None)
+        try:
+            self.assertIsNone(_resolve_census_key())
+        finally:
+            if old is not None:
+                os.environ["CENSUS_API_KEY"] = old
+
+    def test_resolve_bea_key_fallback(self):
+        """_resolve_bea_key checks BEA_API_KEY then BEA_USER_ID."""
+        from corp_overlay import _resolve_bea_key
+        import os
+        old_key = os.environ.pop("BEA_API_KEY", None)
+        old_uid = os.environ.pop("BEA_USER_ID", None)
+        try:
+            self.assertIsNone(_resolve_bea_key())
+            os.environ["BEA_USER_ID"] = "test_uid"
+            self.assertEqual(_resolve_bea_key(), "test_uid")
+            os.environ["BEA_API_KEY"] = "test_key"
+            self.assertEqual(_resolve_bea_key(), "test_key")
+        finally:
+            os.environ.pop("BEA_API_KEY", None)
+            os.environ.pop("BEA_USER_ID", None)
+            if old_key is not None:
+                os.environ["BEA_API_KEY"] = old_key
+            if old_uid is not None:
+                os.environ["BEA_USER_ID"] = old_uid
+
+
+class TestCorpOverlayReducedMode(unittest.TestCase):
+    """Test reduced-mode output when optional columns are absent."""
+
+    def test_credit_flags_summary_no_optional_columns(self):
+        """Credit flags summary must produce HTML even without optional columns."""
+        from corp_overlay import generate_credit_flags_summary
+        df = pd.DataFrame({
+            "loan_id": [1, 2, 3],
+            "current_balance": [100.0, 200.0, 300.0],
+            "product_type": ["CRE", "Resi", "CRE"],
+            "zip_code": ["10001", "90210", "60601"],
+        })
+        html = generate_credit_flags_summary(df, available_optional=[])
+        self.assertIn("Portfolio Summary", html)
+        self.assertIn("No optional credit-quality columns", html)
+        self.assertNotIn("Risk Rating Distribution", html)
+
+    def test_credit_flags_summary_with_risk_rating(self):
+        """Credit flags summary includes risk rating section when column present."""
+        from corp_overlay import generate_credit_flags_summary
+        df = pd.DataFrame({
+            "loan_id": [1, 2, 3],
+            "current_balance": [100.0, 200.0, 300.0],
+            "product_type": ["CRE", "Resi", "CRE"],
+            "zip_code": ["10001", "90210", "60601"],
+            "risk_rating": [1, 3, 5],
+        })
+        html = generate_credit_flags_summary(df, available_optional=["risk_rating"])
+        self.assertIn("Risk Rating Distribution", html)
+
+    def test_credit_flags_summary_with_all_optional(self):
+        """Credit flags summary includes all sections when all optional columns present."""
+        from corp_overlay import generate_credit_flags_summary
+        df = pd.DataFrame({
+            "loan_id": [1, 2],
+            "current_balance": [100.0, 200.0],
+            "product_type": ["CRE", "Resi"],
+            "zip_code": ["10001", "90210"],
+            "risk_rating": [1, 3],
+            "delinquency_status": ["current", "30dpd"],
+            "nonaccrual_flag": ["N", "Y"],
+        })
+        html = generate_credit_flags_summary(
+            df, available_optional=["risk_rating", "delinquency_status", "nonaccrual_flag"]
+        )
+        self.assertIn("Risk Rating Distribution", html)
+        self.assertIn("Delinquency Status Distribution", html)
+        self.assertIn("Nonaccrual Flag Distribution", html)
+
+    def test_bridge_table_without_dashboard(self):
+        """Bridge table must produce HTML even when dashboard is unavailable."""
+        from corp_overlay import generate_peer_vs_internal_bridge
+        df = pd.DataFrame({
+            "loan_id": [1, 2],
+            "current_balance": [100.0, 200.0],
+            "product_type": ["CRE", "Resi"],
+            "zip_code": ["10001", "90210"],
+        })
+        html = generate_peer_vs_internal_bridge(df, {}, "zip_code")
+        self.assertIn("Peer vs Internal Portfolio Mix Bridge", html)
+        self.assertIn("not available", html)
+
+    def test_bridge_table_with_dashboard(self):
+        """Bridge table shows peer composition when dashboard data available."""
+        from corp_overlay import generate_peer_vs_internal_bridge
+        df = pd.DataFrame({
+            "loan_id": [1, 2],
+            "current_balance": [1e6, 2e6],
+            "product_type": ["CRE", "Resi"],
+            "msa": ["35620", "31080"],
+        })
+        comp = {"SBL_Composition": 0.15, "RIC_CRE_Loan_Share": 0.35}
+        html = generate_peer_vs_internal_bridge(df, comp, "msa")
+        self.assertIn("SBL Share", html)
+        self.assertIn("CRE Loan Share", html)
+
+
+class TestCorpOverlayNoMergeConflicts(unittest.TestCase):
+    """Ensure no merge-conflict markers leak into report_generator.py."""
+
+    def test_report_generator_no_conflict_markers(self):
+        """report_generator.py must have no git merge conflict markers."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        for marker in ("<<<<<<< ", "======= ", ">>>>>>> "):
+            self.assertNotIn(marker, content,
+                             f"Merge conflict marker found in report_generator.py: {marker}")
+
+    def test_corp_overlay_not_in_report_generator(self):
+        """corp_overlay is a separate module — not imported or called in report_generator.py."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertNotIn("corp_overlay", content,
+                         "report_generator.py should not reference corp_overlay")
+
+    def test_corp_overlay_not_in_mspbna(self):
+        """corp_overlay is a separate module — not imported or called in MSPBNA_CR_Normalized.py."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "MSPBNA_CR_Normalized.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertNotIn("corp_overlay", content,
+                         "MSPBNA_CR_Normalized.py should not reference corp_overlay")
+
+
+class TestCorpOverlayCLAUDEMDAccuracy(unittest.TestCase):
+    """Verify CLAUDE.md documents corp overlay accurately."""
+
+    def test_claude_md_mentions_corp_overlay(self):
+        """CLAUDE.md must document corp_overlay.py."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("corp_overlay", content,
+                       "CLAUDE.md must document corp_overlay module")
+
+    def test_claude_md_mentions_runner(self):
+        """CLAUDE.md must document corp_overlay_runner.py."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("corp_overlay_runner", content,
+                       "CLAUDE.md must document corp_overlay_runner")
+
+    def test_claude_md_documents_4_artifacts(self):
+        """CLAUDE.md must document all 4 corp overlay artifacts."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        for art in ("loan_balance_by_product", "top10_geography_by_balance",
+                     "internal_credit_flags_summary", "peer_vs_internal_mix_bridge"):
+            self.assertIn(art, content, f"CLAUDE.md must document {art}")
+
+    def test_claude_md_documents_input_contract(self):
+        """CLAUDE.md must document the required loan file columns."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        for col in ("loan_id", "current_balance", "product_type"):
+            self.assertIn(col, content,
+                          f"CLAUDE.md must document required column: {col}")
+
+    def test_claude_md_documents_optional_enrichment(self):
+        """CLAUDE.md must document optional enrichment hooks."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("CENSUS_API_KEY", content)
+        self.assertIn("BEA_API_KEY", content)
+
+
 if __name__ == '__main__':
     unittest.main()
