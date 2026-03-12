@@ -930,6 +930,110 @@ def test_active_composites_preserved():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 13. EXECUTIVE CHARTS — metric_semantics + executive_charts + integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_polarity_direction_favorable():
+    """Favorable polarity: positive delta → 'favorable'."""
+    from metric_semantics import Polarity, MetricSemantic, DisplayFormat
+    sem = MetricSemantic(code="test", display_name="Test", polarity=Polarity.FAVORABLE)
+    assert sem.direction_label(0.01) == "favorable"
+    assert sem.direction_label(-0.01) == "adverse"
+    assert sem.direction_label(0.0) == "flat"
+    print("  [PASS] test_polarity_direction_favorable")
+
+
+def test_polarity_direction_adverse():
+    """Adverse polarity: positive delta → 'adverse'."""
+    from metric_semantics import Polarity, MetricSemantic
+    sem = MetricSemantic(code="test", display_name="Test", polarity=Polarity.ADVERSE)
+    assert sem.direction_label(0.01) == "adverse"
+    assert sem.direction_label(-0.01) == "favorable"
+    print("  [PASS] test_polarity_direction_adverse")
+
+
+def test_metric_semantics_registry_populated():
+    """METRIC_SEMANTICS registry must have entries for core metrics."""
+    from metric_semantics import METRIC_SEMANTICS
+    core = ["TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate",
+            "Allowance_to_Gross_Loans_Rate", "ASSET", "LNLS"]
+    for code in core:
+        assert code in METRIC_SEMANTICS, f"Missing semantic for {code}"
+    assert len(METRIC_SEMANTICS) >= 30, "Expected at least 30 metric semantics"
+    print("  [PASS] test_metric_semantics_registry_populated")
+
+
+def test_executive_chart_artifacts_registered():
+    """Executive chart artifacts must be registered in ARTIFACT_REGISTRY."""
+    from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
+    expected_both = ["yoy_heatmap_standard", "yoy_heatmap_normalized", "sparkline_summary"]
+    expected_full = ["kri_bullet_chart"]
+    for name in expected_both:
+        assert name in ARTIFACT_REGISTRY, f"Missing artifact: {name}"
+        assert ARTIFACT_REGISTRY[name].availability == ArtifactAvailability.BOTH
+    for name in expected_full:
+        assert name in ARTIFACT_REGISTRY, f"Missing artifact: {name}"
+        assert ARTIFACT_REGISTRY[name].availability == ArtifactAvailability.FULL_LOCAL_ONLY
+    print("  [PASS] test_executive_chart_artifacts_registered")
+
+
+def test_executive_charts_integrated_in_report_generator():
+    """generate_reports() must reference executive chart imports and artifacts."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_generator.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    # Function imports must be present
+    assert "generate_yoy_heatmap" in source, "Missing generate_yoy_heatmap import"
+    assert "generate_kri_bullet_chart" in source, "Missing generate_kri_bullet_chart import"
+    assert "generate_sparkline_table" in source, "Missing generate_sparkline_table import"
+    # Artifact names used in should_produce calls (yoy_heatmap built dynamically)
+    assert "yoy_heatmap_" in source, "Missing yoy_heatmap artifact reference"
+    assert "kri_bullet_chart" in source, "Missing kri_bullet_chart artifact reference"
+    assert "sparkline_summary" in source, "Missing sparkline_summary artifact reference"
+    print("  [PASS] test_executive_charts_integrated_in_report_generator")
+
+
+def test_corp_safe_skips_bullet_chart():
+    """Bullet chart (full_local only) must be skipped in corp_safe mode."""
+    from rendering_mode import (
+        RenderMode, ArtifactManifest, should_produce, ARTIFACT_REGISTRY
+    )
+    m = ArtifactManifest(RenderMode.CORP_SAFE)
+    result = should_produce("kri_bullet_chart", RenderMode.CORP_SAFE, m)
+    assert result is False, "kri_bullet_chart should be skipped in corp_safe"
+    assert m.outcomes[0].skip_reason is not None
+    print("  [PASS] test_corp_safe_skips_bullet_chart")
+
+
+def test_corp_safe_allows_heatmap():
+    """YoY heatmap (BOTH) must be allowed in corp_safe mode."""
+    from rendering_mode import RenderMode, ArtifactManifest, should_produce
+    m = ArtifactManifest(RenderMode.CORP_SAFE)
+    result = should_produce("yoy_heatmap_standard", RenderMode.CORP_SAFE, m)
+    assert result is True, "yoy_heatmap_standard should be allowed in corp_safe"
+    print("  [PASS] test_corp_safe_allows_heatmap")
+
+
+def test_ordered_metrics_groups():
+    """ordered_metrics must sort by group order."""
+    from metric_semantics import ordered_metrics
+    codes = ["ASSET", "TTM_NCO_Rate", "Allowance_to_Gross_Loans_Rate"]
+    result = ordered_metrics(codes)
+    assert result[0] == "TTM_NCO_Rate", "Credit Quality should come first"
+    assert result[-1] == "ASSET", "Size should come last"
+    print("  [PASS] test_ordered_metrics_groups")
+
+
+def test_css_class_for_delta():
+    """css_class must return correct class names."""
+    from metric_semantics import get_css_class
+    assert get_css_class("TTM_NCO_Rate", 0.01) == "bad-trend"  # adverse: increase is bad
+    assert get_css_class("Allowance_to_Gross_Loans_Rate", 0.01) == "good-trend"  # favorable: increase is good
+    assert get_css_class("ASSET", 0.01) == "neutral-trend"  # neutral
+    print("  [PASS] test_css_class_for_delta")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1004,6 +1108,16 @@ def run_all_tests():
         test_report_generator_has_render_mode_param,
         test_report_generator_returns_manifest,
         test_active_composites_preserved,
+        # 13. Executive charts — metric semantics, polarity, integration
+        test_polarity_direction_favorable,
+        test_polarity_direction_adverse,
+        test_metric_semantics_registry_populated,
+        test_executive_chart_artifacts_registered,
+        test_executive_charts_integrated_in_report_generator,
+        test_corp_safe_skips_bullet_chart,
+        test_corp_safe_allows_heatmap,
+        test_ordered_metrics_groups,
+        test_css_class_for_delta,
     ]
 
     passed = 0
@@ -4214,6 +4328,7 @@ class TestHUDResponseParsing(unittest.TestCase):
         self.assertEqual(df.iloc[0]["county_fips"], "25005")
 
 
+<<<<<<< HEAD
 class TestEnvVarScaffolding(unittest.TestCase):
     """Tests for the new env var scaffolding (BEA, Census, report mode, feature flags)."""
 
@@ -4748,6 +4863,160 @@ class TestDualModeArchitecture(unittest.TestCase):
         registry_names = {a.name for a in self.ARTIFACT_REGISTRY}
         for name in expected:
             self.assertIn(name, registry_names, f"Missing artifact: {name}")
+=======
+# ===========================================================================
+# EXECUTIVE CHARTS — unittest-based tests
+# ===========================================================================
+
+class TestMetricSemantics(unittest.TestCase):
+    """Tests for metric_semantics.py."""
+
+    def test_polarity_enum_values(self):
+        from metric_semantics import Polarity
+        self.assertEqual(Polarity.FAVORABLE.value, "favorable")
+        self.assertEqual(Polarity.ADVERSE.value, "adverse")
+        self.assertEqual(Polarity.NEUTRAL.value, "neutral")
+
+    def test_display_format_enum_values(self):
+        from metric_semantics import DisplayFormat
+        self.assertIn("pct", [e.value for e in DisplayFormat])
+        self.assertIn("bps", [e.value for e in DisplayFormat])
+        self.assertIn("dollars_b", [e.value for e in DisplayFormat])
+
+    def test_get_semantic_returns_none_for_unknown(self):
+        from metric_semantics import get_semantic
+        self.assertIsNone(get_semantic("TOTALLY_FAKE_METRIC_XYZ"))
+
+    def test_get_polarity_defaults_neutral(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("TOTALLY_FAKE_METRIC_XYZ"), Polarity.NEUTRAL)
+
+    def test_nco_rate_is_adverse(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("TTM_NCO_Rate"), Polarity.ADVERSE)
+
+    def test_acl_coverage_is_favorable(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("Allowance_to_Gross_Loans_Rate"), Polarity.FAVORABLE)
+
+    def test_asset_is_neutral(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("ASSET"), Polarity.NEUTRAL)
+
+    def test_group_order_has_key_groups(self):
+        from metric_semantics import GROUP_ORDER
+        self.assertIn("Credit Quality", GROUP_ORDER)
+        self.assertIn("Coverage", GROUP_ORDER)
+        self.assertIn("Size", GROUP_ORDER)
+
+    def test_no_overlap_with_metric_registry(self):
+        """metric_semantics must NOT duplicate formula/deps from metric_registry."""
+        from metric_semantics import MetricSemantic
+        import dataclasses
+        fields = {f.name for f in dataclasses.fields(MetricSemantic)}
+        # Should NOT have dependencies, compute, consumers, severity
+        self.assertNotIn("dependencies", fields)
+        self.assertNotIn("compute", fields)
+        self.assertNotIn("consumers", fields)
+
+
+class TestExecutiveChartGenerators(unittest.TestCase):
+    """Tests for executive_charts.py generators with synthetic data."""
+
+    def _make_df(self, quarters=8, certs=None):
+        """Build minimal synthetic DataFrame."""
+        if certs is None:
+            certs = [34221, 90001, 90003]
+        dates = pd.date_range("2024-03-31", periods=quarters, freq="QE")
+        rows = []
+        for cert in certs:
+            for i, dt in enumerate(dates):
+                row = {"CERT": cert, "REPDTE": dt, "REPNM": f"Bank_{cert}"}
+                np.random.seed(cert + i)
+                row["TTM_NCO_Rate"] = 0.001 + 0.0005 * i
+                row["Nonaccrual_to_Gross_Loans_Rate"] = 0.002 + 0.0003 * i
+                row["Allowance_to_Gross_Loans_Rate"] = 0.012 - 0.0001 * i
+                row["Risk_Adj_Allowance_Coverage"] = 0.015 - 0.0001 * i
+                row["Past_Due_Rate"] = 0.003 + 0.0002 * i
+                row["NPL_to_Gross_Loans_Rate"] = 0.004 + 0.0001 * i
+                row["ASSET"] = 50000000 + cert * 1000
+                row["LNLS"] = 30000000 + cert * 500
+                row["RIC_CRE_Nonaccrual_Rate"] = 0.003
+                row["RIC_CRE_ACL_Coverage"] = 0.01
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+    def test_yoy_heatmap_returns_html(self):
+        from executive_charts import generate_yoy_heatmap
+        df = self._make_df()
+        html = generate_yoy_heatmap(df, 34221, 90003)
+        self.assertIsNotNone(html)
+        self.assertIn("<table", html)
+        self.assertIn("heatmap", html.lower())
+
+    def test_yoy_heatmap_empty_data_returns_none(self):
+        from executive_charts import generate_yoy_heatmap
+        df = pd.DataFrame(columns=["CERT", "REPDTE"])
+        result = generate_yoy_heatmap(df, 34221, 90003)
+        self.assertIsNone(result)
+
+    def test_sparkline_table_returns_html(self):
+        from executive_charts import generate_sparkline_table
+        df = self._make_df()
+        html = generate_sparkline_table(df, 34221, peer_cert=90003)
+        self.assertIsNotNone(html)
+        self.assertIn("<table", html)
+        self.assertIn("<svg", html)  # Inline SVG sparklines
+
+    def test_sparkline_table_insufficient_data_returns_none(self):
+        from executive_charts import generate_sparkline_table
+        df = pd.DataFrame(columns=["CERT", "REPDTE"])
+        result = generate_sparkline_table(df, 34221)
+        self.assertIsNone(result)
+
+    def test_svg_sparkline_produces_valid_svg(self):
+        from executive_charts import _svg_sparkline
+        svg = _svg_sparkline([0.01, 0.02, 0.015, 0.018, 0.022])
+        self.assertTrue(svg.startswith("<svg"))
+        self.assertIn("</svg>", svg)
+        self.assertIn("polyline", svg)
+
+    def test_svg_sparkline_handles_empty(self):
+        from executive_charts import _svg_sparkline
+        svg = _svg_sparkline([])
+        self.assertIn("<svg", svg)
+
+    def test_kri_bullet_chart_returns_figure(self):
+        """KRI bullet chart must return a matplotlib Figure (or None if no data)."""
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+        except ImportError:
+            self.skipTest("matplotlib not available")
+        from executive_charts import generate_kri_bullet_chart
+        df = self._make_df()
+        fig = generate_kri_bullet_chart(df, 34221)
+        # Could be None if metrics missing, but should not raise
+        if fig is not None:
+            import matplotlib.pyplot as _plt
+            self.assertIsInstance(fig, _plt.Figure)
+            _plt.close(fig)
+
+    def test_heatmap_saves_to_file(self):
+        import tempfile
+        from executive_charts import generate_yoy_heatmap
+        df = self._make_df()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            path = f.name
+        try:
+            html = generate_yoy_heatmap(df, 34221, 90003, save_path=path)
+            self.assertIsNotNone(html)
+            with open(path, "r") as f:
+                content = f.read()
+            self.assertIn("<table", content)
+        finally:
+            os.unlink(path)
+>>>>>>> origin/claude/refactor-report-generator-EewiV
 
 
 if __name__ == '__main__':

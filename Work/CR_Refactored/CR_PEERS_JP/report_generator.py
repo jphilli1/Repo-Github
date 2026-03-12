@@ -62,6 +62,17 @@ except ImportError:
     REPORT_CONSUMER_MAP = {}
     _HAS_SEMANTIC_VALIDATION = False
 
+# Executive chart generators — YoY heatmap, KRI bullet, sparkline table
+try:
+    from executive_charts import (
+        generate_yoy_heatmap,
+        generate_kri_bullet_chart,
+        generate_sparkline_table,
+    )
+    _HAS_EXECUTIVE_CHARTS = True
+except ImportError:
+    _HAS_EXECUTIVE_CHARTS = False
+
 
 # Set style for better-looking charts
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -3215,6 +3226,83 @@ def generate_reports(
                 print("  No FRED expansion sheets found — run fred_ingestion_engine.py first")
         except Exception as e:
             print(f"  Skipped FRED expansion charts: {e}")
+
+        # ------------------------------------------------------------------
+        # EXECUTIVE CHARTS (YoY Heatmap, KRI Bullet, Sparkline Table)
+        # ------------------------------------------------------------------
+        if _HAS_EXECUTIVE_CHARTS:
+            print("\n" + "-" * 60)
+            print("GENERATING EXECUTIVE CHARTS")
+            print("-" * 60)
+
+            # YoY Heatmap — standard and normalized (HTML — both modes)
+            for is_norm in [False, True]:
+                norm_str = "normalized" if is_norm else "standard"
+                art_name = f"yoy_heatmap_{norm_str}"
+                if should_produce(art_name, mode, manifest, suppressed_charts):
+                    try:
+                        peer_cert = (ACTIVE_NORMALIZED_COMPOSITES["all_peers"]
+                                     if is_norm else ACTIVE_STANDARD_COMPOSITES["all_peers"])
+                        save = str(tables_dir / f"{base}_yoy_heatmap_{norm_str}.html")
+                        html = generate_yoy_heatmap(
+                            proc_df_with_peers, subject_bank_cert, peer_cert,
+                            is_normalized=is_norm, save_path=save,
+                        )
+                        if html:
+                            manifest.record_generated(art_name, save)
+                            print(f"  Generated: {art_name}")
+                            csv_log.log_file_written(save, phase="executive_charts",
+                                                     component=art_name)
+                        else:
+                            manifest.record_failed(art_name, "insufficient data")
+                    except Exception as exc:
+                        manifest.record_failed(art_name, str(exc))
+                        print(f"  Failed {art_name}: {exc}")
+
+            # KRI Bullet Chart (matplotlib — full_local only)
+            art_name = "kri_bullet_chart"
+            if should_produce(art_name, mode, manifest, suppressed_charts):
+                try:
+                    save = str(charts_dir / f"{base}_kri_bullet_chart.png")
+                    fig = generate_kri_bullet_chart(
+                        proc_df_with_peers, subject_bank_cert,
+                        wealth_cert=ACTIVE_STANDARD_COMPOSITES["core_pb"],
+                        all_peers_cert=ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                        save_path=save,
+                    )
+                    if fig is not None:
+                        manifest.record_generated(art_name, save)
+                        print(f"  Generated: {art_name}")
+                        csv_log.log_file_written(save, phase="executive_charts",
+                                                 component=art_name)
+                    else:
+                        manifest.record_failed(art_name, "insufficient data")
+                except Exception as exc:
+                    manifest.record_failed(art_name, str(exc))
+                    print(f"  Failed {art_name}: {exc}")
+
+            # Sparkline Summary Table (HTML — both modes)
+            art_name = "sparkline_summary"
+            if should_produce(art_name, mode, manifest, suppressed_charts):
+                try:
+                    save = str(tables_dir / f"{base}_sparkline_summary.html")
+                    html = generate_sparkline_table(
+                        proc_df_with_peers, subject_bank_cert,
+                        peer_cert=ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                        save_path=save,
+                    )
+                    if html:
+                        manifest.record_generated(art_name, save)
+                        print(f"  Generated: {art_name}")
+                        csv_log.log_file_written(save, phase="executive_charts",
+                                                 component=art_name)
+                    else:
+                        manifest.record_failed(art_name, "insufficient data")
+                except Exception as exc:
+                    manifest.record_failed(art_name, str(exc))
+                    print(f"  Failed {art_name}: {exc}")
+        else:
+            print("\n  Executive charts module not available — skipping")
 
         # ------------------------------------------------------------------
         # SUMMARY

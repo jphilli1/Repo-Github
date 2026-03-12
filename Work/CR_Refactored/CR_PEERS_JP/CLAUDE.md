@@ -343,6 +343,78 @@ python report_generator.py
 
 ---
 
+## 3b. Executive Charts & Metric Semantic Layer
+
+### Overview
+
+Three high-value executive visuals added to the report pipeline, consuming the existing `FDIC_Data` sheet. No new API dependencies.
+
+| Chart | Module | Mode Support | Output Dir |
+|---|---|---|---|
+| YoY Directional Heatmap (std + norm) | `executive_charts.py` | **BOTH** | `Peers/tables/` |
+| KRI Bullet / Football-Field Chart | `executive_charts.py` | **FULL_LOCAL_ONLY** | `Peers/charts/` |
+| Sparkline Summary Table | `executive_charts.py` | **BOTH** | `Peers/tables/` |
+
+### Metric Semantic Layer (`metric_semantics.py`)
+
+A thin presentation-layer extension on top of `metric_registry.py`. Does **not** duplicate formula, dependencies, bounds, or consumer logic.
+
+| Concept | Description |
+|---|---|
+| **Polarity** | `FAVORABLE` (higher is better), `ADVERSE` (higher is worse), `NEUTRAL` |
+| **DisplayFormat** | `PERCENT`, `BASIS_POINTS`, `DOLLARS_B`, `MULTIPLE`, `RATIO` |
+| **MetricSemantic** | Frozen dataclass: code, display_name, polarity, display_format, delta_format, group, threshold_bands |
+| **METRIC_SEMANTICS** | Registry dict (~35 entries) keyed by metric code |
+| **GROUP_ORDER** | Heatmap row ordering: Credit Quality → Coverage → Segments → Composition → Size |
+
+Helper functions: `get_semantic()`, `get_polarity()`, `get_direction()`, `get_css_class()`, `ordered_metrics()`.
+
+### Artifact Details
+
+**YoY Heatmap** (`yoy_heatmap_standard`, `yoy_heatmap_normalized`):
+- HTML table with polarity-aware conditional formatting
+- Shows latest-quarter values for subject bank and peer composite
+- YoY delta column with directional color coding (green = favorable, red = adverse)
+- Rows grouped and ordered by `GROUP_ORDER`
+- Works in both `full_local` and `corp_safe` modes
+
+**KRI Bullet Chart** (`kri_bullet_chart`):
+- Horizontal football-field style chart (matplotlib)
+- Gray band = range between Wealth Peers and All Peers composites
+- Gold marker = MSPBNA value
+- Optional threshold bands from `MetricSemantic.threshold_bands`
+- Full_local only — skipped gracefully in corp_safe mode
+
+**Sparkline Summary Table** (`sparkline_summary`):
+- HTML table with inline SVG sparklines (no matplotlib dependency)
+- Each row: metric name | sparkline (trailing 8Q) | current value | YoY change | vs peers
+- SVG sparklines are pure inline `<svg>` elements — compatible with email/PowerPoint embedding
+- Works in both modes
+
+### Output File Naming
+
+- `{stem}_yoy_heatmap_standard.html`
+- `{stem}_yoy_heatmap_normalized.html`
+- `{stem}_kri_bullet_chart.png`
+- `{stem}_sparkline_summary.html`
+
+### Key Modules
+
+| Module | Role |
+|---|---|
+| `metric_semantics.py` | Polarity, DisplayFormat, MetricSemantic, METRIC_SEMANTICS registry, GROUP_ORDER |
+| `executive_charts.py` | `generate_yoy_heatmap()`, `generate_kri_bullet_chart()`, `generate_sparkline_table()` |
+| `rendering_mode.py` | Artifact registration (4 new entries) |
+| `report_generator.py` | Integration via `should_produce()` guards |
+
+### Deferred / Not Implemented
+
+- Executive scatter enhancement (item 4 from original prompt) — deferred to a future tranche
+- KRI bullet chart normalized variant — could be added as a separate artifact if needed
+- Sparkline table normalized variant — same metrics, different peer composite
+
+---
+
 ## 4. Strict Coding Conventions & Rules
 
 These are **non-negotiable** for any agent editing this codebase:
@@ -678,6 +750,7 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ## 7. Changelog / Recent Fixes
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### 2026-03-12 — Dual-Mode Report Architecture Refactor
 
 **Purpose**: Refactor `report_generator.py` into a clean dual-mode architecture (`full_local` / `corp_safe`) with explicit artifact capability matrix, manifest tracking, and reusable renderer helpers.
@@ -704,6 +777,30 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 **Test baseline**: 264 tests (previous 246 + 18 new). 10 pre-existing errors (missing matplotlib/aiohttp), 20 skipped (2 pre-existing + 18 new due to missing aiohttp in CI).
 =======
+=======
+### 2026-03-12 — Executive Charts & Metric Semantic Layer (Prompt 2, Tranche 1)
+
+1. **New module `metric_semantics.py`**: Presentation-layer semantic metadata for ~35 metrics. `Polarity` enum (FAVORABLE/ADVERSE/NEUTRAL), `DisplayFormat` enum (PERCENT/BPS/DOLLARS_B/MULTIPLE/RATIO), `MetricSemantic` frozen dataclass, `GROUP_ORDER` for heatmap row ordering. Helper functions: `get_semantic()`, `get_polarity()`, `get_direction()`, `get_css_class()`, `ordered_metrics()`. Non-overlapping with `metric_registry.py` (which owns formula/deps/bounds/consumers).
+
+2. **New module `executive_charts.py`**: Three executive chart generators:
+   - `generate_yoy_heatmap()` — Directionally-dynamic HTML heatmap with polarity-aware color coding (BOTH modes)
+   - `generate_kri_bullet_chart()` — Horizontal football-field chart comparing MSPBNA vs peer range (FULL_LOCAL_ONLY)
+   - `generate_sparkline_table()` — HTML table with inline SVG sparklines for trailing 8Q trends (BOTH modes)
+
+3. **4 new artifacts registered in `rendering_mode.py`**: `yoy_heatmap_standard` (BOTH), `yoy_heatmap_normalized` (BOTH), `kri_bullet_chart` (FULL_LOCAL_ONLY), `sparkline_summary` (BOTH).
+
+4. **Integration in `report_generator.py`**: New "EXECUTIVE CHARTS" section with `should_produce()` guards for all 4 artifacts. Uses `ACTIVE_STANDARD_COMPOSITES` / `ACTIVE_NORMALIZED_COMPOSITES` for peer CERTs. Graceful fallback if `executive_charts` module not importable.
+
+5. **9 new function-based regression tests** in `test_regression.py` (section 13): polarity direction (favorable/adverse), metric semantics registry, artifact registration, report generator integration, corp_safe skip/allow behavior, ordered_metrics grouping, CSS class for deltas.
+
+6. **2 new unittest classes** (21 test methods): `TestMetricSemantics` (9 tests: enum values, get_semantic, polarity lookups, group order, no overlap with metric_registry), `TestExecutiveChartGenerators` (12 tests: heatmap HTML generation, empty data handling, sparkline SVG, bullet chart figure, save-to-file).
+
+7. **CLAUDE.md**: Added Section 3b documenting executive charts architecture, metric semantic layer, artifact details, output naming, and deferred items.
+
+**New files**: `metric_semantics.py`, `executive_charts.py`
+**Changed files**: `rendering_mode.py`, `report_generator.py`, `test_regression.py`, `CLAUDE.md`
+
+>>>>>>> origin/claude/refactor-report-generator-EewiV
 ### 2026-03-12 — Dual-Mode Rendering Architecture (Preflight Refactor)
 
 1. **New module `rendering_mode.py`**: Implements dual-mode architecture with `RenderMode` enum (`full_local`, `corp_safe`), `ArtifactCapability` declarations, `ArtifactManifest` outcome tracking, `ARTIFACT_REGISTRY` (31 artifacts), and `should_produce()` guard helper.
