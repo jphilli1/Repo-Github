@@ -517,11 +517,15 @@ FDIC_FIELDS_TO_FETCH = [
     "RIADK206",    # NCO: Auto Recoveries
     "RCFDK213",    # NA: Auto Nonaccrual
     "RCFD1590",    # Balance: Agricultural Loans
-    # RIAD4635/RIAD4645 REMOVED (2026-03-12): These are Total Gross Charge-offs/Recoveries
-    # on ALL Loans (RI-B Item 9), NOT agricultural. See Ag NCO fix in normalization section.
+    "RIAD4655",    # NCO: Ag Production Charge-offs (RI-B Item 3)
+    "RIAD4665",    # NCO: Ag Production Recoveries (RI-B Item 3)
+    "RCON1594",    # PD: Ag Past Due 30-89 (RC-N Item 3)
+    "RCFD1594",    # PD: Ag Past Due 30-89 (RC-N Item 3, consolidated)
+    "RCON1597",    # PD: Ag Past Due 90+ (RC-N Item 3)
+    "RCFD1597",    # PD: Ag Past Due 90+ (RC-N Item 3, consolidated)
     "RCFD5341",    # NA: Agricultural Nonaccrual
-    # NOTE: RCON2746/RCON2747 removed — mis-mapped (those are "All other loans" PD,
-    # not agricultural). Ag PD now uses P3AG/P9AG (already in fetch list above).
+    "RIAD3582",    # NCO: Construction & Land Development Charge-offs (RI-B Item 1.a)
+    "RIAD3583",    # NCO: Construction & Land Development Recoveries (RI-B Item 1.a)
 
     # --- 5. Foreign Government & Banks (Exclude from Domestic Peer View) ---
     "RCFD2081",    # Balance: Loans to Foreign Governments
@@ -971,9 +975,11 @@ class FFIECBulkLoader:
 
             # 5. Agriculture
             'RCFD1590', 'RCON1590', # Balance
-            # NOTE: 2746/2747 removed (mis-mapped). Ag PD uses P3AG/P9AG from FDIC text aliases.
+            'RIAD4655', 'RIAD4665', # NCO: Ag production charge-offs/recoveries (RI-B Item 3)
+            'RCON1594', 'RCFD1594', # PD30: Ag past due 30-89 (RC-N Item 3)
+            'RCON1597', 'RCFD1597', # PD90: Ag past due 90+ (RC-N Item 3)
             'RCFD5341', 'RCON5341', # NA
-            # RIAD4635/RIAD4645 REMOVED (2026-03-12): Total gross charge-offs/recoveries, NOT ag-specific
+            'RIAD3582', 'RIAD3583', # NCO: Construction & land dev charge-offs/recoveries (RI-B Item 1.a)
 
             # 6. NDFI Risk — J458/J459/J460 removed (not Call Report-consistent)
         ]
@@ -2534,13 +2540,16 @@ class BankMetricsProcessor:
         # C. Residential (Standard View Balance = Wealth Resi Definition)
         # Fix: do NOT rely on JJ-series here (can be missing/0 for some banks like MSBNA).
         # Use the same numerator logic as the normalized wealth resi balance:
-        # First Liens (1797) + Jr Liens (5367) + HELOC (1799)
-        resi_first = best_of(df_processed, ['RCON1797', 'RCFD1797']).fillna(0)
-        resi_jr    = best_of(df_processed, ['RCON5367', 'RCFD5367']).fillna(0)
-        heloc      = best_of(df_processed, ['RCON1799', 'RCFD1799']).fillna(0)
+        # Open-end/revolving (1797) + Closed-end first liens (5367) + Closed-end junior liens (5368)
+        # MDRM 1797 = revolving/open-end 1-4 family LOC
+        # MDRM 5367 = all other 1-4 family first liens (closed-end)
+        # MDRM 5368 = all other 1-4 family junior liens (closed-end)
+        resi_open_end = best_of(df_processed, ['RCON1797', 'RCFD1797']).fillna(0)
+        resi_first    = best_of(df_processed, ['RCON5367', 'RCFD5367']).fillna(0)
+        resi_junior   = best_of(df_processed, ['RCON5368', 'RCFD5368']).fillna(0)
 
         # Calculate strict sum (Granular)
-        resi_sum = resi_first + resi_jr + heloc
+        resi_sum = resi_open_end + resi_first + resi_junior
 
         # Calculate broad fallback (Summary Line Item)
         # LNRERES alone — already includes HELOC/open-end; no LNRELOC add.
@@ -2702,10 +2711,12 @@ class BankMetricsProcessor:
         df_processed['Fund_Finance_Balance'] = best_of(df_processed, ['RCFDJ454', 'RCONJ454'])
         # Fund Finance / NDFI credit-quality: J458/J459/J460 removed — not
         # Call Report-consistent for delinquency/nonaccrual mapping.
-        # Set to 0; Call Report-only PD/NA mapping is unsupported for NDFI.
-        df_processed['RIC_Fund_Finance_PD30'] = 0.0
-        df_processed['RIC_Fund_Finance_PD90'] = 0.0
-        df_processed['RIC_Fund_Finance_Nonaccrual'] = 0.0
+        # Set to NaN (coverage gap), not 0.0 — these fields are not separately
+        # reported on core RC-N lines.
+        df_processed['RIC_Fund_Finance_PD30'] = np.nan
+        df_processed['RIC_Fund_Finance_PD90'] = np.nan
+        df_processed['RIC_Fund_Finance_Nonaccrual'] = np.nan
+        df_processed['_NDFI_PD_NA_NotIsolatable'] = True
 
         # NCO for Fund Finance: explicitly assumed 0 in this framework
         df_processed['RIC_Fund_Finance_NCO_TTM'] = 0.0
@@ -2837,14 +2848,18 @@ class BankMetricsProcessor:
         norm_cols['Excl_CI_NCO_YTD'] = np.where(ci_bal > 0, ci_nco_raw, 0.0)
         norm_cols['_CI_NCO_Gated'] = np.where((ci_bal == 0) & (ci_nco_raw != 0), True, False)
 
-        # ADC NCO: Use NTRECONS (FDIC text alias for construction NCOs, RI-B Item 1.a)
+        # ADC NCO: Construction & land development loans charge-offs (3582) - recoveries (3583)
         # BALANCE-GATED: If Excl_ADC_Balance is zero, force NCO to zero.
         #
-        # CRITICAL FIX (2026-03-12): NTLS was previously used here but it is
-        # Total Net Loan & Lease NCOs (entire portfolio, RI-B Item 9). RIAD4658 is
-        # also total charge-offs. Both are wrong for construction-only. NTRECONS is
-        # already fetched (fetch list line ~458) and used in RIC calcs (line ~2641).
-        adc_nco_raw = best_of(df_processed, ['NTRECONS']).fillna(0)
+        # FIX (2026-03-12): RIAD3582/3583 are the canonical RI-B construction & land
+        # development loan charge-off/recovery items. NTLS and RIAD4658/4659 were
+        # total-portfolio items, not construction-specific. NTRECONS kept as fallback
+        # (FDIC text alias for construction NCOs, RI-B Item 1.a).
+        adc_chargeoffs = best_of(df_processed, ['RIAD3582']).fillna(0)
+        adc_recoveries = best_of(df_processed, ['RIAD3583']).fillna(0)
+        adc_nco_calc = adc_chargeoffs - adc_recoveries
+        adc_nco_fallback = best_of(df_processed, ['NTRECONS']).fillna(0)
+        adc_nco_raw = np.where(adc_nco_calc != 0, adc_nco_calc, adc_nco_fallback)
         adc_bal = norm_cols['Excl_ADC_Balance']
         norm_cols['Excl_ADC_NCO_YTD'] = np.where(adc_bal > 0, adc_nco_raw, 0.0)
         norm_cols['_ADC_NCO_Gated'] = np.where((adc_bal == 0) & (adc_nco_raw != 0), True, False)
@@ -2872,16 +2887,17 @@ class BankMetricsProcessor:
         # LIMITATION: CR-only NCO mapping unsupported for NDFI.
         norm_cols['Excl_NDFI_NCO_YTD'] = 0.0
 
-        # Ag NCO: Use NTAG (FDIC text alias for ag production NCOs, RI-B Item 3)
-        # or NTREAG (farmland-secured NCOs, RI-B Item 1.b) as fallback.
+        # Ag NCO: Agricultural production loans charge-offs (4655) - recoveries (4665)
         # BALANCE-GATED: If Excl_Ag_Balance is zero, force NCO to zero.
         #
-        # CRITICAL FIX (2026-03-12): RIAD4635 was previously used here but it is
-        # actually Total Gross Charge-offs on ALL Loans (RI-B Item 9, Col A),
-        # confirmed by FRED series documentation. This caused every bank's entire
-        # charge-off base to be attributed to "Ag", making Excluded_NCO > Total_NCO
-        # for all major peers. RIAD4645 (total recoveries counterpart) also removed.
-        ag_nco_raw = best_of(df_processed, ['NTAG', 'NTREAG']).fillna(0)
+        # FIX (2026-03-12): RIAD4655/4665 are ag production loan charge-offs/recoveries
+        # (RI-B Item 3). RIAD4635 was previously used but is Total Gross Charge-offs
+        # on ALL Loans (RI-B Item 9, Col A). NTAG kept as fallback (FDIC text alias).
+        ag_chargeoffs = best_of(df_processed, ['RIAD4655']).fillna(0)
+        ag_recoveries = best_of(df_processed, ['RIAD4665']).fillna(0)
+        ag_nco_calc = ag_chargeoffs - ag_recoveries
+        ag_nco_fallback = best_of(df_processed, ['NTAG', 'NTREAG']).fillna(0)
+        ag_nco_raw = np.where(ag_nco_calc != 0, ag_nco_calc, ag_nco_fallback)
         ag_bal = norm_cols['Excl_Ag_Balance']
         norm_cols['Excl_Ag_NCO_YTD'] = np.where(ag_bal > 0, ag_nco_raw, 0.0)
         norm_cols['_Ag_NCO_Gated'] = np.where((ag_bal == 0) & (ag_nco_raw != 0), True, False)
@@ -2928,15 +2944,12 @@ class BankMetricsProcessor:
         # 5. Auto
         norm_cols['Excl_Auto_P3'] = best_of(df_processed, ['P3AUTO', 'RCFDK214']).fillna(0)
         norm_cols['Excl_Auto_P9'] = best_of(df_processed, ['P9AUTO', 'RCFDK215']).fillna(0)
-        # 6. Ag — Use actual ag past-due fields (P3AG/P9AG).
+        # 6. Agriculture (RC-N item 3): Past due 30-89 (1594) and 90+ (1597)
+        # Prefer explicit MDRM items; fall back to FDIC aliases if present.
         # RCON2746/RCFD2746 and RCON2747/RCFD2747 were mis-mapped (those are
         # "All other loans" PD, not agricultural).
-        ag_p3_raw = best_of(df_processed, ['P3AG', 'P3AGR']).fillna(0)
-        ag_p9_raw = best_of(df_processed, ['P9AG', 'P9AGR']).fillna(0)
-        norm_cols['Excl_Ag_P3'] = ag_p3_raw
-        norm_cols['Excl_Ag_P9'] = ag_p9_raw
-        # Audit flag: if both P3AG/P9AG are zero, the ag PD fell back to 0.
-        norm_cols['_audit_ag_pd_fallback_to_zero'] = (ag_p3_raw == 0) & (ag_p9_raw == 0)
+        norm_cols['Excl_Ag_P3'] = best_of(df_processed, ['RCON1594', 'RCFD1594', 'P3AG', 'P3AGR']).fillna(0)
+        norm_cols['Excl_Ag_P9'] = best_of(df_processed, ['RCON1597', 'RCFD1597', 'P9AG', 'P9AGR']).fillna(0)
         # --- E. Sum Total Exclusions ---
         #Added Excl_OO_CRE_Balance to ensure Norm_Gross_Loans is pure Wealth/Inv. CRE
         norm_cols['Excluded_Balance'] = (
@@ -3126,13 +3139,15 @@ class BankMetricsProcessor:
         wealth_resi_bal = df_processed['Wealth_Resi_Balance']
 
         # Segment-level pure numerators (clip is OK for segment rates)
-        wealth_resi_nco_pure = sum_cols(df_processed, ['NTRERES', 'NTRELOC']).clip(lower=0)
+        # Use already-built TTM NCO numerator to avoid YTD-vs-TTM confusion
+        # (RIC_Resi_NCO_TTM is based on quarterly flows rolling 4 quarters)
+        wealth_resi_nco_ttm = df_processed.get('RIC_Resi_NCO_TTM', pd.Series(np.nan, index=df_processed.index))
         wealth_resi_na_pure  = sum_cols(df_processed, ['NARERES', 'NARELOC']).clip(lower=0)
         wealth_resi_pd30_pure = sum_cols(df_processed, ['P3RERES', 'P3RELOC']).clip(lower=0)
         wealth_resi_pd90_pure = sum_cols(df_processed, ['P9RERES', 'P9RELOC']).clip(lower=0)
 
         # Segment rates for HTML report
-        df_processed['Wealth_Resi_TTM_NCO_Rate'] = safe_div(wealth_resi_nco_pure, wealth_resi_bal)
+        df_processed['Wealth_Resi_TTM_NCO_Rate'] = safe_div(wealth_resi_nco_ttm, wealth_resi_bal)
         df_processed['Wealth_Resi_NA_Rate'] = safe_div(wealth_resi_na_pure, wealth_resi_bal)
         df_processed['Wealth_Resi_Delinquency_Rate'] = safe_div(
             wealth_resi_pd30_pure + wealth_resi_pd90_pure,
@@ -3262,14 +3277,14 @@ class BankMetricsProcessor:
             df_processed['Gross_Loans']
         )
 
-        # Normalized Owner-Occupied CRE %
-        new_cols['Norm_CRE_OO_Composition'] = safe_div(
+        # Excluded category shares as % of normalized denominator (audit-only metrics).
+        # These categories are excluded from Norm_Gross_Loans, so they should not be
+        # presented as "Norm_*_Composition" — renamed to make the audit purpose explicit.
+        new_cols['Excluded_CRE_OO_Share_of_Norm'] = safe_div(
             df_processed['CRE_OO_Balance'],
             df_processed['Norm_Gross_Loans']
         )
-
-        # Normalized ADC % (Should be 0.0% if fully excluded)
-        new_cols['Norm_ADC_Composition'] = safe_div(
+        new_cols['Excluded_ADC_Share_of_Norm'] = safe_div(
             df_processed['ADC_Balance'],
             df_processed['Norm_Gross_Loans']
         )
@@ -3335,7 +3350,10 @@ class BankMetricsProcessor:
 
         new_cols['Norm_Resi_ACL_Coverage'] = safe_div(df_processed['RIC_Resi_ACL'], wealth_resi_bal)
         new_cols['Norm_CRE_ACL_Coverage']  = safe_div(df_processed['RIC_CRE_ACL'], df_processed['CRE_Investment_Pure_Balance'])
-        new_cols['Norm_Comm_ACL_Coverage'] = safe_div(df_processed['RIC_Comm_ACL'], df_processed['SBL_Balance'])
+        # Commercial (C&I) ACL coverage: use C&I balance (LNCI) as denominator.
+        # SBL_Balance is RC-C item 9.b.(1), not the C&I balance that RIC_Comm_ACL covers.
+        ci_bal_for_coverage = best_of(df_processed, ['LNCI', 'RCON1763', 'RCFD1763']).fillna(0)
+        new_cols['Norm_Comm_ACL_Coverage'] = safe_div(df_processed['RIC_Comm_ACL'], ci_bal_for_coverage)
 
         new_cols['Norm_ACL_Coverage'] = safe_div(norm_acl_balance, df_processed['Norm_Gross_Loans'])
         new_cols['Norm_Risk_Adj_Allowance_Coverage'] = safe_div(
@@ -6156,7 +6174,7 @@ class BankPerformanceDashboard:
             {"MetricCode":"Norm_CRE_ACL_Coverage",            "Display":"CRE ACL Coverage (% of CRE Loans)",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Comm_ACL_Coverage",           "Display":"C&I Reserve % of Norm Loans",  "DisplayUnit":"%",  "Scale":1.0,  "Fmt":"percent",    "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_Investment_Composition", "Display":"Norm: CRE Invest. % (Ex-ADC)", "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_CRE_OO_Composition",         "Display":"Norm: CRE Owner-Occ %",        "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Excluded_CRE_OO_Share_of_Norm",         "Display":"Excl: CRE Owner-Occ % of Norm Loans (Audit)",        "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"ASSET", "Display":"Assets",                      "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":0, "Basis":"level"},
             {"MetricCode":"LNLS",  "Display":"Gross Loans",                 "DisplayUnit":"$M", "Scale":1e-3, "Fmt":"currency_m", "Decimals":0, "Basis":"level"},
             # --- NEW: Risk-Adjusted Coverage (Ratio, e.g. 1.5x) ---
@@ -6197,7 +6215,7 @@ class BankPerformanceDashboard:
             {"MetricCode":"Norm_SBL_Composition",          "Display":"SBL % of Norm Loans",                 "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Fund_Finance_Composition", "Display":"Fund Finance % of Norm Loans",        "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Wealth_Resi_Composition",  "Display":"Wealth Resi % of Norm Loans",         "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
-            {"MetricCode":"Norm_CRE_OO_Composition",         "Display":"CRE Owner-Occ % of Norm Loans",       "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
+            {"MetricCode":"Excluded_CRE_OO_Share_of_Norm",         "Display":"Excl: CRE Owner-Occ % of Norm Loans (Audit)",       "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_CRE_Investment_Composition", "Display":"CRE Invest. % of Norm Loans",         "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Loan_Yield",               "Display":"Normalized Loan Yield (%)",           "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
             {"MetricCode":"Norm_Provision_Rate",           "Display":"Normalized Provision Rate (%)",       "DisplayUnit":"%", "Scale":1.0, "Fmt":"percent", "Decimals":2, "Basis":"fraction"},
@@ -6366,6 +6384,47 @@ class BankPerformanceDashboard:
             logging.warning(f"Metric validation suite failed (non-fatal): {e}")
             metric_validation_df = pd.DataFrame()
 
+        # --- Normalization Reconciliation Sample Sheet ---
+        # Select subject + composite CERTs + a few peers for the latest REPDTE.
+        # Print Total vs Excluded vs Normalized columns for NCO and Loans.
+        recon_certs = set()
+        recon_certs.add(int(os.getenv("MSPBNA_CERT", "34221")))
+        for gk, gv in PEER_GROUPS.items():
+            dummy = 90000 + gv['display_order']
+            recon_certs.add(dummy)
+            # Add up to 3 real peers from each group
+            for c in sorted(gv['certs'])[:3]:
+                recon_certs.add(c)
+        recon_cols = [
+            'CERT', 'NAME', 'REPDTE',
+            'Total_NCO_TTM', 'Excluded_NCO_TTM', 'Norm_Total_NCO',
+            '_Norm_NCO_Residual', '_Flag_NCO_OverExclusion', '_Norm_NCO_Severity',
+            'Gross_Loans', 'Excluded_Balance', 'Norm_Gross_Loans',
+            '_Norm_Loans_Residual', '_Flag_Loans_OverExclusion', '_Norm_Loans_Severity',
+        ]
+        avail_recon_cols = [c for c in recon_cols if c in proc_df_with_peers.columns]
+        latest_repdte = proc_df_with_peers['REPDTE'].max() if 'REPDTE' in proc_df_with_peers.columns else None
+        if latest_repdte is not None and avail_recon_cols:
+            recon_mask = (
+                proc_df_with_peers['CERT'].isin(recon_certs) &
+                (proc_df_with_peers['REPDTE'] == latest_repdte)
+            )
+            recon_df = proc_df_with_peers.loc[recon_mask, avail_recon_cols].copy()
+            # Add a check column: Excl + Norm - Total (should be ~0)
+            if all(c in recon_df.columns for c in ['Total_NCO_TTM', 'Excluded_NCO_TTM', 'Norm_Total_NCO']):
+                recon_df['NCO_Check_ExclPlusNormMinusTotal'] = (
+                    recon_df['Excluded_NCO_TTM'] + recon_df['Norm_Total_NCO'] - recon_df['Total_NCO_TTM']
+                )
+                recon_df['NCO_Flag_Excl_GT_Total'] = recon_df['Excluded_NCO_TTM'] > recon_df['Total_NCO_TTM']
+            if all(c in recon_df.columns for c in ['Gross_Loans', 'Excluded_Balance', 'Norm_Gross_Loans']):
+                recon_df['Loans_Check_ExclPlusNormMinusTotal'] = (
+                    recon_df['Excluded_Balance'] + recon_df['Norm_Gross_Loans'] - recon_df['Gross_Loans']
+                )
+                recon_df['Loans_Flag_Excl_GT_Total'] = recon_df['Excluded_Balance'] > recon_df['Gross_Loans']
+            logging.info(f"Normalization reconciliation sample: {len(recon_df)} rows, {len(avail_recon_cols)} cols")
+        else:
+            recon_df = pd.DataFrame()
+
         # --- Case-Shiller ZIP Enrichment (standalone sheets) ---
         # Produces up to 3+2 keys: 3 DataFrames + enrichment_status + token_diagnostics.
         # Wrapped in try/except so HUD API failures do not crash the pipeline.
@@ -6434,6 +6493,7 @@ class BankPerformanceDashboard:
             Exclusion_Component_Audit=excl_audit_df,
             Composite_Coverage_Audit=composite_coverage_df,
             Metric_Validation_Audit=metric_validation_df,
+            Normalization_Reconciliation_Sample=recon_df,
             **cs_kwargs,
         )
 

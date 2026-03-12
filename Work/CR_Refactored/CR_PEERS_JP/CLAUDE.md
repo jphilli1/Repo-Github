@@ -6,7 +6,7 @@ This repository is an **automated Credit Risk Performance reporting engine** for
 
 1. **Fetches** raw call-report data from the FDIC API and macroeconomic time-series from the FRED API.
 2. **Processes** the data into standard and normalized credit-quality metrics, computes peer-group composites, and builds rolling 8-quarter averages.
-3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (Summary_Dashboard, Normalized_Comparison, Latest_Peer_Snapshot, Averages_8Q_All_Metrics, FDIC_Metric_Descriptions, Macro_Analysis, FDIC_Data, FRED_Data, FRED_Metadata, FRED_Descriptions, Data_Validation_Report, Normalization_Diagnostics, Peer_Group_Definitions, Exclusion_Component_Audit, Composite_Coverage_Audit, Metric_Validation_Audit, and optional Case-Shiller ZIP sheets).
+3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (Summary_Dashboard, Normalized_Comparison, Latest_Peer_Snapshot, Averages_8Q_All_Metrics, FDIC_Metric_Descriptions, Macro_Analysis, FDIC_Data, FRED_Data, FRED_Metadata, FRED_Descriptions, Data_Validation_Report, Normalization_Diagnostics, Peer_Group_Definitions, Exclusion_Component_Audit, Composite_Coverage_Audit, Metric_Validation_Audit, Normalization_Reconciliation_Sample, and optional Case-Shiller ZIP sheets).
 4. **Generates reports**: PNG credit-deterioration charts, PNG scatter plots, and HTML comparison tables — all routed to structured subdirectories under `output/Peers/`.
 
 The two core scripts are:
@@ -125,6 +125,7 @@ report_generator.py
 | `Resi_Normalized_Audit` | Residential metric values, mapping/label status, latest quarter |
 | `Exclusion_Component_Audit` | Per-bank/quarter excluded category balances, NCO, balance-gating flags, dominant category |
 | `Composite_Coverage_Audit` | Per-group/metric contributor counts, coverage %, NaN-out decisions for normalized composites |
+| `Normalization_Reconciliation_Sample` | Latest-period reconciliation: Total vs Excluded vs Normalized for NCO and Loans, plus severity flags, for subject + composites + peers |
 | `CaseShiller_Zip_Coverage` | One row per (Case-Shiller region, ZIP code) with HUD crosswalk ratios |
 | `CaseShiller_Zip_Summary` | One row per metro with aggregate ZIP counts and mapping metadata |
 | `CaseShiller_County_Map_Audit` | County-level FIPS mapping rules per S&P CoreLogic methodology |
@@ -727,18 +728,23 @@ to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
 
 | Segment | Balance Definition | Notes |
 |---|---|---|
-| **Wealth Resi** | RC-C components (1797+5367+5368) preferred; fallback: **LNRERES alone** (includes HELOC/open-end). LNRELOC is NOT added to avoid double-counting. | Numerators (NCO, PD, NA) still use split fields (NTRERES+NTRELOC, etc.) |
+| **Wealth Resi** | RC-C components: open-end/revolving (1797) + closed-end first liens (5367) + closed-end junior liens (5368). Fallback: **LNRERES alone** (includes HELOC/open-end). LNRELOC is NOT added to avoid double-counting. | Numerators (NCO, PD, NA) still use split fields (NTRERES+NTRELOC, etc.). `Wealth_Resi_TTM_NCO_Rate` uses `RIC_Resi_NCO_TTM` (true TTM, not raw YTD). |
 | **C&I Exclusion** | `Excl_CI_Balance = LNCI` (or best_of RCON1763/RCFD1763) directly. SBL is NOT subtracted — SBL lives under RC-C item 9, not item 4. | |
-| **NDFI / Fund Finance** | J454 retained for balance exclusion. **J458/J459/J460 removed** — not Call Report-consistent for PD/NA. All NDFI PD/NA numerators set to 0.0. | LIMITATION: CR-only PD/NA mapping is unsupported for NDFI. |
-| **Agricultural PD** | **RCON2746/RCFD2746 and RCON2747/RCFD2747 removed** (mis-mapped — those are "All other loans" PD). Replaced with P3AG/P9AG. | |
+| **NDFI / Fund Finance** | J454 retained for balance exclusion. **J458/J459/J460 removed** — not Call Report-consistent for PD/NA. Segment-level PD/NA set to **NaN** (coverage gap). Excluded NDFI PD/NA set to **0.0** (not subtracted). `_NDFI_PD_NA_NotIsolatable = True` audit flag added. | LIMITATION: CR-only PD/NA mapping is unsupported for NDFI. RC-N item 7 aggregates RC-C item 9 categories. |
+| **Agricultural NCO** | Charge-offs (RIAD4655) minus recoveries (RIAD4665) = ag production loan NCOs (RI-B Item 3). NTAG/NTREAG as fallback. | RIAD4635/4645 were total-portfolio items, not ag-specific. |
+| **Agricultural PD** | Primary: RCON1594/RCFD1594 (30-89 days) and RCON1597/RCFD1597 (90+ days). Fallback: P3AG/P9AG/P3AGR/P9AGR. | RCON2746/2747 were "All other loans" PD, not agricultural. |
+| **ADC NCO** | Charge-offs (RIAD3582) minus recoveries (RIAD3583) = construction & land development loan NCOs (RI-B Item 1.a). NTRECONS as fallback. | NTLS/RIAD4658/4659 were total-portfolio items, not construction-specific. |
 | **CRE Investment Pure** | `LNREMULT + LNRENROT` only. **LNREOTH removed** from the calculation path. | Owner-occupied CRE excluded separately. |
 | **Tailored Lending** | **Unsupported** in Call Report-only mode. No proxy from fine art, aircraft, bespoke HNW unsecured, J451, or other CR proxies. Internal product tags would be required. | |
 
 ### Known Limitations (Segment Taxonomy)
 
 - **NDFI credit quality**: Call Report does not publish NDFI-specific delinquency/nonaccrual.
-  J458/J459/J460 were removed; PD/NA exclusion numerators are 0.0 until an internal data
-  source is integrated.
+  J458/J459/J460 were removed (those are unused commitments, not PD/NA items). RC-N item 7
+  aggregates loans in RC-C item 9 (including J454 and 1545) without NDFI-only disaggregation.
+  Segment-level PD/NA are NaN (coverage gap). Excluded NDFI PD/NA are 0.0 (not subtracted
+  from normalization). `_NDFI_PD_NA_NotIsolatable = True` audit flag is set.
+  To implement NDFI PD/NA, optional memorandum-item logic would be needed.
 - **Tailored Lending**: Cannot be inferred from Call Report data. Requires internal product tags.
   No proxy math is present in this codebase.
 - **Ag PD fallback**: If P3AG/P9AG are absent from the FDIC dataset for a given bank, the
@@ -762,6 +768,27 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Segment Performance Series Tracing & MDRM Correction (12-Part Fix)
+
+**Problem**: Multiple MDRM mapping defects remained after the initial NCO fix. Ag PD used CRE/CLD items (2746/2747), Ag NCO used FDIC text aliases instead of canonical MDRMs, ADC NCO used FDIC text aliases instead of canonical MDRMs, NDFI PD/NA were set to 0.0 instead of NaN (masking the coverage gap), residential itemization used wrong MDRM (1799 instead of 5368), Wealth_Resi_TTM_NCO_Rate used raw YTD instead of TTM, normalized composition included excluded categories, Norm_Comm_ACL_Coverage used wrong denominator.
+
+**12-part fix**:
+
+1. **ADC NCO** — Changed from `best_of(['NTRECONS'])` to `RIAD3582 - RIAD3583` (construction & land development charge-offs/recoveries, RI-B Item 1.a) with NTRECONS as fallback.
+2. **Ag NCO** — Changed from `best_of(['NTAG', 'NTREAG'])` to `RIAD4655 - RIAD4665` (ag production loan charge-offs/recoveries, RI-B Item 3) with NTAG/NTREAG as fallback.
+3. **Ag PD** — Added `RCON1594/RCFD1594` (30-89 days) and `RCON1597/RCFD1597` (90+ days) as primary items (RC-N Item 3). P3AG/P9AG retained as fallback.
+4. **NDFI Fund Finance PD/NA** — Changed segment-level `RIC_Fund_Finance_PD30/PD90/Nonaccrual` from `0.0` to `np.nan` (coverage gap, not zero exposure). Added `_NDFI_PD_NA_NotIsolatable = True` audit flag.
+5. **Residential itemization** — Changed `RIC_Resi_Cost` from `1797 + 5367 + 1799` to `1797 + 5367 + 5368`. MDRM 1797 = revolving/open-end, 5367 = first liens, 5368 = junior liens. MDRM 1799 was incorrect.
+6. **Wealth_Resi_TTM_NCO_Rate** — Changed numerator from raw `NTRERES + NTRELOC` (YTD) to `RIC_Resi_NCO_TTM` (true TTM from quarterly flows rolling 4 quarters).
+7. **Normalized composition** — Renamed `Norm_CRE_OO_Composition` → `Excluded_CRE_OO_Share_of_Norm` and `Norm_ADC_Composition` → `Excluded_ADC_Share_of_Norm`. These are excluded categories and should not appear as "Norm_*".
+8. **Norm_Comm_ACL_Coverage** — Changed denominator from `SBL_Balance` (RC-C item 9.b.(1)) to `LNCI` (RC-C item 4, matching C&I balance).
+9. **Fetch lists** — Added RIAD3582, RIAD3583, RIAD4655, RIAD4665, RCON1594, RCFD1594, RCON1597, RCFD1597 to both FDIC and FFIEC fetch lists.
+10. **Reconciliation worksheet** — Added `Normalization_Reconciliation_Sample` Excel sheet with latest-period Total vs Excluded vs Normalized for NCO and Loans, plus check columns and flags.
+11. **CLAUDE.md** — Updated segment taxonomy table, residential MDRM descriptions, NDFI limitation documentation.
+12. **Regression tests** — Added tests for all mapping changes, NDFI audit flag, resi itemization, TTM numerator, composition rename, coverage denominator, reconciliation sheet, and fetch list completeness.
+
+**Files changed**: `MSPBNA_CR_Normalized.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — HUD ZIP Parser Shape F Support (Dict-Wrapped Data)
 
@@ -1875,7 +1902,7 @@ Legacy CERTs may still appear in `ALL_COMPOSITE_CERTS` for scatter-dot exclusion
 **Root cause**: A "OVERRIDE: Normalized Performance (Wealth Segments Only)" block was reconstructing `Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_PD30`, and `Norm_PD90` bottom-up from `wealth_resi_nco_pure + sum_cols(...)`. This accidentally excluded SBL and any unmapped RESI lines from normalized totals.
 
 **Fixes applied:**
-1. **Expanded residential balance definitions**: `compute_wealth_resi_bal()` and `resi_sum` (for `RIC_Resi_Cost`) now include First Liens (1797) + Junior Liens (5367) + HELOC/Open-End (5368, 1799) with `best_of()` fallback. Both definitions are now consistent.
+1. **Expanded residential balance definitions**: `compute_wealth_resi_bal()` and `resi_sum` (for `RIC_Resi_Cost`) now use Open-end/revolving (1797) + Closed-end first liens (5367) + Closed-end junior liens (5368). MDRM 1799 removed from itemization (was incorrectly included).
 2. **Deleted bottom-up override**: Removed the 4 bottom-up assignments (`Norm_Total_NCO`, `Norm_Total_Nonaccrual`, `Norm_PD30`, `Norm_PD90`) from the override block.
 3. **Restored top-down math**: `Norm_Total_NCO` and `Norm_Total_Nonaccrual` remain computed top-down via diagnostics-first logic. Added top-down `Norm_PD30 = TopHouse_PD30 - Excluded_PD30` and `Norm_PD90 = TopHouse_PD90 - Excluded_PD90`. Persisted `Excluded_PD30`/`Excluded_PD90` columns for this purpose.
 4. **Retained segment metrics**: `Wealth_Resi_TTM_NCO_Rate`, `Wealth_Resi_NA_Rate`, `Wealth_Resi_Delinquency_Rate` remain as segment-level rates for HTML tables.
