@@ -655,9 +655,49 @@ to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
   exclusion PD defaults to 0.0 via `best_of(...).fillna(0)`. This is preferred over mis-mapping
   RCON2746/2747.
 
+### Segment Support Boundaries
+
+This table documents what the Call Report can and cannot identify for each
+wealth-management loan segment. Presentation-facing labels must not overstate
+the precision available.
+
+| Segment | Balance | Risk Metrics (NCO/PD/NA) | Boundary Notes |
+|---|---|---|---|
+| **SBL** | Supported (RCFD1545/RCON1545, fallback LNOTHER) | **Proxy only** — no SBL-specific NCO, PD, or NA fields in Call Report. "All Other Loans" numerators would mix SBL with other uncategorised lending. Not shown in presentation. | SBL balance is clean; SBL risk rates are NOT computed. |
+| **Wealth Resi** | Supported (1-4 family incl. HELOC via LNRERES) | Supported via split MDRM fields (NTRERES+NTRELOC, P3RERES+P3RELOC, etc.) | Jumbo is **not** separately identifiable in Call Report. The segment covers all 1-4 family residential including HELOCs and open-end lines. |
+| **CRE Investment** | Supported (LNREMULT + LNRENROT) | Supported (NTREMULT+NTRENROT, P3REMULT+P3RENROT, P9REMULT+P9RENROT, NAREMULT+NARENROT) | Multifamily + non-owner-occupied nonfarm only. Excludes ADC (construction) and owner-occupied CRE, which are separate segments. |
+| **Tailored Lending** | **Not segmented** in Call Report | **Not available** | Fine art, aircraft, bespoke HNW unsecured, etc. cannot be identified from any Call Report schedule. Requires internal product-level tags. J451 (total to nondepository institutions) is NOT a tailored-lending proxy. |
+| **NDFI / Fund Finance** | Supported (J454 balance only) | **Not available** — all set to 0.0 with audit flags | CR-only mode has no NDFI-specific NCO/PD/NA fields. |
+
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Segment Label Precision & Support Boundaries
+
+Prevented presentation layers from overstating precision where Call Report
+support is weak. No metrics suppressed from live outputs (SBL risk rates were
+already not computed/shown). Changes:
+
+1. **SBL risk metric labels**: `SBL_TTM_NCO_Rate`, `SBL_TTM_PD30_Rate`,
+   `SBL_NA_Rate` descriptions updated to explicitly say "PROXY — Not directly
+   derived from SBL-specific fields. Not presentation-facing." These were
+   metadata-only (never computed or shown) but descriptions were ambiguous.
+2. **RESI label precision**: `Norm_Wealth_Resi_Composition` description changed
+   from "Jumbo + HELOCs" to "1-4 family incl. HELOC; jumbo not separately
+   identified in Call Report."
+3. **CRE Investment descriptions corrected**: Removed stale "Construction"
+   references from `CRE_Investment_Composition`, `CRE_Investment_TTM_NCO_Rate`,
+   `CRE_Investment_TTM_PD30_Rate`, `CRE_Investment_NA_Rate`. Now correctly
+   states "Multifamily + Non-OO Nonfarm, excl. ADC and OO CRE."
+4. **Tailored lending**: Confirmed zero code references in pipeline or
+   presentation layers. J451 is not used as a proxy. Already documented as
+   unsupported in prior changelog.
+5. **Segment Support Boundaries**: Added new CLAUDE.md section documenting
+   what the Call Report can/cannot identify for SBL, Wealth Resi, CRE
+   Investment, Tailored Lending, and NDFI.
+
+Files changed: `master_data_dictionary.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Normalized Segment Taxonomy Alignment
 
