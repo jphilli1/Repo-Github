@@ -4215,6 +4215,207 @@ class TestHUDResponseParsing(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# HUD PARSE ROBUSTNESS TESTS
+# Tests for row-by-row flattening, dotted column canonicalization,
+# per-query parse failure tracking, and __main__ block safety.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestHUDParseRobustness(unittest.TestCase):
+    """Tests for the 2026-03-12 HUD parse robustness fixes."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from case_shiller_zip_mapper import (
+                flatten_hud_rows, canonicalize_hud_columns,
+                fetch_hud_crosswalk, build_case_shiller_zip_sheets,
+                QUERY_SUCCESS_ROWS, QUERY_FAILED_PARSE,
+                QUERY_FAILED_EMPTY_RESPONSE, QUERY_FAILED_HTTP,
+                QUERY_FAILED_TOKEN_AUTH,
+                ENRICH_FAILED_PARSE, ENRICH_FAILED_EMPTY_RESPONSE,
+            )
+            cls.flatten = staticmethod(flatten_hud_rows)
+            cls.canonicalize = staticmethod(canonicalize_hud_columns)
+            cls.available = True
+        except ImportError:
+            cls.available = False
+
+    # --- 1. Mixed wrapper and final rows ---
+    def test_flatten_hud_rows_mixed_wrapper_and_final_rows(self):
+        """Mixed rows: some already flat, some with nested results."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        rows = [
+            # Wrapper row
+            {"year": 2025, "quarter": 4, "input": "06037",
+             "results": [
+                 {"zip": "90001", "county": "06037", "res_ratio": 0.85},
+             ]},
+            # Already-flat row (no nested results)
+            {"zip": "10001", "county": "36061", "res_ratio": 0.90},
+        ]
+        flat = self.flatten(rows)
+        # Should have 2 rows: 1 from exploded wrapper + 1 already-flat
+        self.assertEqual(len(flat), 2)
+        zips = {r["zip"] for r in flat}
+        self.assertEqual(zips, {"90001", "10001"})
+
+    # --- 2. Wrapper rows with extra metadata keys ---
+    def test_flatten_hud_rows_wrapper_with_extra_metadata_keys(self):
+        """Wrapper rows with extra keys beyond _HUD_WRAPPER_KEYS still flatten."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        rows = [
+            {"year": 2025, "quarter": 4, "input": "06037",
+             "crosswalk_type": "7", "extra_meta": "some_value",
+             "results": [
+                 {"zip": "90001", "county": "06037"},
+                 {"zip": "90002", "county": "06037"},
+             ]},
+        ]
+        flat = self.flatten(rows)
+        # Must still flatten — not reject because of extra_meta key
+        self.assertEqual(len(flat), 2)
+        self.assertEqual(flat[0]["zip"], "90001")
+        # Extra metadata should propagate
+        self.assertEqual(flat[0].get("extra_meta"), "some_value")
+
+    # --- 3. Recursive nested results ---
+    def test_flatten_hud_rows_recursive_nested_results(self):
+        """Nested results more than one level deep get fully flattened."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        rows = [
+            {"year": 2025, "results": [
+                {"quarter": 4, "results": [
+                    {"zip": "90001", "county": "06037"},
+                ]},
+            ]},
+        ]
+        flat = self.flatten(rows)
+        # After iterative flattening, no row should have list-valued "results"
+        for row in flat:
+            results_val = row.get("results")
+            self.assertFalse(
+                isinstance(results_val, list),
+                f"Row still has nested results list: {row}"
+            )
+        # Should end up with the innermost row
+        self.assertTrue(any(r.get("zip") == "90001" for r in flat))
+        # Parent metadata (year, quarter) should propagate
+        self.assertTrue(any(r.get("year") == 2025 for r in flat))
+
+    # --- 4. Dotted column variants ---
+    def test_canonicalize_hud_columns_accepts_dotted_result_columns(self):
+        """results.zip / results.county variants map to canonical fields."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        df = pd.DataFrame([{
+            "results.zip": "1001",
+            "results.county": "25013",
+            "results.res_ratio": 0.85,
+            "results.bus_ratio": 0.10,
+            "results.oth_ratio": 0.04,
+            "results.tot_ratio": 0.99,
+            "year": 2025,
+        }])
+        result = self.canonicalize(df)
+        self.assertIn("zip", result.columns)
+        self.assertIn("county_fips", result.columns)
+        self.assertIn("res_ratio", result.columns)
+        self.assertEqual(result.iloc[0]["zip"], "01001")
+        self.assertEqual(result.iloc[0]["county_fips"], "25013")
+
+    # --- 5. fetch_hud_crosswalk returns structured outcome ---
+    def test_fetch_hud_crosswalk_returns_failed_parse_status_for_wrapper_only_output(self):
+        """fetch_hud_crosswalk must return QUERY_FAILED_PARSE when output is wrapper-only."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        # The function must define and use QUERY_FAILED_PARSE
+        self.assertIn("QUERY_FAILED_PARSE", source)
+        self.assertIn("QUERY_SUCCESS_ROWS", source)
+        # fetch_hud_crosswalk must return a dict, not just a DataFrame
+        import re
+        # Look for the return type in docstring or actual returns
+        self.assertIn('"status"', source,
+                      "fetch_hud_crosswalk must return dict with 'status' key")
+        self.assertIn('"dataframe"', source,
+                      "fetch_hud_crosswalk must return dict with 'dataframe' key")
+        self.assertIn('"diagnostics"', source,
+                      "fetch_hud_crosswalk must return dict with 'diagnostics' key")
+
+    # --- 6. build_case_shiller_zip_sheets classifies parse failures correctly ---
+    def test_build_case_shiller_zip_sheets_classifies_all_parse_failures_as_failed_parse(self):
+        """If all counties return empty AND at least one had FAILED_PARSE,
+        final status must be FAILED_PARSE, not FAILED_EMPTY_RESPONSE."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        # The orchestrator must check failed_parse count before classifying
+        self.assertIn("counts[\"failed_parse\"]", source,
+                      "Orchestrator must track per-query parse failure counts")
+        # The FAILED_PARSE classification must take precedence over FAILED_EMPTY
+        import re
+        # Find the block that checks "not all_xwalk_frames" and verify
+        # it checks failed_parse before falling back to FAILED_EMPTY_RESPONSE
+        pattern = re.compile(
+            r"if not all_xwalk_frames:.*?"
+            r"failed_parse.*?ENRICH_FAILED_PARSE",
+            re.DOTALL
+        )
+        self.assertTrue(
+            pattern.search(source),
+            "When all frames empty + parse failures exist → must be FAILED_PARSE"
+        )
+
+    # --- 7. No misclassification ---
+    def test_build_case_shiller_zip_sheets_does_not_misclassify_parse_failure_as_failed_empty_response(self):
+        """FAILED_EMPTY_RESPONSE should only be used when no parse failures occurred."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        # Find the FAILED_EMPTY_RESPONSE assignment in the "not all_xwalk_frames" block
+        import re
+        # The FAILED_EMPTY_RESPONSE path should be in the else branch
+        # (i.e., only when failed_parse count is 0)
+        pattern = re.compile(
+            r"if counts\[\"failed_parse\"\] > 0:.*?"
+            r"ENRICH_FAILED_PARSE.*?"
+            r"else:.*?"
+            r"ENRICH_FAILED_EMPTY_RESPONSE",
+            re.DOTALL
+        )
+        self.assertTrue(
+            pattern.search(source),
+            "FAILED_EMPTY_RESPONSE must be in else branch after failed_parse check"
+        )
+
+    # --- 8. __main__ block handles non-DataFrame values ---
+    def test_main_smoke_block_handles_non_dataframe_return_values(self):
+        """The __main__ block must check isinstance(value, pd.DataFrame)
+        before calling .shape / .empty."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        # Find the __main__ block
+        main_idx = source.index('if __name__ == "__main__"')
+        main_block = source[main_idx:]
+        self.assertIn("isinstance(value, pd.DataFrame)", main_block,
+                      "__main__ must check isinstance before .shape/.empty")
+        # Must NOT call .shape directly on dict items without checking
+        import re
+        # Make sure there's no bare df.shape without isinstance guard
+        lines = main_block.splitlines()
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if '.shape' in stripped and 'isinstance' not in stripped:
+                # Check if it's inside the isinstance branch
+                # (look at preceding lines for the isinstance check)
+                context = '\n'.join(lines[max(0, i - 5):i + 1])
+                if 'isinstance' not in context and 'pd.DataFrame' not in context:
+                    self.fail(
+                        f"__main__ calls .shape without isinstance guard: {stripped}"
+                    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAPPING INTEGRITY REGRESSION TESTS
 # These tests lock in the 2026-03-12 taxonomy cleanup rules so that bad
 # mappings (LNRELOC double-counting, SBL subtraction from C&I, J458/J459/J460

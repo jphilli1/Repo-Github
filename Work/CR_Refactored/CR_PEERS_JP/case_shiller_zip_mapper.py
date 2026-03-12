@@ -486,77 +486,59 @@ _HUD_WRAPPER_KEYS = frozenset({"year", "quarter", "input", "crosswalk_type", "re
 def flatten_hud_rows(rows: List[Dict]) -> List[Dict]:
     """Flatten wrapper rows that contain nested ``results`` lists.
 
-    The HUD county-to-ZIP API (type=7) can return a shape like::
+    Processes **each row independently** (not just the first row) and
+    flattens iteratively until no row contains a list-valued ``results``
+    key.  This handles:
 
-        [
-          {"year": 2025, "quarter": 4, "input": "06037",
-           "crosswalk_type": "7", "results": [
-             {"zip": "90001", "county": "06037", "res_ratio": 0.85, ...},
-             {"zip": "90002", "county": "06037", "res_ratio": 0.72, ...}
-           ]},
-          ...
-        ]
+    - Mixed payloads where some rows are wrappers and some are final.
+    - Wrapper rows with extra metadata keys beyond the known set.
+    - Multiple levels of nesting (iterates until fully flat).
 
-    Each element is a *wrapper row* whose ``results`` key holds the actual
-    crosswalk data rows.  This function detects that pattern and explodes the
-    nested lists, propagating parent metadata (year, quarter, input,
-    crosswalk_type) onto each child row where the child does not already
-    carry that key.
-
-    If the rows are already flat data rows (no nested ``results``), they are
-    returned unchanged.
+    Parent metadata is merged into each child row, with child keys taking
+    precedence over parent keys.
     """
     if not rows:
         return rows
 
-    # Quick check: does the first row look like a wrapper?
-    first = rows[0]
-    if not isinstance(first, dict):
+    current = [r for r in rows if isinstance(r, dict)]
+    if not current:
         return rows
 
-    first_keys = set(first.keys())
+    max_passes = 10  # safety limit against infinite loops
+    total_wrappers = 0
 
-    # A row is a wrapper if it has a "results" key whose value is a list
-    # AND its other keys are a subset of the known wrapper keys.
-    has_nested_results = (
-        "results" in first_keys
-        and isinstance(first.get("results"), list)
-        and (first_keys - {"results"}).issubset(_HUD_WRAPPER_KEYS)
-    )
+    for _pass in range(max_passes):
+        # Check if any row still has a list-valued "results"
+        has_nested = any(
+            isinstance(r.get("results"), list) for r in current
+        )
+        if not has_nested:
+            break
 
-    if not has_nested_results:
-        # Already flat data rows — return as-is
-        return rows
+        next_round: List[Dict] = []
+        for row in current:
+            inner = row.get("results")
+            if isinstance(inner, list) and inner:
+                # This row is a wrapper — explode it
+                total_wrappers += 1
+                parent_meta = {k: v for k, v in row.items() if k != "results"}
+                for child in inner:
+                    if isinstance(child, dict):
+                        # Child keys take precedence over parent keys
+                        merged = {**parent_meta, **child}
+                        next_round.append(merged)
+                    # Non-dict children (scalars, etc.) are skipped
+            else:
+                # Already a final row — keep unchanged
+                next_round.append(row)
+        current = next_round
 
-    # Flatten: explode each wrapper row's "results" into individual data rows
-    flat: List[Dict] = []
-    n_wrappers = 0
-    for wrapper in rows:
-        if not isinstance(wrapper, dict):
-            continue
-
-        inner = wrapper.get("results")
-        if not isinstance(inner, list):
-            # Not a wrapper row — keep it
-            flat.append(wrapper)
-            continue
-
-        n_wrappers += 1
-        # Parent metadata to propagate
-        parent_meta = {k: v for k, v in wrapper.items() if k != "results"}
-
-        for child in inner:
-            if not isinstance(child, dict):
-                continue
-            # Merge parent metadata into child (child values take precedence)
-            merged = {**parent_meta, **child}
-            flat.append(merged)
-
-    logger.info(
-        f"flatten_hud_rows: exploded {n_wrappers} wrapper rows → "
-        f"{len(flat)} flat data rows"
-    )
-    return flat
+    if total_wrappers > 0:
+        logger.info(
+            f"flatten_hud_rows: exploded {total_wrappers} wrapper rows → "
+            f"{len(current)} flat data rows (passes={_pass + 1})"
+        )
+    return current
 
 
 # Canonical column name mappings for HUD crosswalk outputs
@@ -579,6 +561,13 @@ def canonicalize_hud_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Canonical fields: zip, county_fips, res_ratio, bus_ratio, oth_ratio, tot_ratio.
     ZIP → 5-char zero-padded.  County FIPS → 5-char zero-padded.
+
+    Also handles **dotted/nested column variants** produced by
+    ``pd.json_normalize()`` — e.g. ``results.zip`` → ``zip``,
+    ``results.county_fips`` → ``county_fips``.
+
+    When both the canonical and dotted version exist, the canonical column
+    is preferred where non-null; gaps are filled from the dotted column.
     """
     if df.empty:
         return df
@@ -587,11 +576,34 @@ def canonicalize_hud_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Lowercase and strip all column names
     df.columns = [c.lower().strip() for c in df.columns]
 
-    # Rename to canonical
+    # --- Dotted/nested variant resolution ---
+    # Strip common prefixes produced by json_normalize (e.g. "results.zip")
+    _DOTTED_PREFIXES = ("results.",)
+    dotted_rename: Dict[str, str] = {}
+    for col in df.columns:
+        for prefix in _DOTTED_PREFIXES:
+            if col.startswith(prefix):
+                bare = col[len(prefix):]
+                # Map through _HUD_COLUMN_MAP to get canonical name
+                canonical = _HUD_COLUMN_MAP.get(bare, bare)
+                dotted_rename[col] = canonical
+                break
+
+    # For each dotted column, merge into canonical (prefer canonical non-null)
+    for dotted_col, canonical in dotted_rename.items():
+        if canonical in df.columns and dotted_col in df.columns:
+            # Fill gaps in canonical from dotted
+            df[canonical] = df[canonical].fillna(df[dotted_col])
+            df = df.drop(columns=[dotted_col])
+        elif dotted_col in df.columns:
+            # No canonical column exists — just rename
+            df = df.rename(columns={dotted_col: canonical})
+
+    # --- Standard rename via _HUD_COLUMN_MAP ---
     rename_map = {}
     for col in df.columns:
         canonical = _HUD_COLUMN_MAP.get(col)
-        if canonical and canonical != col:
+        if canonical and canonical != col and canonical not in df.columns:
             rename_map[col] = canonical
     if rename_map:
         df = df.rename(columns=rename_map)
@@ -607,13 +619,23 @@ def canonicalize_hud_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------------------
+# Query-level outcome — structured result from fetch_hud_crosswalk
+# ---------------------------------------------------------------------------
+QUERY_SUCCESS_ROWS = "SUCCESS_ROWS"
+QUERY_FAILED_PARSE = "FAILED_PARSE"
+QUERY_FAILED_EMPTY_RESPONSE = "FAILED_EMPTY_RESPONSE"
+QUERY_FAILED_HTTP = "FAILED_HTTP"
+QUERY_FAILED_TOKEN_AUTH = "FAILED_TOKEN_AUTH"
+
+
 def fetch_hud_crosswalk(
     query: str = "All",
     crosswalk_type: int = _HUD_TYPE_COUNTY_ZIP,
     year: Optional[int] = None,
     quarter: Optional[int] = None,
     token: Optional[str] = None,
-) -> pd.DataFrame:
+) -> Dict[str, Any]:
     """Fetch HUD USPS ZIP Crosswalk data via REST API.
 
     Parameters
@@ -629,8 +651,19 @@ def fetch_hud_crosswalk(
 
     Returns
     -------
-    pd.DataFrame  with columns normalised to lowercase
+    dict with keys:
+        "dataframe"   — pd.DataFrame (may be empty on failure)
+        "status"      — one of QUERY_* constants
+        "diagnostics" — dict with parse diagnostics
     """
+    def _outcome(status: str, df: pd.DataFrame = None,
+                 diag: Dict = None) -> Dict[str, Any]:
+        return {
+            "dataframe": df if df is not None else pd.DataFrame(),
+            "status": status,
+            "diagnostics": diag or {},
+        }
+
     if not _HAS_REQUESTS:
         raise ImportError("'requests' library is required for HUD API calls")
 
@@ -654,6 +687,12 @@ def fetch_hud_crosswalk(
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             resp = requests.get(HUD_API_BASE, params=params, headers=headers, timeout=120)
+
+            if resp.status_code in (401, 403):
+                diag = {"http_status": resp.status_code, "query": query}
+                logger.error(f"HUD API auth failure for query={query}: HTTP {resp.status_code}")
+                return _outcome(QUERY_FAILED_TOKEN_AUTH, diag=diag)
+
             if resp.status_code == 200:
                 data = resp.json()
 
@@ -661,26 +700,26 @@ def fetch_hud_crosswalk(
                 records = extract_hud_result_rows(data)
                 n_before_flatten = len(records)
 
-                # Step 2: Flatten wrapper rows with nested "results" lists
+                # Step 2: Flatten wrapper rows (row-by-row, recursive)
                 records = flatten_hud_rows(records)
                 n_after_flatten = len(records)
 
-                # Step 3: Log payload diagnostics
+                # Step 3: Build per-query diagnostics
                 diag = _describe_payload(data)
+                diag["query"] = query
                 diag["extracted_row_count_before_flatten"] = n_before_flatten
                 diag["extracted_row_count_after_flatten"] = n_after_flatten
                 if records and isinstance(records[0], dict):
-                    diag["first_row_keys"] = sorted(records[0].keys())
                     diag["has_zip_column"] = any("zip" in k.lower() for k in records[0].keys())
                     diag["has_fips_column"] = bool(
                         set(k.lower() for k in records[0].keys()) &
                         {"county", "county_fips", "geoid", "countyfips", "fips"}
                     )
-                logger.info(f"HUD response parsed: query={query}, diagnostics={diag}")
 
                 if not records:
                     logger.warning(f"HUD API returned empty/unparseable result for query={query}")
-                    return pd.DataFrame()
+                    diag["query_status"] = QUERY_FAILED_EMPTY_RESPONSE
+                    return _outcome(QUERY_FAILED_EMPTY_RESPONSE, diag=diag)
 
                 # Step 4: Normalize nested dicts into flat DataFrame columns
                 try:
@@ -690,29 +729,29 @@ def fetch_hud_crosswalk(
 
                 # Step 5: Canonicalize column names and zero-pad codes
                 df = canonicalize_hud_columns(df)
+                diag["normalized_columns"] = sorted(df.columns.tolist())
 
-                # Verify we have real crosswalk columns, not just wrapper metadata
+                # Verify we have real crosswalk columns
                 actual_cols = set(df.columns)
                 has_zip_col = any("zip" in c for c in actual_cols)
                 has_fips_col = bool(actual_cols & {"county", "county_fips", "geoid", "countyfips", "fips"})
+                diag["has_zip_column"] = has_zip_col
+                diag["has_fips_column"] = has_fips_col
 
                 if actual_cols.issubset(_HUD_WRAPPER_KEYS) or (not has_zip_col and not has_fips_col):
                     logger.error(
                         f"HUD response flattened to wrapper-only columns {sorted(actual_cols)} — "
-                        f"payload contains nested results that could not be fully flattened. "
-                        f"rows_before_flatten={n_before_flatten}, "
-                        f"rows_after_flatten={n_after_flatten}, "
-                        f"has_zip={has_zip_col}, has_fips={has_fips_col}, "
-                        f"payload_shape={_describe_payload(data)}"
+                        f"query={query}, rows_before={n_before_flatten}, rows_after={n_after_flatten}"
                     )
-                    return pd.DataFrame()
+                    diag["query_status"] = QUERY_FAILED_PARSE
+                    return _outcome(QUERY_FAILED_PARSE, diag=diag)
 
                 logger.info(
-                    f"HUD crosswalk fetched: {len(df)} rows, "
-                    f"columns={sorted(df.columns)}, query={query}, "
+                    f"HUD crosswalk fetched: {len(df)} rows, query={query}, "
                     f"has_zip={has_zip_col}, has_fips={has_fips_col}"
                 )
-                return df
+                diag["query_status"] = QUERY_SUCCESS_ROWS
+                return _outcome(QUERY_SUCCESS_ROWS, df=df, diag=diag)
 
             if resp.status_code in (429, 500, 502, 503, 504):
                 logger.warning(f"HUD API {resp.status_code}, retry {attempt}/{_MAX_RETRIES}")
@@ -720,8 +759,9 @@ def fetch_hud_crosswalk(
                     time.sleep(_RETRY_BACKOFF[attempt - 1])
                     continue
             # Non-retryable error
+            diag = {"http_status": resp.status_code, "query": query}
             logger.error(f"HUD API error {resp.status_code}: {resp.text[:500]}")
-            return pd.DataFrame()
+            return _outcome(QUERY_FAILED_HTTP, diag=diag)
 
         except requests.exceptions.RequestException as e:
             logger.warning(f"HUD API request failed (attempt {attempt}): {e}")
@@ -729,9 +769,9 @@ def fetch_hud_crosswalk(
                 time.sleep(_RETRY_BACKOFF[attempt - 1])
                 continue
             logger.error(f"HUD API request failed after {_MAX_RETRIES} attempts")
-            return pd.DataFrame()
+            return _outcome(QUERY_FAILED_HTTP, diag={"query": query, "error": str(e)})
 
-    return pd.DataFrame()
+    return _outcome(QUERY_FAILED_HTTP, diag={"query": query, "error": "max_retries_exhausted"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1115,71 +1155,118 @@ def build_case_shiller_zip_sheets(
     unique_fips = sorted(set(county_map_df["fips"].values))
     logger.info(f"Fetching HUD county-ZIP crosswalk (type=7) for {len(unique_fips)} counties...")
 
+    # --- Per-query fetch with structured outcome tracking ---
     all_xwalk_frames = []
-    http_errors = []
+    query_outcomes: List[Dict[str, Any]] = []  # per-county diagnostics
+    counts = {
+        "success": 0, "failed_parse": 0,
+        "failed_http": 0, "failed_empty": 0, "failed_auth": 0,
+    }
     auth_failed = False
+
     for fips_code in unique_fips:
         try:
-            xwalk = fetch_hud_crosswalk(
+            outcome = fetch_hud_crosswalk(
                 query=fips_code, crosswalk_type=_HUD_TYPE_COUNTY_ZIP,
                 year=year, quarter=quarter, token=tok,
             )
-            if not xwalk.empty:
-                all_xwalk_frames.append(xwalk)
+            qstatus = outcome["status"]
+            qdf = outcome["dataframe"]
+            qdiag = outcome["diagnostics"]
+            query_outcomes.append(qdiag)
+
+            if qstatus == QUERY_SUCCESS_ROWS and not qdf.empty:
+                all_xwalk_frames.append(qdf)
+                counts["success"] += 1
+            elif qstatus == QUERY_FAILED_TOKEN_AUTH:
+                auth_failed = True
+                counts["failed_auth"] += 1
+                break
+            elif qstatus == QUERY_FAILED_PARSE:
+                counts["failed_parse"] += 1
+            elif qstatus == QUERY_FAILED_HTTP:
+                counts["failed_http"] += 1
+            else:
+                counts["failed_empty"] += 1
+
         except EnvironmentError:
             raise  # token missing — should not happen since we checked above
         except Exception as e:
             err_str = str(e).lower()
             if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
                 auth_failed = True
+                counts["failed_auth"] += 1
                 logger.error(f"HUD API auth failure for FIPS {fips_code}: {e}")
                 break
-            http_errors.append((fips_code, str(e)))
+            counts["failed_http"] += 1
+            query_outcomes.append({"query": fips_code, "error": str(e)})
 
+    # --- Orchestration-level diagnostics ---
+    orch_diag = {
+        "county_queries_total": len(unique_fips),
+        "county_queries_success": counts["success"],
+        "county_queries_failed_parse": counts["failed_parse"],
+        "county_queries_failed_http": counts["failed_http"],
+        "county_queries_failed_empty": counts["failed_empty"],
+        "county_queries_failed_auth": counts["failed_auth"],
+        "combined_row_count": sum(len(f) for f in all_xwalk_frames),
+    }
+    logger.info(f"HUD fetch orchestration: {orch_diag}")
+
+    # --- Status classification with proper precedence ---
     if auth_failed:
         logger.error(
             f"HUD API token authentication failed (source={diag['source_used']}, "
             f"prefix={diag['token_prefix_masked']}). Token may be expired or invalid."
         )
         audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_TOKEN_AUTH}"
-        return _result(ENRICH_FAILED_TOKEN_AUTH, diag=diag)
+        orch_diag["final_enrichment_status"] = ENRICH_FAILED_TOKEN_AUTH
+        return _result(ENRICH_FAILED_TOKEN_AUTH, diag={**diag, **orch_diag})
 
-    if http_errors and not all_xwalk_frames:
+    if counts["failed_http"] > 0 and not all_xwalk_frames:
         logger.error(
-            f"All HUD API calls failed ({len(http_errors)} errors). "
-            f"First error: {http_errors[0][1]}"
+            f"All HUD API calls failed ({counts['failed_http']} HTTP errors)."
         )
         audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_HTTP}"
-        return _result(ENRICH_FAILED_HTTP, diag=diag)
+        orch_diag["final_enrichment_status"] = ENRICH_FAILED_HTTP
+        return _result(ENRICH_FAILED_HTTP, diag={**diag, **orch_diag})
 
     if not all_xwalk_frames:
-        logger.error("All HUD county-ZIP crosswalk fetches returned empty — cannot build ZIP coverage")
-        audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_EMPTY_RESPONSE}"
-        return _result(ENRICH_FAILED_EMPTY_RESPONSE, diag=diag)
+        # All empty — classify reason correctly
+        if counts["failed_parse"] > 0:
+            # At least one county had a parse failure → FAILED_PARSE, not EMPTY
+            logger.error(
+                f"All HUD county queries returned empty. "
+                f"{counts['failed_parse']} had FAILED_PARSE — "
+                f"classifying as FAILED_PARSE (not FAILED_EMPTY_RESPONSE)."
+            )
+            audit_df["comments"] = (
+                audit_df["comments"] + f" | {ENRICH_FAILED_PARSE} "
+                f"({counts['failed_parse']} parse failures)"
+            )
+            orch_diag["final_enrichment_status"] = ENRICH_FAILED_PARSE
+            return _result(ENRICH_FAILED_PARSE, diag={**diag, **orch_diag})
+        else:
+            logger.error("All HUD county-ZIP crosswalk fetches returned empty — cannot build ZIP coverage")
+            audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_EMPTY_RESPONSE}"
+            orch_diag["final_enrichment_status"] = ENRICH_FAILED_EMPTY_RESPONSE
+            return _result(ENRICH_FAILED_EMPTY_RESPONSE, diag={**diag, **orch_diag})
 
     combined_xwalk = pd.concat(all_xwalk_frames, ignore_index=True)
-    logger.info(f"Combined HUD crosswalk: {len(combined_xwalk)} total rows from {len(all_xwalk_frames)} counties")
+    logger.info(f"Combined HUD crosswalk: {len(combined_xwalk)} total rows from {counts['success']} counties")
 
-    # --- PARSE VALIDATION ---
-    # Verify combined frame has usable crosswalk columns, not just wrapper metadata
+    # --- PARSE VALIDATION on combined frame ---
     actual_cols = set(combined_xwalk.columns)
     has_zip = any("zip" in c for c in actual_cols)
     has_fips = bool(actual_cols & {"county", "county_fips", "geoid", "countyfips", "fips"})
 
     if (not has_zip and not has_fips) or actual_cols.issubset(_HUD_WRAPPER_KEYS):
-        parse_diag = {
-            "columns_found": sorted(actual_cols),
-            "row_count": len(combined_xwalk),
-            "has_zip_column": has_zip,
-            "has_fips_column": has_fips,
-        }
         logger.error(
-            f"HUD response parsed but lacks usable ZIP/FIPS columns. "
-            f"This indicates the response payload was not flattened correctly. "
-            f"Diagnostics: {parse_diag}"
+            f"Combined HUD frame lacks usable ZIP/FIPS columns: {sorted(actual_cols)}"
         )
         audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_PARSE}"
-        return _result(ENRICH_FAILED_PARSE, diag=diag)
+        orch_diag["final_enrichment_status"] = ENRICH_FAILED_PARSE
+        return _result(ENRICH_FAILED_PARSE, diag={**diag, **orch_diag})
 
     # Build coverage
     coverage_df = build_case_shiller_zip_coverage(combined_xwalk, county_map_df)
@@ -1199,7 +1286,6 @@ def build_case_shiller_zip_sheets(
 
     # Determine final status
     if coverage_df.empty:
-        # Distinguish: HUD rows existed but nothing matched county map
         if len(combined_xwalk) > 0 and has_fips:
             status = ENRICH_SUCCESS_NO_MATCHES
             logger.warning(
@@ -1209,9 +1295,14 @@ def build_case_shiller_zip_sheets(
         else:
             status = ENRICH_SUCCESS_NO_ZIPS
             logger.warning("HUD API responded but produced zero ZIP coverage rows")
+        # If no coverage and parse failures existed, audit should not mislead
+        if counts["failed_parse"] > 0:
+            audit_df["comments"] = (
+                audit_df["comments"] +
+                f" | WARNING: {counts['failed_parse']} counties had parse failures"
+            )
     else:
         status = ENRICH_SUCCESS_WITH_ZIPS
-        # Downstream write validation
         zip_coverage_count = len(coverage_df)
         zip_summary_count = len(summary_df)
         metro_count = coverage_df["case_shiller_region"].nunique() if "case_shiller_region" in coverage_df.columns else 0
@@ -1223,7 +1314,8 @@ def build_case_shiller_zip_sheets(
             f"validation_issues={len(issues)}"
         )
 
-    return _result(status, cov=coverage_df, summ=summary_df, diag=diag)
+    orch_diag["final_enrichment_status"] = status
+    return _result(status, cov=coverage_df, summ=summary_df, diag={**diag, **orch_diag})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1241,17 +1333,23 @@ if __name__ == "__main__":
         sys.exit(1)
 
     sheets = build_case_shiller_zip_sheets(token=token)
-    for name, df in sheets.items():
-        print(f"\n{name}: {df.shape}")
-        if not df.empty:
-            print(df.head(3).to_string(index=False))
 
-    # Optionally write to Excel
+    # Print results — handle both DataFrames and metadata values safely
+    for name, value in sheets.items():
+        if isinstance(value, pd.DataFrame):
+            print(f"\n{name}: {value.shape}")
+            if not value.empty:
+                print(value.head(3).to_string(index=False))
+        else:
+            # Metadata values (enrichment_status, token_diagnostics, etc.)
+            print(f"\n{name}: {value}")
+
+    # Optionally write DataFrames to Excel
     out_path = "case_shiller_zip_coverage_test.xlsx"
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        for name, df in sheets.items():
-            if not df.empty:
-                df.to_excel(writer, sheet_name=name[:31], index=False)
+        for name, value in sheets.items():
+            if isinstance(value, pd.DataFrame) and not value.empty:
+                value.to_excel(writer, sheet_name=name[:31], index=False)
     print(f"\nWritten to: {out_path}")
 
 
