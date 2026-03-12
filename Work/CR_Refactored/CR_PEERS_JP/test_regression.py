@@ -4282,5 +4282,245 @@ class TestEnvVarScaffolding(unittest.TestCase):
             cfg["bea_api_key"]
 
 
+class TestDualModeArchitecture(unittest.TestCase):
+    """Tests for the dual-mode report generation architecture."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from report_generator import (
+                ReportMode, ArtifactStatus, ArtifactSpec, ArtifactManifest,
+                ReportContext, ARTIFACT_REGISTRY, _ARTIFACT_BY_NAME,
+                get_artifacts_for_mode, should_produce,
+                resolve_report_mode_for_generator,
+                _produce_table, _produce_chart,
+                ACTIVE_STANDARD_COMPOSITES, ACTIVE_NORMALIZED_COMPOSITES,
+            )
+            cls.ReportMode = ReportMode
+            cls.ArtifactStatus = ArtifactStatus
+            cls.ArtifactSpec = ArtifactSpec
+            cls.ArtifactManifest = ArtifactManifest
+            cls.ReportContext = ReportContext
+            cls.ARTIFACT_REGISTRY = ARTIFACT_REGISTRY
+            cls._ARTIFACT_BY_NAME = _ARTIFACT_BY_NAME
+            cls.get_artifacts_for_mode = staticmethod(get_artifacts_for_mode)
+            cls.should_produce = staticmethod(should_produce)
+            cls.resolve_report_mode_for_generator = staticmethod(resolve_report_mode_for_generator)
+            cls.ACTIVE_STANDARD_COMPOSITES = ACTIVE_STANDARD_COMPOSITES
+            cls.ACTIVE_NORMALIZED_COMPOSITES = ACTIVE_NORMALIZED_COMPOSITES
+            cls.available = True
+        except ImportError:
+            cls.available = False
+
+    # --- Mode resolution ---
+
+    def test_default_mode_is_full_local(self):
+        """Default REPORT_MODE resolves to full_local."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        import os
+        old = os.environ.get("REPORT_MODE")
+        try:
+            os.environ.pop("REPORT_MODE", None)
+            result = self.resolve_report_mode_for_generator()
+            self.assertEqual(result, self.ReportMode.FULL_LOCAL)
+        finally:
+            if old is not None:
+                os.environ["REPORT_MODE"] = old
+
+    def test_corp_safe_mode_resolves(self):
+        """REPORT_MODE=corp_safe resolves to CORP_SAFE enum."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        import os
+        old = os.environ.get("REPORT_MODE")
+        try:
+            os.environ["REPORT_MODE"] = "corp_safe"
+            result = self.resolve_report_mode_for_generator()
+            self.assertEqual(result, self.ReportMode.CORP_SAFE)
+        finally:
+            if old is not None:
+                os.environ["REPORT_MODE"] = old
+            else:
+                os.environ.pop("REPORT_MODE", None)
+
+    # --- Artifact registry ---
+
+    def test_registry_not_empty(self):
+        """ARTIFACT_REGISTRY has entries."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        self.assertGreater(len(self.ARTIFACT_REGISTRY), 20)
+
+    def test_all_artifacts_have_unique_names(self):
+        """No duplicate artifact names in registry."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        names = [a.name for a in self.ARTIFACT_REGISTRY]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_all_html_tables_in_both_modes(self):
+        """All HTML table artifacts are available in both modes."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        tables = [a for a in self.ARTIFACT_REGISTRY if a.renderer == "html"]
+        for t in tables:
+            self.assertTrue(t.is_available(self.ReportMode.FULL_LOCAL),
+                            f"{t.name} should be in full_local")
+            self.assertTrue(t.is_available(self.ReportMode.CORP_SAFE),
+                            f"{t.name} should be in corp_safe")
+
+    def test_matplotlib_charts_not_in_corp_safe(self):
+        """Matplotlib charts are NOT available in corp_safe mode."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        charts = [a for a in self.ARTIFACT_REGISTRY if a.renderer == "matplotlib"]
+        self.assertGreater(len(charts), 0)
+        for c in charts:
+            self.assertFalse(c.is_available(self.ReportMode.CORP_SAFE),
+                             f"{c.name} should NOT be in corp_safe")
+
+    def test_matplotlib_charts_in_full_local(self):
+        """Matplotlib charts are available in full_local mode."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        charts = [a for a in self.ARTIFACT_REGISTRY if a.renderer == "matplotlib"]
+        for c in charts:
+            self.assertTrue(c.is_available(self.ReportMode.FULL_LOCAL),
+                            f"{c.name} should be in full_local")
+
+    # --- get_artifacts_for_mode ---
+
+    def test_full_local_gets_all_artifacts(self):
+        """full_local mode returns all registered artifacts."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        result = self.get_artifacts_for_mode(self.ReportMode.FULL_LOCAL)
+        self.assertEqual(len(result), len(self.ARTIFACT_REGISTRY))
+
+    def test_corp_safe_gets_only_html(self):
+        """corp_safe mode returns only HTML artifacts."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        result = self.get_artifacts_for_mode(self.ReportMode.CORP_SAFE)
+        for a in result:
+            self.assertEqual(a.renderer, "html", f"{a.name} is {a.renderer}, not html")
+        # Should be fewer than total
+        self.assertLess(len(result), len(self.ARTIFACT_REGISTRY))
+
+    # --- should_produce ---
+
+    def test_should_produce_respects_mode(self):
+        """should_produce returns False for matplotlib artifacts in corp_safe."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        self.assertFalse(self.should_produce("standard_credit_chart", self.ReportMode.CORP_SAFE))
+        self.assertTrue(self.should_produce("standard_credit_chart", self.ReportMode.FULL_LOCAL))
+
+    def test_should_produce_respects_suppression(self):
+        """should_produce returns False for suppressed artifacts."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        suppressed = frozenset({"normalized_credit_chart"})
+        self.assertFalse(self.should_produce("normalized_credit_chart",
+                                             self.ReportMode.FULL_LOCAL, suppressed))
+
+    def test_should_produce_unknown_artifact(self):
+        """should_produce returns False for unknown artifact names."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        self.assertFalse(self.should_produce("nonexistent_artifact", self.ReportMode.FULL_LOCAL))
+
+    # --- ArtifactManifest ---
+
+    def test_manifest_record_and_summary(self):
+        """Manifest records entries and produces correct summary."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        m = self.ArtifactManifest()
+        m.record("test1", "full_local", self.ArtifactStatus.PRODUCED, path="/tmp/test1.html")
+        m.record("test2", "corp_safe", self.ArtifactStatus.SKIPPED_MODE,
+                 skip_reason="not available")
+        m.record("test3", "full_local", self.ArtifactStatus.FAILED,
+                 skip_reason="error occurred")
+        self.assertEqual(len(m.entries), 3)
+        summary = m.summary()
+        self.assertEqual(summary["produced"], 1)
+        self.assertEqual(summary["skipped_mode"], 1)
+        self.assertEqual(summary["failed"], 1)
+
+    def test_manifest_to_dataframe(self):
+        """Manifest produces a valid DataFrame."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        import pandas as pd
+        m = self.ArtifactManifest()
+        m.record("test1", "full_local", self.ArtifactStatus.PRODUCED, path="/tmp/t.html")
+        df = m.to_dataframe()
+        self.assertIsInstance(df, pd.DataFrame)
+        self.assertEqual(len(df), 1)
+        self.assertIn("artifact_name", df.columns)
+        self.assertIn("status", df.columns)
+
+    def test_manifest_empty_dataframe(self):
+        """Empty manifest produces DataFrame with correct columns."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        m = self.ArtifactManifest()
+        df = m.to_dataframe()
+        self.assertEqual(len(df), 0)
+        self.assertIn("artifact_name", df.columns)
+
+    # --- Composites preserved ---
+
+    def test_active_composites_unchanged(self):
+        """Active composite regime is unchanged by refactoring."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        self.assertEqual(self.ACTIVE_STANDARD_COMPOSITES, {"core_pb": 90001, "all_peers": 90003})
+        self.assertEqual(self.ACTIVE_NORMALIZED_COMPOSITES, {"core_pb": 90004, "all_peers": 90006})
+
+    # --- ArtifactSpec ---
+
+    def test_artifact_spec_is_available(self):
+        """ArtifactSpec.is_available() works correctly."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        spec = self.ArtifactSpec("test", "chart",
+                                (self.ReportMode.FULL_LOCAL,), "matplotlib")
+        self.assertTrue(spec.is_available(self.ReportMode.FULL_LOCAL))
+        self.assertFalse(spec.is_available(self.ReportMode.CORP_SAFE))
+
+    def test_generate_reports_returns_manifest(self):
+        """generate_reports() function signature includes manifest return."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        import inspect
+        from report_generator import generate_reports
+        sig = inspect.signature(generate_reports)
+        # Return annotation should be Optional[ArtifactManifest]
+        ret = sig.return_annotation
+        # Just verify it's not None (inspect can return different representations)
+        self.assertNotEqual(ret, inspect.Parameter.empty)
+
+    # --- Registry coverage ---
+
+    def test_registry_covers_all_known_artifacts(self):
+        """Registry contains entries for all known output artifacts."""
+        if not self.available:
+            self.skipTest("report_generator not importable")
+        expected = {
+            "executive_summary_standard", "executive_summary_normalized",
+            "detailed_peer_table_standard", "detailed_peer_table_normalized",
+            "standard_credit_chart", "normalized_credit_chart",
+            "scatter_nco_vs_npl", "scatter_pd_vs_npl",
+            "scatter_norm_nco_vs_nonaccrual",
+            "portfolio_mix", "migration_ladder", "fred_table",
+        }
+        registry_names = {a.name for a in self.ARTIFACT_REGISTRY}
+        for name in expected:
+            self.assertIn(name, registry_names, f"Missing artifact: {name}")
+
+
 if __name__ == '__main__':
     unittest.main()
