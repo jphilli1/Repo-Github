@@ -58,8 +58,18 @@ python report_generator.py
 | `HUD_CROSSWALK_YEAR` | Optional crosswalk vintage year | `2025` |
 | `HUD_CROSSWALK_QUARTER` | Optional crosswalk vintage quarter (1-4) | `4` |
 | `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` | Enable/disable ZIP enrichment (default `true`) | `true` or `false` |
+| `REPORT_MODE` | Render mode for report_generator (canonical). Values: `full_local`, `corp_safe` | `full_local` |
+| `REPORT_RENDER_MODE` | Backward-compatible alias for `REPORT_MODE` | `full_local` |
+| `BEA_API_KEY` | BEA API authentication (canonical, optional) | `export BEA_API_KEY='abc'` |
+| `BEA_USER_ID` | Backward-compatible alias for `BEA_API_KEY` | `export BEA_USER_ID='abc'` |
+| `CENSUS_API_KEY` | Census API authentication (optional) | `export CENSUS_API_KEY='abc'` |
 
 These can be set in a `.env` file in the project root or exported in the shell.
+
+**Env var alias resolution priority:**
+- Render mode: explicit arg → `REPORT_MODE` → `REPORT_RENDER_MODE` → `full_local` (default)
+- BEA key: `BEA_API_KEY` → `BEA_USER_ID` → `None` (optional, no force-fail)
+- Census key: `CENSUS_API_KEY` → `None` (optional, no force-fail)
 
 ### Key Dependencies
 
@@ -210,7 +220,7 @@ Each script produces its own CSV log file in `logs/`, reset (overwritten) each r
 
 ### Overview
 
-`report_generator.py` supports two rendering modes, controlled by the `render_mode` parameter or the `REPORT_RENDER_MODE` environment variable:
+`report_generator.py` supports two rendering modes, controlled by the `render_mode` parameter or the `REPORT_MODE` environment variable (with `REPORT_RENDER_MODE` as a backward-compatible alias):
 
 | Mode | Description | Default? |
 |---|---|---|
@@ -220,8 +230,9 @@ Each script produces its own CSV log file in `logs/`, reset (overwritten) each r
 ### Mode Selection Priority
 
 1. Explicit `render_mode` argument to `generate_reports()`
-2. `REPORT_RENDER_MODE` environment variable
-3. Default: `full_local`
+2. `REPORT_MODE` environment variable (canonical)
+3. `REPORT_RENDER_MODE` environment variable (backward-compatible alias)
+4. Default: `full_local`
 
 ### Key Modules
 
@@ -275,6 +286,10 @@ python report_generator.py full_local
 python report_generator.py corp_safe
 
 # Via environment variable
+export REPORT_MODE=corp_safe
+python report_generator.py
+
+# Or via backward-compatible alias
 export REPORT_RENDER_MODE=corp_safe
 python report_generator.py
 ```
@@ -627,6 +642,26 @@ to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Architecture Reconciliation (Merge Conflict Resolution)
+
+**Mandatory cleanup**: Resolved all merge conflicts and made `rendering_mode.py` the single canonical home for render abstractions.
+
+**Changes:**
+
+1. **report_generator.py** — Resolved 7 merge conflicts (scatter plots, segment/roadmap charts, FRED expansion charts, executive charts, tables). Removed ~230 lines of duplicate local abstractions (`ReportMode`, `ArtifactStatus`, `ArtifactSpec`, `ManifestEntry`, `ArtifactManifest`, `ReportContext`, `resolve_report_mode_for_generator()`, local `ARTIFACT_REGISTRY`, `_ARTIFACT_BY_NAME`, `get_artifacts_for_mode()`, local `should_produce()`). All render types now imported from `rendering_mode.py`. Added `_ReportContext` (lightweight internal dataclass) and `_produce_table()`/`_produce_chart()` DRY helpers. Fixed manifest API from stale `manifest.record()` to canonical `record_generated()`/`record_skipped()`/`record_failed()`. Fixed FRED expansion preflight to use `is_artifact_available()` (side-effect-free) instead of `should_produce()`.
+
+2. **rendering_mode.py** — Already canonical. Added `is_artifact_available()` for side-effect-free availability checks, `ArtifactCapability.filename_suffix` field with auto-generation in `_reg()`, and backward-compatible `REPORT_RENDER_MODE` alias in `select_mode()`.
+
+3. **test_regression.py** — Resolved 1 merge conflict. Replaced broken `TestDualModeArchitecture` (imported removed local types) with 3 new test classes (25 tests): `TestCanonicalRenderingArchitecture` (no merge conflicts, no duplicate abstractions, canonical imports, correct manifest API), `TestCanonicalModeResolution` (REPORT_MODE resolution, REPORT_RENDER_MODE alias, explicit override, invalid raises, active composites), `TestArtifactRegistryCanonical` (registry coverage, mode availability, manifest API, should_produce records skips, is_artifact_available no side effects).
+
+4. **CLAUDE.md** — Updated env var table (added REPORT_MODE, REPORT_RENDER_MODE, BEA_API_KEY, BEA_USER_ID, CENSUS_API_KEY). Updated mode selection priority (4-level: explicit → REPORT_MODE → REPORT_RENDER_MODE → default). Documented alias resolution rules. Added changelog.
+
+**Deferred work:**
+- Executive charts (`_produce_chart` DRY conversion) — currently use inline `should_produce` + manual manifest calls. Works correctly but not as DRY as scatter/segment/roadmap charts.
+- `_produce_chart` does not yet handle all chart function signatures uniformly (some take `proc_df_with_peers, subject_bank_cert`, others take `fred_expansion_df`).
+
+**Files changed:** `report_generator.py`, `rendering_mode.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Normalized Segment Taxonomy Alignment
 
