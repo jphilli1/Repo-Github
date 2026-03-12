@@ -212,8 +212,10 @@ _reg("yoy_heatmap_normalized", ArtifactAvailability.BOTH, "table",
      "YoY directional heatmap (normalized metrics)")
 _reg("kri_bullet_standard", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "KRI bullet chart — standard metrics (MSPBNA vs peer range)")
-_reg("kri_bullet_normalized", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "KRI bullet chart — normalized metrics (MSPBNA vs norm peer range)")
+_reg("kri_bullet_normalized_rates", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "KRI bullet chart — normalized rate metrics (MSPBNA vs norm peer range)")
+_reg("kri_bullet_normalized_composition", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "KRI bullet chart — normalized composition metrics (MSPBNA vs norm peer range)")
 _reg("sparkline_summary", ArtifactAvailability.BOTH, "table",
      "Sparkline-enhanced summary table with trailing 8Q trends")
 

@@ -359,6 +359,18 @@ BULLET_METRICS_NORMALIZED = [
     "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
 ]
 
+# Split normalized metrics into rates vs composition for separate charts
+BULLET_METRICS_NORMALIZED_RATES = [
+    "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+    "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+]
+
+BULLET_METRICS_NORMALIZED_COMPOSITION = [
+    "Norm_SBL_Composition", "Norm_Wealth_Resi_Composition",
+    "Norm_CRE_Investment_Composition",
+    "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+]
+
 # Backward-compatible alias (points to standard list)
 BULLET_METRICS = BULLET_METRICS_STANDARD
 
@@ -371,6 +383,7 @@ def generate_kri_bullet_chart(
     metrics: Optional[List[str]] = None,
     is_normalized: bool = False,
     save_path: Optional[str] = None,
+    title_override: Optional[str] = None,
 ) -> Optional["plt.Figure"]:
     """Generate a horizontal bullet / football-field chart.
 
@@ -404,7 +417,10 @@ def generate_kri_bullet_chart(
         return float(row[col].iloc[0]) if not row.empty and pd.notna(row[col].iloc[0]) else np.nan
 
     # Build chart data
+    # ref_markers tracks metrics where only one comparator is available:
+    #   index → x-value of the single available comparator (drawn as thin marker)
     labels, subj_vals, lo_vals, hi_vals = [], [], [], []
+    ref_markers: Dict[int, float] = {}
     for code in metrics:
         sem = get_semantic(code)
         label = sem.display_name if sem else code.replace("_", " ")
@@ -413,10 +429,25 @@ def generate_kri_bullet_chart(
         av = _val(all_peers_cert, code)
         if pd.isna(sv):
             continue
-        labels.append(label)
-        subj_vals.append(sv)
-        lo_vals.append(min(wv, av) if pd.notna(wv) and pd.notna(av) else sv)
-        hi_vals.append(max(wv, av) if pd.notna(wv) and pd.notna(av) else sv)
+        both_present = pd.notna(wv) and pd.notna(av)
+        one_present = pd.notna(wv) or pd.notna(av)
+        if both_present:
+            # Normal case: gray band between the two comparators
+            labels.append(label)
+            subj_vals.append(sv)
+            lo_vals.append(min(wv, av))
+            hi_vals.append(max(wv, av))
+        elif one_present:
+            # Single comparator: thin reference marker (NOT collapse to subject)
+            single_val = wv if pd.notna(wv) else av
+            labels.append(label)
+            subj_vals.append(sv)
+            lo_vals.append(single_val)
+            hi_vals.append(single_val)
+            ref_markers[len(labels) - 1] = single_val
+        else:
+            # Neither comparator available: skip this metric row entirely
+            continue
 
     if not labels:
         print("  Skipped KRI bullet chart: all values N/A")
@@ -430,11 +461,17 @@ def generate_kri_bullet_chart(
     y = np.arange(n)
     bar_height = 0.35
 
-    # Peer range bands (gray)
+    # Peer range bands (gray) or thin reference markers (single comparator)
     for i in range(n):
         lo, hi = lo_vals[i], hi_vals[i]
-        ax.barh(y[i], hi - lo, left=lo, height=bar_height * 2,
-                color="#D0D0D0", alpha=0.6, edgecolor="#B0B0B0", linewidth=0.5)
+        if i in ref_markers:
+            # Single comparator: thin vertical reference line
+            ax.plot([ref_markers[i], ref_markers[i]],
+                    [y[i] - bar_height, y[i] + bar_height],
+                    color="#808080", linewidth=2.0, zorder=3)
+        else:
+            ax.barh(y[i], hi - lo, left=lo, height=bar_height * 2,
+                    color="#D0D0D0", alpha=0.6, edgecolor="#B0B0B0", linewidth=0.5)
 
     # MSPBNA markers (gold diamonds)
     ax.scatter(subj_vals, y, s=120, color="#F7A81B", edgecolor="black",
@@ -456,9 +493,13 @@ def generate_kri_bullet_chart(
     ax.set_yticklabels(labels, fontsize=10)
     ax.invert_yaxis()
     ax.set_xlabel("Metric Value", fontsize=11, fontweight="bold")
-    norm_label = "Normalized" if is_normalized else "Standard"
-    ax.set_title(f"Key Risk Indicators — MSPBNA vs Peer Range ({norm_label})",
-                 fontsize=16, fontweight="bold", color="#2B2B2B", pad=15)
+    if title_override:
+        ax.set_title(title_override,
+                     fontsize=16, fontweight="bold", color="#2B2B2B", pad=15)
+    else:
+        norm_label = "Normalized" if is_normalized else "Standard"
+        ax.set_title(f"Key Risk Indicators — MSPBNA vs Peer Range ({norm_label})",
+                     fontsize=16, fontweight="bold", color="#2B2B2B", pad=15)
     for sp in ["top", "right"]:
         ax.spines[sp].set_visible(False)
     ax.grid(True, axis="x", alpha=0.3)
@@ -473,6 +514,10 @@ def generate_kri_bullet_chart(
               label="Wealth Peers Norm ↔ All Peers Norm" if is_normalized
               else "Wealth Peers ↔ All Peers"),
     ]
+    if ref_markers:
+        legend_elements.append(
+            Line2D([0], [0], color="#808080", linewidth=2.0,
+                   label="Single Comparator Ref."))
     ax.legend(handles=legend_elements, loc="lower right", frameon=True, fontsize=9)
 
     plt.tight_layout()
