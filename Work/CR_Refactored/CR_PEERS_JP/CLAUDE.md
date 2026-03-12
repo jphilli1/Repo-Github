@@ -58,6 +58,12 @@ python report_generator.py
 | `HUD_CROSSWALK_YEAR` | Optional crosswalk vintage year | `2025` |
 | `HUD_CROSSWALK_QUARTER` | Optional crosswalk vintage quarter (1-4) | `4` |
 | `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` | Enable/disable ZIP enrichment (default `true`) | `true` or `false` |
+| `BEA_API_KEY` | BEA API authentication (optional, for future BEA enrichment) | `export BEA_API_KEY='...'` |
+| `BEA_USER_ID` | Alias for `BEA_API_KEY` (fallback if `BEA_API_KEY` not set) | `export BEA_USER_ID='...'` |
+| `CENSUS_API_KEY` | Census API authentication (optional, for future Census enrichment) | `export CENSUS_API_KEY='...'` |
+| `REPORT_MODE` | Reporting mode: `full_local` (default) or `corp_safe` | `full_local` |
+| `ENABLE_BEA_ENRICHMENT` | Feature flag for future BEA enrichment (default disabled) | `true` or `false` |
+| `ENABLE_CENSUS_ENRICHMENT` | Feature flag for future Census enrichment (default disabled) | `true` or `false` |
 
 These can be set in a `.env` file in the project root or exported in the shell.
 
@@ -299,6 +305,34 @@ Every ratio-component row label **must** match its denominator type:
 
 Dict-style access (`config["key"]`, `config.get("key")`) will raise `TypeError` on `DashboardConfig` and is forbidden.
 
+### ENV VAR SCAFFOLDING — BEA, CENSUS, REPORT MODE
+
+Three resolver functions in `MSPBNA_CR_Normalized.py` provide import-safe env var access:
+
+| Function | Env Vars | Behavior |
+|---|---|---|
+| `resolve_bea_api_key()` | `BEA_API_KEY`, `BEA_USER_ID` | Returns key or None; `BEA_API_KEY` takes priority over `BEA_USER_ID` alias |
+| `resolve_census_api_key()` | `CENSUS_API_KEY` | Returns key or None |
+| `resolve_report_mode()` | `REPORT_MODE` | Returns `"full_local"` (default) or `"corp_safe"`; raises `ValueError` on invalid |
+
+**DashboardConfig fields** added:
+- `bea_api_key: Optional[str] = None` — populated by `resolve_bea_api_key()` in `load_config()`
+- `census_api_key: Optional[str] = None` — populated by `resolve_census_api_key()` in `load_config()`
+- `report_mode: str = "full_local"` — populated by `resolve_report_mode()` in `load_config()`
+
+**These are scaffolding only.** No business logic consumes them yet. They exist so future enrichment features can access API keys via `config.bea_api_key` (attribute access, never dict-style).
+
+### FEATURE FLAGS
+
+`is_feature_enabled(flag_name)` checks env vars for opt-in feature toggles. Registered flags live in `_FEATURE_FLAG_DEFAULTS`:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `ENABLE_BEA_ENRICHMENT` | `False` | Future BEA GDP/income enrichment |
+| `ENABLE_CENSUS_ENRICHMENT` | `False` | Future Census demographic enrichment |
+
+Truthy values: `1`, `true`, `yes`, `y` (case-insensitive). Unknown flags return `False` with a warning. New features **must** register their flag in `_FEATURE_FLAG_DEFAULTS` before using `is_feature_enabled()`.
+
 ### CHARTING STYLES
 
 All charts must use this color palette consistently:
@@ -511,6 +545,19 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Architectural Preflight Scaffolding
+
+**Purpose**: Create shared scaffolding for future BEA/Census enrichment, two-mode reporting, and feature flags without changing existing business logic.
+
+**Changes**:
+1. **MSPBNA_CR_Normalized.py** — Added `resolve_bea_api_key()`, `resolve_census_api_key()`, `resolve_report_mode()`, `is_feature_enabled()`, `VALID_REPORT_MODES`, `_FEATURE_FLAG_DEFAULTS`. Extended `DashboardConfig` with `bea_api_key`, `census_api_key`, `report_mode` fields. Updated `load_config()` to populate new fields. Updated `_validate_runtime_env()` to log scaffolding status.
+2. **test_regression.py** — Added `TestEnvVarScaffolding` class with 18 tests covering BEA key resolution (primary, fallback, priority, unset), Census key resolution, report mode (default, valid, invalid), feature flags (default, enabled, unknown), and DashboardConfig field validation.
+3. **CLAUDE.md** — Added env var table entries, new convention sections for ENV VAR SCAFFOLDING and FEATURE FLAGS, changelog entry.
+
+**No behavioral changes**: All existing composites, metrics, charts, and peer groups are unchanged.
+
+**Test baseline**: 264 tests (previous 246 + 18 new). 10 pre-existing errors (missing matplotlib/aiohttp), 20 skipped (2 pre-existing + 18 new due to missing aiohttp in CI).
 
 ### 2026-03-12 — HUD Response Two-Pass Flattening Fix
 

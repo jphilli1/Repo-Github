@@ -172,6 +172,68 @@ MS_COMBINED_CERT = int(os.getenv("MS_COMBINED_CERT", "88888"))
 COMPOSITE_METHOD = os.getenv("COMPOSITE_METHOD", "").lower() or None
 MIN_PEER_MEMBERS = int(os.getenv("MIN_PEER_MEMBERS", "2"))
 
+# ---------------------------------------------------------------------------
+# External API key scaffolding — resolved at runtime, not import time.
+# BEA_API_KEY is the canonical name; BEA_USER_ID is accepted as a fallback
+# alias because the BEA documentation uses both interchangeably.
+# ---------------------------------------------------------------------------
+def resolve_bea_api_key() -> Optional[str]:
+    """Resolve BEA API key from environment with alias fallback.
+
+    Checks BEA_API_KEY first, falls back to BEA_USER_ID.
+    Returns None if neither is set (not an error — BEA features are optional).
+    """
+    return os.getenv("BEA_API_KEY") or os.getenv("BEA_USER_ID") or None
+
+def resolve_census_api_key() -> Optional[str]:
+    """Resolve Census API key from environment.
+
+    Returns None if not set (not an error — Census features are optional).
+    """
+    return os.getenv("CENSUS_API_KEY") or None
+
+# ---------------------------------------------------------------------------
+# Reporting mode — controls which outputs are generated.
+#   "full_local"  — all outputs including local-only artifacts (default)
+#   "corp_safe"   — only outputs safe for corporate distribution
+# ---------------------------------------------------------------------------
+VALID_REPORT_MODES = frozenset({"full_local", "corp_safe"})
+
+def resolve_report_mode() -> str:
+    """Resolve reporting mode from REPORT_MODE env var.
+
+    Returns 'full_local' (default) or 'corp_safe'.
+    Raises ValueError for unrecognized modes.
+    """
+    raw = os.getenv("REPORT_MODE", "full_local").strip().lower()
+    if raw not in VALID_REPORT_MODES:
+        raise ValueError(
+            f"Invalid REPORT_MODE={raw!r}. Must be one of: {sorted(VALID_REPORT_MODES)}"
+        )
+    return raw
+
+# ---------------------------------------------------------------------------
+# Feature flags — opt-in toggles for future optional capabilities.
+# Each flag defaults to disabled. The flag name is the env var name.
+# ---------------------------------------------------------------------------
+_FEATURE_FLAG_DEFAULTS: Dict[str, bool] = {
+    "ENABLE_BEA_ENRICHMENT": False,
+    "ENABLE_CENSUS_ENRICHMENT": False,
+}
+
+def is_feature_enabled(flag_name: str) -> bool:
+    """Check if a feature flag is enabled via environment variable.
+
+    Recognized truthy values: '1', 'true', 'yes', 'y' (case-insensitive).
+    Unrecognized flag names return False with a warning.
+    """
+    if flag_name not in _FEATURE_FLAG_DEFAULTS:
+        import warnings
+        warnings.warn(f"Unknown feature flag: {flag_name!r}", stacklevel=2)
+        return False
+    val = os.getenv(flag_name, "").strip().lower()
+    return val in {"1", "true", "yes", "y"}
+
 # ==================================================================================
 #  1. SCRIPT CONFIGURATION & SETUP
 # ==================================================================================
@@ -231,6 +293,14 @@ def _validate_runtime_env() -> Optional[str]:
             "Or create a .env file in the script directory with those values."
         )
 
+    # Log scaffolding env var status (informational, never errors)
+    _bea = resolve_bea_api_key()
+    _census = resolve_census_api_key()
+    _mode = resolve_report_mode()
+    print(f"BEA_API_KEY configured: {_bea is not None}")
+    print(f"CENSUS_API_KEY configured: {_census is not None}")
+    print(f"REPORT_MODE: {_mode}")
+
     return hud_token
 
 @dataclass
@@ -245,6 +315,10 @@ class DashboardConfig:
     fdic_api_base: str = "https://banks.data.fdic.gov/api"
     fred_api_base: str = "https://api.stlouisfed.org/fred"
     hud_user_token: Optional[str] = None
+    # --- New scaffolding fields (optional, default None / "full_local") ---
+    bea_api_key: Optional[str] = None
+    census_api_key: Optional[str] = None
+    report_mode: str = "full_local"
 
 # ==================================================================================
 #  2. GLOBAL DATA DICTIONARIES & CONSTANTS
@@ -6530,7 +6604,10 @@ def load_config() -> DashboardConfig:
     return DashboardConfig(
         fred_api_key=fred_api_key,
         subject_bank_cert=subject_cert,
-        peer_bank_certs=peer_certs
+        peer_bank_certs=peer_certs,
+        bea_api_key=resolve_bea_api_key(),
+        census_api_key=resolve_census_api_key(),
+        report_mode=resolve_report_mode(),
     )
 
 

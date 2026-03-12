@@ -3986,5 +3986,301 @@ class TestHUDResponseParsing(unittest.TestCase):
         self.assertEqual(df.iloc[0]["county_fips"], "25005")
 
 
+class TestEnvVarScaffolding(unittest.TestCase):
+    """Tests for the new env var scaffolding (BEA, Census, report mode, feature flags)."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from MSPBNA_CR_Normalized import (
+                resolve_bea_api_key,
+                resolve_census_api_key,
+                resolve_report_mode,
+                is_feature_enabled,
+                VALID_REPORT_MODES,
+                _FEATURE_FLAG_DEFAULTS,
+                DashboardConfig,
+            )
+            cls.resolve_bea_api_key = staticmethod(resolve_bea_api_key)
+            cls.resolve_census_api_key = staticmethod(resolve_census_api_key)
+            cls.resolve_report_mode = staticmethod(resolve_report_mode)
+            cls.is_feature_enabled = staticmethod(is_feature_enabled)
+            cls.VALID_REPORT_MODES = VALID_REPORT_MODES
+            cls._FEATURE_FLAG_DEFAULTS = _FEATURE_FLAG_DEFAULTS
+            cls.DashboardConfig = DashboardConfig
+            cls.available = True
+        except ImportError:
+            cls.available = False
+
+    # --- BEA key resolver ---
+
+    def test_bea_key_from_bea_api_key(self):
+        """BEA_API_KEY is the primary env var."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("BEA_API_KEY"), os.environ.get("BEA_USER_ID")
+        try:
+            os.environ["BEA_API_KEY"] = "test_bea_key"
+            os.environ.pop("BEA_USER_ID", None)
+            result = self.resolve_bea_api_key()
+            self.assertEqual(result, "test_bea_key")
+        finally:
+            if old[0] is not None:
+                os.environ["BEA_API_KEY"] = old[0]
+            else:
+                os.environ.pop("BEA_API_KEY", None)
+            if old[1] is not None:
+                os.environ["BEA_USER_ID"] = old[1]
+            else:
+                os.environ.pop("BEA_USER_ID", None)
+
+    def test_bea_key_falls_back_to_user_id(self):
+        """BEA_USER_ID is accepted as fallback alias."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("BEA_API_KEY"), os.environ.get("BEA_USER_ID")
+        try:
+            os.environ.pop("BEA_API_KEY", None)
+            os.environ["BEA_USER_ID"] = "test_user_id"
+            result = self.resolve_bea_api_key()
+            self.assertEqual(result, "test_user_id")
+        finally:
+            if old[0] is not None:
+                os.environ["BEA_API_KEY"] = old[0]
+            else:
+                os.environ.pop("BEA_API_KEY", None)
+            if old[1] is not None:
+                os.environ["BEA_USER_ID"] = old[1]
+            else:
+                os.environ.pop("BEA_USER_ID", None)
+
+    def test_bea_key_none_when_unset(self):
+        """Returns None when neither BEA env var is set."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("BEA_API_KEY"), os.environ.get("BEA_USER_ID")
+        try:
+            os.environ.pop("BEA_API_KEY", None)
+            os.environ.pop("BEA_USER_ID", None)
+            result = self.resolve_bea_api_key()
+            self.assertIsNone(result)
+        finally:
+            if old[0] is not None:
+                os.environ["BEA_API_KEY"] = old[0]
+            else:
+                os.environ.pop("BEA_API_KEY", None)
+            if old[1] is not None:
+                os.environ["BEA_USER_ID"] = old[1]
+            else:
+                os.environ.pop("BEA_USER_ID", None)
+
+    def test_bea_api_key_takes_priority_over_user_id(self):
+        """When both are set, BEA_API_KEY wins."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("BEA_API_KEY"), os.environ.get("BEA_USER_ID")
+        try:
+            os.environ["BEA_API_KEY"] = "primary"
+            os.environ["BEA_USER_ID"] = "fallback"
+            result = self.resolve_bea_api_key()
+            self.assertEqual(result, "primary")
+        finally:
+            if old[0] is not None:
+                os.environ["BEA_API_KEY"] = old[0]
+            else:
+                os.environ.pop("BEA_API_KEY", None)
+            if old[1] is not None:
+                os.environ["BEA_USER_ID"] = old[1]
+            else:
+                os.environ.pop("BEA_USER_ID", None)
+
+    # --- Census key resolver ---
+
+    def test_census_key_resolved(self):
+        """CENSUS_API_KEY is read from environment."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("CENSUS_API_KEY")
+        try:
+            os.environ["CENSUS_API_KEY"] = "test_census"
+            result = self.resolve_census_api_key()
+            self.assertEqual(result, "test_census")
+        finally:
+            if old is not None:
+                os.environ["CENSUS_API_KEY"] = old
+            else:
+                os.environ.pop("CENSUS_API_KEY", None)
+
+    def test_census_key_none_when_unset(self):
+        """Returns None when CENSUS_API_KEY is not set."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("CENSUS_API_KEY")
+        try:
+            os.environ.pop("CENSUS_API_KEY", None)
+            result = self.resolve_census_api_key()
+            self.assertIsNone(result)
+        finally:
+            if old is not None:
+                os.environ["CENSUS_API_KEY"] = old
+
+    # --- Report mode ---
+
+    def test_report_mode_defaults_to_full_local(self):
+        """Default report mode is 'full_local'."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("REPORT_MODE")
+        try:
+            os.environ.pop("REPORT_MODE", None)
+            result = self.resolve_report_mode()
+            self.assertEqual(result, "full_local")
+        finally:
+            if old is not None:
+                os.environ["REPORT_MODE"] = old
+
+    def test_report_mode_corp_safe(self):
+        """'corp_safe' is a valid report mode."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("REPORT_MODE")
+        try:
+            os.environ["REPORT_MODE"] = "corp_safe"
+            result = self.resolve_report_mode()
+            self.assertEqual(result, "corp_safe")
+        finally:
+            if old is not None:
+                os.environ["REPORT_MODE"] = old
+            else:
+                os.environ.pop("REPORT_MODE", None)
+
+    def test_report_mode_invalid_raises(self):
+        """Invalid report mode raises ValueError."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("REPORT_MODE")
+        try:
+            os.environ["REPORT_MODE"] = "invalid_mode"
+            with self.assertRaises(ValueError):
+                self.resolve_report_mode()
+        finally:
+            if old is not None:
+                os.environ["REPORT_MODE"] = old
+            else:
+                os.environ.pop("REPORT_MODE", None)
+
+    def test_valid_report_modes_frozenset(self):
+        """VALID_REPORT_MODES contains expected modes."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        self.assertIsInstance(self.VALID_REPORT_MODES, frozenset)
+        self.assertIn("full_local", self.VALID_REPORT_MODES)
+        self.assertIn("corp_safe", self.VALID_REPORT_MODES)
+
+    # --- Feature flags ---
+
+    def test_feature_flag_disabled_by_default(self):
+        """Feature flags default to disabled."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("ENABLE_BEA_ENRICHMENT")
+        try:
+            os.environ.pop("ENABLE_BEA_ENRICHMENT", None)
+            self.assertFalse(self.is_feature_enabled("ENABLE_BEA_ENRICHMENT"))
+        finally:
+            if old is not None:
+                os.environ["ENABLE_BEA_ENRICHMENT"] = old
+
+    def test_feature_flag_enabled(self):
+        """Feature flag enabled with truthy value."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import os
+        old = os.environ.get("ENABLE_BEA_ENRICHMENT")
+        try:
+            os.environ["ENABLE_BEA_ENRICHMENT"] = "true"
+            self.assertTrue(self.is_feature_enabled("ENABLE_BEA_ENRICHMENT"))
+        finally:
+            if old is not None:
+                os.environ["ENABLE_BEA_ENRICHMENT"] = old
+            else:
+                os.environ.pop("ENABLE_BEA_ENRICHMENT", None)
+
+    def test_feature_flag_unknown_returns_false(self):
+        """Unknown feature flag returns False with warning."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = self.is_feature_enabled("NONEXISTENT_FLAG")
+            self.assertFalse(result)
+            self.assertEqual(len(w), 1)
+            self.assertIn("Unknown feature flag", str(w[0].message))
+
+    def test_feature_flag_defaults_registry_exists(self):
+        """_FEATURE_FLAG_DEFAULTS contains expected flags."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        self.assertIn("ENABLE_BEA_ENRICHMENT", self._FEATURE_FLAG_DEFAULTS)
+        self.assertIn("ENABLE_CENSUS_ENRICHMENT", self._FEATURE_FLAG_DEFAULTS)
+
+    # --- DashboardConfig new fields ---
+
+    def test_dashboard_config_has_bea_field(self):
+        """DashboardConfig has bea_api_key field defaulting to None."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import dataclasses
+        fields = {f.name: f for f in dataclasses.fields(self.DashboardConfig)}
+        self.assertIn("bea_api_key", fields)
+        self.assertEqual(fields["bea_api_key"].default, None)
+
+    def test_dashboard_config_has_census_field(self):
+        """DashboardConfig has census_api_key field defaulting to None."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import dataclasses
+        fields = {f.name: f for f in dataclasses.fields(self.DashboardConfig)}
+        self.assertIn("census_api_key", fields)
+        self.assertEqual(fields["census_api_key"].default, None)
+
+    def test_dashboard_config_has_report_mode_field(self):
+        """DashboardConfig has report_mode field defaulting to 'full_local'."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        import dataclasses
+        fields = {f.name: f for f in dataclasses.fields(self.DashboardConfig)}
+        self.assertIn("report_mode", fields)
+        self.assertEqual(fields["report_mode"].default, "full_local")
+
+    def test_dashboard_config_attribute_access_only(self):
+        """New fields are accessible via attribute access, not dict-style."""
+        if not self.available:
+            self.skipTest("Module not importable")
+        cfg = self.DashboardConfig(
+            fred_api_key="test",
+            subject_bank_cert=34221,
+            peer_bank_certs=[],
+        )
+        # Attribute access works
+        self.assertIsNone(cfg.bea_api_key)
+        self.assertIsNone(cfg.census_api_key)
+        self.assertEqual(cfg.report_mode, "full_local")
+        # Dict-style access must fail
+        with self.assertRaises(TypeError):
+            cfg["bea_api_key"]
+
+
 if __name__ == '__main__':
     unittest.main()
