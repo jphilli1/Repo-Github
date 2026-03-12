@@ -206,8 +206,10 @@ _reg("yoy_heatmap_standard", ArtifactAvailability.BOTH, "table",
      "YoY directional heatmap (standard metrics)")
 _reg("yoy_heatmap_normalized", ArtifactAvailability.BOTH, "table",
      "YoY directional heatmap (normalized metrics)")
-_reg("kri_bullet_chart", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "KRI bullet / football-field chart (MSPBNA vs peer range)")
+_reg("kri_bullet_standard", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "KRI bullet chart — standard metrics (MSPBNA vs peer range)")
+_reg("kri_bullet_normalized", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "KRI bullet chart — normalized metrics (MSPBNA vs norm peer range)")
 _reg("sparkline_summary", ArtifactAvailability.BOTH, "table",
      "Sparkline-enhanced summary table with trailing 8Q trends")
 

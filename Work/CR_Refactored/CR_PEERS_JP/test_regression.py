@@ -930,6 +930,115 @@ def test_active_composites_preserved():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 13. EXECUTIVE CHARTS — metric_semantics + executive_charts + integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_polarity_direction_favorable():
+    """Favorable polarity: positive delta → 'favorable'."""
+    from metric_semantics import Polarity, MetricSemantic, DisplayFormat
+    sem = MetricSemantic(code="test", display_name="Test", polarity=Polarity.FAVORABLE)
+    assert sem.direction_label(0.01) == "favorable"
+    assert sem.direction_label(-0.01) == "adverse"
+    assert sem.direction_label(0.0) == "flat"
+    print("  [PASS] test_polarity_direction_favorable")
+
+
+def test_polarity_direction_adverse():
+    """Adverse polarity: positive delta → 'adverse'."""
+    from metric_semantics import Polarity, MetricSemantic
+    sem = MetricSemantic(code="test", display_name="Test", polarity=Polarity.ADVERSE)
+    assert sem.direction_label(0.01) == "adverse"
+    assert sem.direction_label(-0.01) == "favorable"
+    print("  [PASS] test_polarity_direction_adverse")
+
+
+def test_metric_semantics_registry_populated():
+    """METRIC_SEMANTICS registry must have entries for core metrics."""
+    from metric_semantics import METRIC_SEMANTICS
+    core = ["TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate",
+            "Allowance_to_Gross_Loans_Rate", "ASSET", "LNLS"]
+    for code in core:
+        assert code in METRIC_SEMANTICS, f"Missing semantic for {code}"
+    assert len(METRIC_SEMANTICS) >= 30, "Expected at least 30 metric semantics"
+    print("  [PASS] test_metric_semantics_registry_populated")
+
+
+def test_executive_chart_artifacts_registered():
+    """All 5 executive chart artifacts must be registered in ARTIFACT_REGISTRY."""
+    from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
+    expected_both = ["yoy_heatmap_standard", "yoy_heatmap_normalized", "sparkline_summary"]
+    expected_full = ["kri_bullet_standard", "kri_bullet_normalized"]
+    for name in expected_both:
+        assert name in ARTIFACT_REGISTRY, f"Missing artifact: {name}"
+        assert ARTIFACT_REGISTRY[name].availability == ArtifactAvailability.BOTH
+    for name in expected_full:
+        assert name in ARTIFACT_REGISTRY, f"Missing artifact: {name}"
+        assert ARTIFACT_REGISTRY[name].availability == ArtifactAvailability.FULL_LOCAL_ONLY
+    print("  [PASS] test_executive_chart_artifacts_registered")
+
+
+def test_executive_charts_integrated_in_report_generator():
+    """generate_reports() must reference executive chart imports and artifacts."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_generator.py")
+    with open(src_path, "r") as f:
+        source = f.read()
+    # Function imports must be present
+    assert "generate_yoy_heatmap" in source, "Missing generate_yoy_heatmap import"
+    assert "generate_kri_bullet_chart" in source, "Missing generate_kri_bullet_chart import"
+    assert "generate_sparkline_table" in source, "Missing generate_sparkline_table import"
+    # Artifact names used in should_produce calls
+    assert "yoy_heatmap_" in source, "Missing yoy_heatmap artifact reference"
+    assert "kri_bullet_standard" in source or "kri_bullet_" in source, \
+        "Missing kri_bullet artifact reference"
+    assert "sparkline_summary" in source, "Missing sparkline_summary artifact reference"
+    # Both bullet chart variants must be produced
+    assert "kri_bullet_normalized" in source or 'kri_bullet_{norm_str}' in source, \
+        "Missing kri_bullet_normalized in report generator"
+    print("  [PASS] test_executive_charts_integrated_in_report_generator")
+
+
+def test_corp_safe_skips_bullet_chart():
+    """Both bullet chart variants (full_local only) must be skipped in corp_safe mode."""
+    from rendering_mode import (
+        RenderMode, ArtifactManifest, should_produce, ARTIFACT_REGISTRY
+    )
+    for variant in ["kri_bullet_standard", "kri_bullet_normalized"]:
+        m = ArtifactManifest(RenderMode.CORP_SAFE)
+        result = should_produce(variant, RenderMode.CORP_SAFE, m)
+        assert result is False, f"{variant} should be skipped in corp_safe"
+        assert m.outcomes[0].skip_reason is not None
+    print("  [PASS] test_corp_safe_skips_bullet_chart")
+
+
+def test_corp_safe_allows_heatmap():
+    """YoY heatmap (BOTH) must be allowed in corp_safe mode."""
+    from rendering_mode import RenderMode, ArtifactManifest, should_produce
+    m = ArtifactManifest(RenderMode.CORP_SAFE)
+    result = should_produce("yoy_heatmap_standard", RenderMode.CORP_SAFE, m)
+    assert result is True, "yoy_heatmap_standard should be allowed in corp_safe"
+    print("  [PASS] test_corp_safe_allows_heatmap")
+
+
+def test_ordered_metrics_groups():
+    """ordered_metrics must sort by group order."""
+    from metric_semantics import ordered_metrics
+    codes = ["ASSET", "TTM_NCO_Rate", "Allowance_to_Gross_Loans_Rate"]
+    result = ordered_metrics(codes)
+    assert result[0] == "TTM_NCO_Rate", "Credit Quality should come first"
+    assert result[-1] == "ASSET", "Size should come last"
+    print("  [PASS] test_ordered_metrics_groups")
+
+
+def test_css_class_for_delta():
+    """css_class must return correct class names."""
+    from metric_semantics import get_css_class
+    assert get_css_class("TTM_NCO_Rate", 0.01) == "bad-trend"  # adverse: increase is bad
+    assert get_css_class("Allowance_to_Gross_Loans_Rate", 0.01) == "good-trend"  # favorable: increase is good
+    assert get_css_class("ASSET", 0.01) == "neutral-trend"  # neutral
+    print("  [PASS] test_css_class_for_delta")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -4626,7 +4735,8 @@ class TestArtifactRegistryCanonical(unittest.TestCase):
             "scatter_nco_vs_npl", "scatter_pd_vs_npl",
             "scatter_norm_nco_vs_nonaccrual",
             "portfolio_mix", "migration_ladder", "fred_table",
-            "yoy_heatmap_standard", "kri_bullet_chart", "sparkline_summary",
+            "yoy_heatmap_standard", "kri_bullet_standard", "kri_bullet_normalized",
+            "sparkline_summary",
         }
         for name in expected:
             self.assertIn(name, ARTIFACT_REGISTRY, f"Missing artifact: {name}")
@@ -4782,6 +4892,195 @@ class TestDocumentationCoherence(unittest.TestCase):
             self.assertIn("<table", content)
         finally:
             os.unlink(path)
+
+
+class TestExecutiveChartTranche(unittest.TestCase):
+    """Regression tests for the 5-artifact executive chart tranche."""
+
+    def test_all_five_artifacts_registered(self):
+        """All 5 executive artifacts must exist in ARTIFACT_REGISTRY."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        expected = [
+            "yoy_heatmap_standard", "yoy_heatmap_normalized",
+            "kri_bullet_standard", "kri_bullet_normalized",
+            "sparkline_summary",
+        ]
+        for name in expected:
+            self.assertIn(name, ARTIFACT_REGISTRY, f"Missing: {name}")
+
+    def test_heatmap_metric_allowlists(self):
+        """Heatmap metric lists must match exact specifications."""
+        from executive_charts import HEATMAP_METRICS_STANDARD, HEATMAP_METRICS_NORMALIZED
+        std_expected = [
+            "TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate", "Past_Due_Rate",
+            "Allowance_to_Gross_Loans_Rate", "Risk_Adj_Allowance_Coverage",
+            "SBL_Composition", "RIC_CRE_Loan_Share", "RIC_Resi_Loan_Share",
+            "RIC_CRE_ACL_Coverage", "RIC_CRE_Risk_Adj_Coverage",
+            "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_NCO_Rate",
+        ]
+        norm_expected = [
+            "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+            "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+            "Norm_SBL_Composition", "Norm_Wealth_Resi_Composition",
+            "Norm_CRE_Investment_Composition",
+            "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+        ]
+        self.assertEqual(HEATMAP_METRICS_STANDARD, std_expected)
+        self.assertEqual(HEATMAP_METRICS_NORMALIZED, norm_expected)
+
+    def test_bullet_metric_lists(self):
+        """Bullet chart metric lists must match exact specifications."""
+        from executive_charts import BULLET_METRICS_STANDARD, BULLET_METRICS_NORMALIZED
+        std_expected = [
+            "TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate", "Past_Due_Rate",
+            "Allowance_to_Gross_Loans_Rate", "Risk_Adj_Allowance_Coverage",
+            "RIC_CRE_ACL_Coverage", "RIC_CRE_Risk_Adj_Coverage",
+        ]
+        norm_expected = [
+            "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+            "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+            "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+        ]
+        self.assertEqual(BULLET_METRICS_STANDARD, std_expected)
+        self.assertEqual(BULLET_METRICS_NORMALIZED, norm_expected)
+
+    def test_sparkline_metrics_list(self):
+        """Sparkline metrics must match exact specifications."""
+        from executive_charts import SPARKLINE_METRICS
+        expected = [
+            "TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate",
+            "Allowance_to_Gross_Loans_Rate", "Risk_Adj_Allowance_Coverage",
+            "Past_Due_Rate",
+            "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_ACL_Coverage",
+            "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_ACL_Coverage",
+        ]
+        self.assertEqual(SPARKLINE_METRICS, expected)
+
+    def test_bullet_chart_has_is_normalized_param(self):
+        """generate_kri_bullet_chart must accept is_normalized parameter."""
+        import inspect
+        from executive_charts import generate_kri_bullet_chart
+        sig = inspect.signature(generate_kri_bullet_chart)
+        self.assertIn("is_normalized", sig.parameters)
+
+    def test_sparkline_has_norm_peer_cert_param(self):
+        """generate_sparkline_table must accept norm_peer_cert parameter."""
+        import inspect
+        from executive_charts import generate_sparkline_table
+        sig = inspect.signature(generate_sparkline_table)
+        self.assertIn("norm_peer_cert", sig.parameters)
+        # Default should be 90006 (All Peers Norm)
+        self.assertEqual(sig.parameters["norm_peer_cert"].default, 90006)
+
+    def test_mode_support_declarations(self):
+        """Heatmaps + sparkline = BOTH; bullets = FULL_LOCAL_ONLY."""
+        from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
+        both_arts = ["yoy_heatmap_standard", "yoy_heatmap_normalized", "sparkline_summary"]
+        full_arts = ["kri_bullet_standard", "kri_bullet_normalized"]
+        for name in both_arts:
+            self.assertEqual(ARTIFACT_REGISTRY[name].availability,
+                             ArtifactAvailability.BOTH,
+                             f"{name} should be BOTH")
+        for name in full_arts:
+            self.assertEqual(ARTIFACT_REGISTRY[name].availability,
+                             ArtifactAvailability.FULL_LOCAL_ONLY,
+                             f"{name} should be FULL_LOCAL_ONLY")
+
+    def test_missing_metric_resilience_heatmap(self):
+        """Heatmap should skip missing metrics, not fail entirely."""
+        from executive_charts import build_yoy_heatmap_data
+        dates = pd.date_range("2024-03-31", periods=8, freq="QE")
+        rows = []
+        for cert in [34221, 90003]:
+            for dt in dates:
+                rows.append({
+                    "CERT": cert, "REPDTE": dt,
+                    "TTM_NCO_Rate": 0.002,
+                    # Deliberately missing: Nonaccrual_to_Gross_Loans_Rate
+                })
+        df = pd.DataFrame(rows)
+        result = build_yoy_heatmap_data(df, 34221, 90003,
+                                         metrics=["TTM_NCO_Rate",
+                                                   "Nonaccrual_to_Gross_Loans_Rate"])
+        # Should produce data for TTM_NCO_Rate only, not fail
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result.iloc[0]["metric"], "TTM_NCO_Rate")
+
+    def test_missing_metric_resilience_sparkline(self):
+        """Sparkline table should skip missing metrics, not fail entirely."""
+        from executive_charts import generate_sparkline_table
+        dates = pd.date_range("2024-03-31", periods=8, freq="QE")
+        rows = []
+        for cert in [34221, 90003]:
+            for dt in dates:
+                rows.append({
+                    "CERT": cert, "REPDTE": dt,
+                    "TTM_NCO_Rate": 0.002,
+                })
+        df = pd.DataFrame(rows)
+        html = generate_sparkline_table(df, 34221, peer_cert=90003,
+                                        metrics=["TTM_NCO_Rate",
+                                                  "Nonexistent_Metric"])
+        self.assertIsNotNone(html)
+        self.assertIn("NCO Rate", html)
+
+    def test_heatmap_uses_ordered_metrics(self):
+        """Heatmap must use GROUP_ORDER via ordered_metrics for row ordering."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "executive_charts.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("ordered_metrics", source)
+
+    def test_report_generator_produces_both_bullet_variants(self):
+        """report_generator.py must produce both kri_bullet_standard and kri_bullet_normalized."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Should loop over both variants
+        self.assertIn("is_normalized=is_norm", source)
+        # Should use correct composites for each variant
+        self.assertIn("ACTIVE_NORMALIZED_COMPOSITES", source)
+        self.assertIn("ACTIVE_STANDARD_COMPOSITES", source)
+
+    def test_sparkline_uses_norm_peer_for_norm_metrics(self):
+        """Sparkline peer lookup must use 90006 for Norm_ metrics, 90003 for standard."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "executive_charts.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("norm_peer_cert", source)
+        self.assertIn('startswith("Norm_")', source)
+
+    def test_na_cells_shown_explicitly(self):
+        """Missing values must render as 'N/A', not blank or neutral."""
+        from executive_charts import _fmt_val, _fmt_delta
+        from metric_semantics import DisplayFormat
+        import numpy as np
+        self.assertEqual(_fmt_val(np.nan, DisplayFormat.PERCENT), "N/A")
+        self.assertEqual(_fmt_delta(np.nan, DisplayFormat.BASIS_POINTS), "N/A")
+
+    def test_no_old_kri_bullet_chart_artifact(self):
+        """The old single 'kri_bullet_chart' must no longer exist in the registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertNotIn("kri_bullet_chart", ARTIFACT_REGISTRY,
+                         "Old kri_bullet_chart should be replaced by standard/normalized")
+
+    def test_all_bullet_metrics_in_semantics(self):
+        """All bullet chart metrics must be registered in metric_semantics."""
+        from executive_charts import BULLET_METRICS_STANDARD, BULLET_METRICS_NORMALIZED
+        from metric_semantics import METRIC_SEMANTICS
+        for code in BULLET_METRICS_STANDARD + BULLET_METRICS_NORMALIZED:
+            self.assertIn(code, METRIC_SEMANTICS, f"Missing semantic: {code}")
+
+    def test_all_heatmap_metrics_in_semantics(self):
+        """All heatmap metrics must be registered in metric_semantics."""
+        from executive_charts import HEATMAP_METRICS_STANDARD, HEATMAP_METRICS_NORMALIZED
+        from metric_semantics import METRIC_SEMANTICS
+        for code in HEATMAP_METRICS_STANDARD + HEATMAP_METRICS_NORMALIZED:
+            self.assertIn(code, METRIC_SEMANTICS, f"Missing semantic: {code}")
 
 
 if __name__ == '__main__':
