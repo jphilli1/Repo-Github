@@ -192,6 +192,16 @@ _reg("cre_cycle", ArtifactAvailability.FULL_LOCAL_ONLY, "fred_chart",
 _reg("cs_collateral_panel", ArtifactAvailability.FULL_LOCAL_ONLY, "fred_chart",
      "Case-Shiller collateral panel chart")
 
+# --- Executive Charts (Prompt 2) ---
+_reg("yoy_heatmap_standard", ArtifactAvailability.BOTH, "table",
+     "YoY directional heatmap (standard metrics)")
+_reg("yoy_heatmap_normalized", ArtifactAvailability.BOTH, "table",
+     "YoY directional heatmap (normalized metrics)")
+_reg("kri_bullet_chart", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "KRI bullet / football-field chart (MSPBNA vs peer range)")
+_reg("sparkline_summary", ArtifactAvailability.BOTH, "table",
+     "Sparkline-enhanced summary table with trailing 8Q trends")
+
 
 # =====================================================================
 # Artifact Manifest — per-run outcome tracking
