@@ -510,6 +510,31 @@ def _describe_payload(payload: Any) -> Dict[str, Any]:
     return info
 
 
+def _extract_rows_from_dict(container: dict) -> Optional[List[Dict]]:
+    """Search a dict for the first usable list of row dicts.
+
+    Checks keys in order: "results", "rows", "data", then any remaining key.
+    Returns None if no list of dicts is found.
+    """
+    for key in ("results", "rows", "data"):
+        val = container.get(key)
+        if isinstance(val, list):
+            return val
+        if isinstance(val, dict):
+            # Recurse one level: e.g. {"results": {"rows": [...]}}
+            nested = _extract_rows_from_dict(val)
+            if nested is not None:
+                return nested
+    # Fallback: scan remaining keys for a list of dicts
+    for k, v in container.items():
+        if k in ("results", "rows", "data"):
+            continue
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            logger.info(f"HUD dict: extracted rows from key '{k}' ({len(v)} rows)")
+            return v
+    return None
+
+
 def extract_hud_result_rows(payload: Any) -> List[Dict]:
     """Extract the flat list of row dicts from a HUD API response payload.
 
@@ -519,6 +544,7 @@ def extract_hud_result_rows(payload: Any) -> List[Dict]:
       C) payload = {"results": {"rows": [row, ...]}}
       D) payload = {"results": {"data": [row, ...]}}
       E) payload = {"data": [row, row, ...]}
+      F) payload = {"data": {"results": [row, ...]}}  (and nested variants)
 
     Returns an empty list (never raises) if no row list can be found.
     """
@@ -533,39 +559,13 @@ def extract_hud_result_rows(payload: Any) -> List[Dict]:
         )
         return []
 
-    # Try "data" key first (Shape E) — common HUD v2 format
-    candidate = payload.get("data")
-    if isinstance(candidate, list):
-        return candidate
-
-    # Try "results" key (Shapes B/C/D)
-    candidate = payload.get("results")
-    if isinstance(candidate, list):
-        return candidate  # Shape B
-
-    if isinstance(candidate, dict):
-        # Shape C — {"results": {"rows": [...]}}
-        inner = candidate.get("rows")
-        if isinstance(inner, list):
-            return inner
-        # Shape D — {"results": {"data": [...]}}
-        inner = candidate.get("data")
-        if isinstance(inner, list):
-            return inner
-        # Fallback: find the first list-valued key inside results
-        for k, v in candidate.items():
-            if isinstance(v, list) and v and isinstance(v[0], dict):
-                logger.info(f"HUD results: extracted rows from nested key '{k}' ({len(v)} rows)")
-                return v
+    # Use the recursive helper to search known wrapper containers
+    rows = _extract_rows_from_dict(payload)
+    if rows is not None:
+        return rows
 
     # Last resort: scan all top-level keys for a list of dicts
-    for k, v in payload.items():
-        if k in ("data", "results"):
-            continue
-        if isinstance(v, list) and v and isinstance(v[0], dict):
-            logger.info(f"HUD payload: extracted rows from top-level key '{k}' ({len(v)} rows)")
-            return v
-
+    # (already covered by _extract_rows_from_dict fallback, but kept for safety)
     logger.warning(f"Could not extract row list from HUD payload. Shape: {_describe_payload(payload)}")
     return []
 

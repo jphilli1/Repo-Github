@@ -763,6 +763,18 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-12 — HUD ZIP Parser Shape F Support (Dict-Wrapped Data)
+
+**Problem**: `extract_hud_result_rows()` did not handle `payload["data"]` when it is a dict containing nested `results` (Shape F: `{"data": {"results": [...]}}`). This caused silent row-count=0 returns for APIs that wrap results in an extra dict layer.
+
+**Fix**:
+1. Added `_extract_rows_from_dict()` recursive helper that searches a dict container for the first usable list of row dicts, checking keys `results` → `rows` → `data` in priority order, then falling back to any remaining key whose value is a non-empty list of dicts.
+2. Rewrote `extract_hud_result_rows()` to delegate dict payloads to the recursive helper, covering Shapes B–F in a single code path.
+3. Added 3 regression tests: `test_extract_hud_rows_shape_f_data_dict_with_results_list`, `test_extract_hud_rows_shape_f_data_dict_with_results_rows`, `test_extract_hud_rows_shape_f_data_dict_with_results_data`.
+4. Updated HUD Response Parsing table in CLAUDE.md with Shape F row.
+
+**Files**: `case_shiller_zip_mapper.py`, `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-12 — Fix Normalized Exclusion NCO MDRM Mapping Errors
 
 **Problem**: Two confirmed MDRM mapping errors caused `Excluded_NCO_TTM` to exceed `Total_NCO_TTM` for every major peer bank (JPM, BAC, WFC, Citi, GS). The balance-gate only masked the issue for banks with zero excluded balance. Banks with ANY Ag or ADC balance got their entire portfolio NCOs misattributed.
@@ -2169,6 +2181,7 @@ The HUD API response requires **two passes** to reach actual crosswalk data rows
 | C | `{"results": {"rows": [row, ...]}}` | `payload["results"]["rows"]` |
 | D | `{"results": {"data": [row, ...]}}` | `payload["results"]["data"]` |
 | E | `{"data": [row, ...]}` | `payload["data"]` |
+| F | `{"data": {"results": [row, ...]}}` | Recursive dict search via `_extract_rows_from_dict()` |
 
 **Pass 2 — Wrapper row flattening** (`flatten_hud_rows()`):
 
