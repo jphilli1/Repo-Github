@@ -99,6 +99,48 @@ report_generator.py
         └──► output/Peers/tables/   (Standard + Normalized HTML tables, FRED macro table)
 ```
 
+### Dual-Mode Report Architecture
+
+`report_generator.py` supports two rendering modes controlled by `REPORT_MODE` env var:
+
+| Mode | Default | Outputs | Library Requirements |
+|---|---|---|---|
+| `full_local` | Yes | All charts (PNG) + HTML tables + scatters (PNG) | matplotlib, seaborn |
+| `corp_safe` | No | HTML tables only | pandas, numpy (no matplotlib needed) |
+
+**Architecture components:**
+
+| Component | Purpose |
+|---|---|
+| `ReportMode` enum | `FULL_LOCAL` / `CORP_SAFE` |
+| `ArtifactSpec` dataclass | Declares each artifact's name, category, mode availability, renderer |
+| `ARTIFACT_REGISTRY` list | Central registry of all 31 artifacts with mode declarations |
+| `ArtifactManifest` class | Tracks produced/skipped/failed status for each artifact per run |
+| `ReportContext` dataclass | Encapsulates loaded data, config, mode, and manifest for helpers |
+| `_produce_table()` / `_produce_chart()` | Reusable helpers with mode-check + manifest recording |
+| `should_produce()` | Checks mode + suppression before producing an artifact |
+| `get_artifacts_for_mode()` | Returns artifacts available in a given mode |
+
+**Artifact availability:**
+- **HTML tables** (13 artifacts): available in **both** modes
+- **Matplotlib charts** (12 artifacts): `full_local` only
+- **Scatter plots** (3 artifacts): `full_local` only
+- **FRED expansion charts** (5 artifacts): `full_local` only
+
+**Skip semantics:** When an artifact is unavailable in the current mode, it is logged with `SKIPPED_MODE` status in the manifest — never errors, never silently omitted. The manifest summary prints at the end of every run showing all artifacts and their outcomes.
+
+**Default behavior:** With no `REPORT_MODE` set, the default is `full_local` which produces all artifacts — identical to the pre-refactor behavior. The refactoring is purely additive and does not change any output names, chart semantics, or composite regime.
+
+**`generate_reports()` phases:**
+1. Workbook ingestion (load FDIC_Data, 8Q averages, metric descriptions)
+2. Preflight validation (composites, severity checks)
+3. HTML tables (both modes)
+4. Credit deterioration charts (full_local only)
+5. Scatter plots (full_local only)
+6. Segment & roadmap charts (full_local only)
+7. FRED expansion charts (full_local only)
+8. Manifest summary
+
 ### Excel Sheet Layout
 
 | Sheet Name | Contents |
@@ -545,6 +587,19 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Dual-Mode Report Architecture Refactor
+
+**Purpose**: Refactor `report_generator.py` into a clean dual-mode architecture (`full_local` / `corp_safe`) with explicit artifact capability matrix, manifest tracking, and reusable renderer helpers.
+
+**Changes:**
+1. **report_generator.py** — Added `ReportMode` enum, `ArtifactSpec` dataclass, `ArtifactManifest` class, `ReportContext` dataclass, `ARTIFACT_REGISTRY` (31 artifacts), `_produce_table()` / `_produce_chart()` helpers, `should_produce()`, `get_artifacts_for_mode()`, `resolve_report_mode_for_generator()`. Refactored `generate_reports()` into 8 phases with mode-gated artifact production and manifest tracking. `generate_reports()` now returns `Optional[ArtifactManifest]`.
+2. **test_regression.py** — Added `TestDualModeArchitecture` class with 19 tests covering mode resolution, registry integrity, mode filtering, should_produce logic, manifest operations, composite preservation, and registry coverage.
+3. **CLAUDE.md** — Added "Dual-Mode Report Architecture" section in Section 3, changelog entry.
+
+**No behavioral changes**: Default mode is `full_local` which produces all existing artifacts unchanged. No output names, chart semantics, composite regime, or peer groupings were altered.
+
+**Test baseline**: 283 tests (previous 264 + 19 new). 10 pre-existing errors (missing matplotlib/aiohttp), 39 skipped (20 pre-existing + 19 new due to missing matplotlib in CI).
 
 ### 2026-03-12 — Architectural Preflight Scaffolding
 

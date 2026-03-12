@@ -29,7 +29,9 @@ warnings.filterwarnings(
     message="This figure includes Axes that are not compatible with tight_layout",
     category=UserWarning,
 )
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from matplotlib.gridspec import GridSpec
@@ -57,6 +59,236 @@ except ImportError:
 # Set style for better-looking charts
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_palette("husl")
+
+# ==================================================================================
+# DUAL-MODE ARCHITECTURE — full_local / corp_safe
+# ==================================================================================
+
+class ReportMode(Enum):
+    """Report rendering modes."""
+    FULL_LOCAL = "full_local"
+    CORP_SAFE = "corp_safe"
+
+
+class ArtifactStatus(Enum):
+    """Outcome status for each artifact in the manifest."""
+    PRODUCED = "produced"
+    SKIPPED_MODE = "skipped_mode"       # not available in current mode
+    SKIPPED_DATA = "skipped_data"       # data requirements not met
+    SKIPPED_SUPPRESSED = "skipped_suppressed"  # suppressed by preflight
+    FAILED = "failed"                   # attempted but errored
+
+
+@dataclass
+class ArtifactSpec:
+    """Declares a single report artifact and its mode availability."""
+    name: str                            # unique artifact key
+    category: str                        # "chart", "scatter", "table", "fred_chart"
+    modes: Tuple[ReportMode, ...]        # which modes produce this artifact
+    renderer: str                        # "matplotlib" or "html"
+    description: str = ""                # human-readable purpose
+    filename_suffix: str = ""            # appended to base stem
+
+    @property
+    def available_in(self) -> frozenset:
+        return frozenset(self.modes)
+
+    def is_available(self, mode: ReportMode) -> bool:
+        return mode in self.modes
+
+
+@dataclass
+class ManifestEntry:
+    """One row in the artifact manifest — tracks what happened."""
+    artifact_name: str
+    mode: str
+    status: str
+    path: str = ""
+    skip_reason: str = ""
+
+
+@dataclass
+class ArtifactManifest:
+    """Tracks all artifacts across a report run."""
+    entries: List[ManifestEntry] = field(default_factory=list)
+
+    def record(self, name: str, mode: str, status: ArtifactStatus,
+               path: str = "", skip_reason: str = "") -> None:
+        self.entries.append(ManifestEntry(
+            artifact_name=name,
+            mode=mode,
+            status=status.value,
+            path=path,
+            skip_reason=skip_reason,
+        ))
+
+    def to_dataframe(self) -> pd.DataFrame:
+        if not self.entries:
+            return pd.DataFrame(columns=["artifact_name", "mode", "status", "path", "skip_reason"])
+        return pd.DataFrame([
+            {"artifact_name": e.artifact_name, "mode": e.mode,
+             "status": e.status, "path": e.path, "skip_reason": e.skip_reason}
+            for e in self.entries
+        ])
+
+    def summary(self) -> Dict[str, int]:
+        """Return counts by status."""
+        counts: Dict[str, int] = {}
+        for e in self.entries:
+            counts[e.status] = counts.get(e.status, 0) + 1
+        return counts
+
+    def print_summary(self) -> None:
+        """Print a compact manifest summary to stdout."""
+        print("\n" + "-" * 60)
+        print("ARTIFACT MANIFEST")
+        print("-" * 60)
+        for e in self.entries:
+            status_icon = {
+                "produced": "+",
+                "skipped_mode": "~",
+                "skipped_data": "~",
+                "skipped_suppressed": "~",
+                "failed": "X",
+            }.get(e.status, "?")
+            reason = f" ({e.skip_reason})" if e.skip_reason else ""
+            print(f"  [{status_icon}] {e.artifact_name}: {e.status}{reason}")
+        counts = self.summary()
+        print(f"\n  Total: {len(self.entries)} artifacts — "
+              + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())))
+
+
+@dataclass
+class ReportContext:
+    """Encapsulates loaded data and configuration for report generation."""
+    mode: ReportMode
+    proc_df: pd.DataFrame
+    rolling8q_df: pd.DataFrame
+    subject_bank_cert: int
+    excel_file: str
+    base_stem: str
+    charts_dir: Path
+    scatter_dir: Path
+    tables_dir: Path
+    metric_descriptions: Optional[pd.DataFrame] = None
+    suppressed_charts: frozenset = field(default_factory=frozenset)
+    manifest: ArtifactManifest = field(default_factory=ArtifactManifest)
+
+
+def resolve_report_mode_for_generator() -> ReportMode:
+    """Resolve the report mode from REPORT_MODE env var.
+
+    Returns ReportMode.FULL_LOCAL (default) or ReportMode.CORP_SAFE.
+    """
+    raw = os.getenv("REPORT_MODE", "full_local").strip().lower()
+    if raw == "corp_safe":
+        return ReportMode.CORP_SAFE
+    return ReportMode.FULL_LOCAL
+
+
+# ---------------------------------------------------------------------------
+# ARTIFACT REGISTRY — declares every artifact with mode availability
+# ---------------------------------------------------------------------------
+# Both modes: full_local + corp_safe
+_BOTH = (ReportMode.FULL_LOCAL, ReportMode.CORP_SAFE)
+# full_local only (requires matplotlib/seaborn)
+_LOCAL = (ReportMode.FULL_LOCAL,)
+
+ARTIFACT_REGISTRY: List[ArtifactSpec] = [
+    # --- Tables (HTML, both modes) ---
+    ArtifactSpec("executive_summary_standard", "table", _BOTH, "html",
+                 "Wealth-focused executive summary (standard)", "_executive_summary_standard.html"),
+    ArtifactSpec("executive_summary_normalized", "table", _BOTH, "html",
+                 "Wealth-focused executive summary (normalized)", "_executive_summary_normalized.html"),
+    ArtifactSpec("detailed_peer_table_standard", "table", _BOTH, "html",
+                 "Full peer landscape (standard)", "_detailed_peer_table_standard.html"),
+    ArtifactSpec("detailed_peer_table_normalized", "table", _BOTH, "html",
+                 "Full peer landscape (normalized)", "_detailed_peer_table_normalized.html"),
+    ArtifactSpec("core_pb_peer_table_standard", "table", _BOTH, "html",
+                 "Wealth peer analysis (standard)", "_core_pb_peer_table_standard.html"),
+    ArtifactSpec("core_pb_peer_table_normalized", "table", _BOTH, "html",
+                 "Wealth peer analysis (normalized)", "_core_pb_peer_table_normalized.html"),
+    ArtifactSpec("ratio_components_standard", "table", _BOTH, "html",
+                 "Ratio components breakdown (standard)", "_ratio_components_standard.html"),
+    ArtifactSpec("ratio_components_normalized", "table", _BOTH, "html",
+                 "Ratio components breakdown (normalized)", "_ratio_components_normalized.html"),
+    ArtifactSpec("cre_segment_standard", "table", _BOTH, "html",
+                 "CRE segment focus (standard)", "_cre_segment_standard.html"),
+    ArtifactSpec("cre_segment_normalized", "table", _BOTH, "html",
+                 "CRE segment focus (normalized)", "_cre_segment_normalized.html"),
+    ArtifactSpec("resi_segment_standard", "table", _BOTH, "html",
+                 "Resi segment focus (standard)", "_resi_segment_standard.html"),
+    ArtifactSpec("resi_segment_normalized", "table", _BOTH, "html",
+                 "Resi segment focus (normalized)", "_resi_segment_normalized.html"),
+    ArtifactSpec("fred_table", "table", _BOTH, "html",
+                 "FRED macro indicator table", "_fred_table.html"),
+
+    # --- Charts (matplotlib, full_local only) ---
+    ArtifactSpec("standard_credit_chart", "chart", _LOCAL, "matplotlib",
+                 "Standard credit deterioration chart", "_standard_credit_chart.png"),
+    ArtifactSpec("normalized_credit_chart", "chart", _LOCAL, "matplotlib",
+                 "Normalized credit deterioration chart", "_normalized_credit_chart.png"),
+    ArtifactSpec("portfolio_mix", "chart", _LOCAL, "matplotlib",
+                 "Portfolio mix composition chart", "_portfolio_mix.png"),
+    ArtifactSpec("problem_asset_attribution", "chart", _LOCAL, "matplotlib",
+                 "Problem-asset segment attribution", "_problem_asset_attribution.png"),
+    ArtifactSpec("reserve_risk_allocation", "chart", _LOCAL, "matplotlib",
+                 "Reserve allocation vs risk profile", "_reserve_risk_allocation.png"),
+    ArtifactSpec("migration_ladder", "chart", _LOCAL, "matplotlib",
+                 "Early-warning migration ladder", "_migration_ladder.png"),
+    ArtifactSpec("years_of_reserves", "chart", _LOCAL, "matplotlib",
+                 "Years-of-reserves by segment", "_years_of_reserves.png"),
+    ArtifactSpec("growth_vs_deterioration", "chart", _LOCAL, "matplotlib",
+                 "Growth vs deterioration quadrant", "_growth_vs_deterioration.png"),
+    ArtifactSpec("risk_adjusted_return", "chart", _LOCAL, "matplotlib",
+                 "Risk-adjusted return frontier", "_risk_adjusted_return.png"),
+    ArtifactSpec("concentration_vs_capital", "chart", _LOCAL, "matplotlib",
+                 "Concentration vs capital sensitivity", "_concentration_vs_capital.png"),
+    ArtifactSpec("liquidity_overlay", "chart", _LOCAL, "matplotlib",
+                 "Liquidity / draw-risk overlay", "_liquidity_overlay.png"),
+    ArtifactSpec("macro_overlay", "chart", _LOCAL, "matplotlib",
+                 "Macro overlay on credit trend", "_macro_overlay.png"),
+
+    # --- Scatters (matplotlib, full_local only) ---
+    ArtifactSpec("scatter_nco_vs_npl", "scatter", _LOCAL, "matplotlib",
+                 "Standard NCO vs NPL scatter", "_scatter_nco_vs_npl.png"),
+    ArtifactSpec("scatter_pd_vs_npl", "scatter", _LOCAL, "matplotlib",
+                 "Standard PD vs NPL scatter", "_scatter_pd_vs_npl.png"),
+    ArtifactSpec("scatter_norm_nco_vs_nonaccrual", "scatter", _LOCAL, "matplotlib",
+                 "Normalized NCO vs Nonaccrual scatter", "_scatter_norm_nco_vs_nonaccrual.png"),
+
+    # --- FRED expansion charts (matplotlib, full_local only) ---
+    ArtifactSpec("sbl_backdrop", "fred_chart", _LOCAL, "matplotlib",
+                 "SBL backdrop chart", "_sbl_backdrop.png"),
+    ArtifactSpec("jumbo_conditions", "fred_chart", _LOCAL, "matplotlib",
+                 "Jumbo conditions chart", "_jumbo_conditions.png"),
+    ArtifactSpec("resi_credit_cycle", "fred_chart", _LOCAL, "matplotlib",
+                 "Resi credit cycle chart", "_resi_credit_cycle.png"),
+    ArtifactSpec("cre_cycle", "fred_chart", _LOCAL, "matplotlib",
+                 "CRE cycle chart", "_cre_cycle.png"),
+    ArtifactSpec("cs_collateral_panel", "fred_chart", _LOCAL, "matplotlib",
+                 "Case-Shiller collateral panel", "_cs_collateral_panel.png"),
+]
+
+# Quick lookup by name
+_ARTIFACT_BY_NAME: Dict[str, ArtifactSpec] = {a.name: a for a in ARTIFACT_REGISTRY}
+
+
+def get_artifacts_for_mode(mode: ReportMode) -> List[ArtifactSpec]:
+    """Return artifacts available in the given mode."""
+    return [a for a in ARTIFACT_REGISTRY if a.is_available(mode)]
+
+
+def should_produce(name: str, mode: ReportMode, suppressed: frozenset = frozenset()) -> bool:
+    """Check if an artifact should be produced given mode and suppression list."""
+    spec = _ARTIFACT_BY_NAME.get(name)
+    if spec is None:
+        return False
+    if not spec.is_available(mode):
+        return False
+    if name in suppressed:
+        return False
+    return True
 
 # ==================================================================================
 # CONFIGURATION AND UTILITY FUNCTIONS
@@ -2086,6 +2318,72 @@ def plot_cs_collateral_panel(
 
 
 # ---------- MAIN: drop-in replacement ----------
+def _produce_table(ctx: ReportContext, artifact_name: str, csv_log,
+                   generator_fn, out_dir: Path, *args, **kwargs) -> None:
+    """Helper: produce an HTML table artifact with mode-check + manifest."""
+    mode = ctx.mode
+    manifest = ctx.manifest
+    spec = _ARTIFACT_BY_NAME.get(artifact_name)
+    if not spec:
+        return
+    if not spec.is_available(mode):
+        manifest.record(artifact_name, mode.value, ArtifactStatus.SKIPPED_MODE,
+                        skip_reason=f"not available in {mode.value} (renderer={spec.renderer})")
+        print(f"  [{artifact_name}] skipped — not available in {mode.value}")
+        return
+    try:
+        result = generator_fn(*args, **kwargs)
+        html = result[0] if isinstance(result, tuple) else result
+        if html:
+            path = out_dir / f"{ctx.base_stem}{spec.filename_suffix}"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+            manifest.record(artifact_name, mode.value, ArtifactStatus.PRODUCED, path=str(path))
+            csv_log.log_file_written(str(path), phase="tables", component=artifact_name)
+        else:
+            manifest.record(artifact_name, mode.value, ArtifactStatus.SKIPPED_DATA,
+                            skip_reason="generator returned empty")
+    except Exception as exc:
+        manifest.record(artifact_name, mode.value, ArtifactStatus.FAILED,
+                        skip_reason=str(exc)[:200])
+        print(f"  [{artifact_name}] FAILED: {exc}")
+
+
+def _produce_chart(ctx: ReportContext, artifact_name: str, csv_log,
+                   chart_fn, out_dir: Path, *args, **kwargs) -> None:
+    """Helper: produce a matplotlib chart artifact with mode-check + manifest."""
+    mode = ctx.mode
+    manifest = ctx.manifest
+    spec = _ARTIFACT_BY_NAME.get(artifact_name)
+    if not spec:
+        return
+    if not spec.is_available(mode):
+        manifest.record(artifact_name, mode.value, ArtifactStatus.SKIPPED_MODE,
+                        skip_reason=f"not available in {mode.value} (requires matplotlib)")
+        print(f"  [{artifact_name}] skipped — not available in {mode.value}")
+        return
+    if artifact_name in ctx.suppressed_charts:
+        manifest.record(artifact_name, mode.value, ArtifactStatus.SKIPPED_SUPPRESSED,
+                        skip_reason="suppressed by preflight validation")
+        print(f"  [{artifact_name}] skipped — suppressed by preflight")
+        return
+    try:
+        path = str(out_dir / f"{ctx.base_stem}{spec.filename_suffix}")
+        kwargs["save_path"] = path
+        result = chart_fn(*args, **kwargs)
+        if result is not None:
+            manifest.record(artifact_name, mode.value, ArtifactStatus.PRODUCED, path=path)
+            csv_log.log_file_written(path, phase=spec.category, component=artifact_name)
+            print(f"  {artifact_name} saved: {path}")
+        else:
+            manifest.record(artifact_name, mode.value, ArtifactStatus.SKIPPED_DATA,
+                            skip_reason="chart function returned None")
+    except Exception as exc:
+        manifest.record(artifact_name, mode.value, ArtifactStatus.FAILED,
+                        skip_reason=str(exc)[:200])
+        print(f"  [{artifact_name}] FAILED: {exc}")
+
+
 def generate_reports(
     # data window & figure sizing
     start_date: str = "2023-01-01",
@@ -2105,14 +2403,22 @@ def generate_reports(
     credit_subtitle: Optional[str] = "F&V excluded from Peers (Ex. F&V)",
     # Macro table: pass Short Names; we'll map to Series ID via FRED_Descriptions
     fred_short_names: Optional[List[str]] = None,
-) -> None:
+) -> Optional[ArtifactManifest]:
     """
-    End-to-end runner:
-    - finds the latest processed Excel file in output/,
-    - writes charts to Peers/charts/, scatters to Peers/scatter/, tables to Peers/tables/,
-    - generates normalized bar+line credit chart, standard+normalized scatters,
-      standard+normalized HTML tables, and the FRED macro table.
+    End-to-end report runner with dual-mode architecture.
+
+    Modes (controlled by REPORT_MODE env var):
+      - full_local (default): All artifacts — charts, scatters, HTML tables.
+        Requires matplotlib/seaborn.
+      - corp_safe: HTML tables only. Skips matplotlib-dependent charts/scatters
+        gracefully with manifest logging.
+
+    Returns the ArtifactManifest summarizing what was produced/skipped.
     """
+    # ---- Resolve mode ----
+    mode = resolve_report_mode_for_generator()
+    manifest = ArtifactManifest()
+
     # ---- B7: MS Combined Entity ----
     REPORT_VIEW = os.getenv("REPORT_VIEW", "ALL_BANKS")
     MS_COMBINED_CERT = int(os.getenv("MS_COMBINED_CERT", "88888"))
@@ -2133,6 +2439,8 @@ def generate_reports(
 
     print("=" * 80)
     print("MSPBNA PERFORMANCE REPORT GENERATOR")
+    print(f"  Mode: {mode.value}")
+    print(f"  Available artifacts: {len(get_artifacts_for_mode(mode))} of {len(ARTIFACT_REGISTRY)}")
     print("=" * 80)
 
     cfg = load_config()
@@ -2142,7 +2450,7 @@ def generate_reports(
     excel_file = find_latest_excel_file(cfg["output_dir"])
     if not excel_file:
         print("ERROR: No Excel files found in output/. Run the pipeline first.")
-        return
+        return manifest
 
     output_root = Path(excel_file).parent.resolve()
 
@@ -2159,7 +2467,7 @@ def generate_reports(
     print(f"File created: {datetime.fromtimestamp(os.path.getmtime(excel_file)).strftime('%Y-%m-%d')}")
     csv_log.info(f"Source workbook: {excel_file}",
                  event_type="FILE_DISCOVERED", phase="startup", component="excel_discovery",
-                 context={"excel_file": str(excel_file)})
+                 context={"excel_file": str(excel_file), "mode": mode.value})
 
     # base already contains the date (e.g. "Bank_Performance_Dashboard_20260311")
     # so we do NOT append a second date suffix to artifact filenames.
@@ -2167,7 +2475,7 @@ def generate_reports(
 
     try:
         # ------------------------------------------------------------------
-        # LOAD SHEETS
+        # PHASE 1: WORKBOOK INGESTION
         # ------------------------------------------------------------------
         print("\nLoading data from Excel sheets...")
         with pd.ExcelFile(excel_file) as xls:
@@ -2195,7 +2503,7 @@ def generate_reports(
                              phase="sheet_load", component="Averages_8Q")
 
         # ------------------------------------------------------------------
-        # PREFLIGHT VALIDATION
+        # PHASE 2: PREFLIGHT VALIDATION
         # ------------------------------------------------------------------
         preflight = validate_output_inputs(proc_df_with_peers, rolling8q_df, subject_bank_cert)
         if preflight["warnings"]:
@@ -2209,115 +2517,121 @@ def generate_reports(
                 print(f"    [X] {e}")
                 csv_log.error(e, event_type="PRECHECK_FAIL", phase="preflight")
             print("  Aborting report generation due to preflight errors.")
-            return
-        suppressed_charts = set(preflight.get("suppressed_charts", []))
+            return manifest
+        suppressed_charts = frozenset(preflight.get("suppressed_charts", []))
+
+        # Build ReportContext for helper functions
+        ctx = ReportContext(
+            mode=mode,
+            proc_df=proc_df_with_peers,
+            rolling8q_df=rolling8q_df,
+            subject_bank_cert=subject_bank_cert,
+            excel_file=excel_file,
+            base_stem=base,
+            charts_dir=charts_dir,
+            scatter_dir=scatter_dir,
+            tables_dir=tables_dir,
+            metric_descriptions=metric_descriptions,
+            suppressed_charts=suppressed_charts,
+            manifest=manifest,
+        )
 
         # ------------------------------------------------------------------
-        # EXECUTIVE SUMMARY & DETAILED PEER TABLES -> tables_dir
+        # PHASE 3: HTML TABLES (both modes)
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
-        print("GENERATING EXECUTIVE SUMMARY & DETAILED PEER TABLES")
+        print("GENERATING HTML TABLES")
         print("-" * 60)
 
-        # Executive Summary — Wealth-focused: MSPBNA | Goldman Sachs | UBS | Wealth Peers | Delta
-        # Both standard and normalized versions as separate artifacts
+        # Executive Summary — Wealth-focused
         for is_norm in [False, True]:
             norm_str = "normalized" if is_norm else "standard"
-            exec_html, exec_df = generate_credit_metrics_email_table(
-                proc_df_with_peers, subject_bank_cert, is_normalized=is_norm
-            )
-            if exec_html:
-                exec_path = tables_dir / f"{base}_executive_summary_{norm_str}.html"
-                with open(exec_path, "w", encoding="utf-8") as f:
-                    f.write(exec_html)
-                print(f"  Executive summary ({norm_str}) saved: {exec_path}")
-                csv_log.log_file_written(str(exec_path), phase="tables", component="executive_summary")
-                if exec_df is not None:
-                    print(f"  Table contains {len(exec_df)} credit metrics")
+            _produce_table(ctx, f"executive_summary_{norm_str}", csv_log,
+                           generate_credit_metrics_email_table, tables_dir,
+                           proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
+
+        # Detailed Peer, Core PB, Ratio Components, Segment tables
+        for is_norm in [False, True]:
+            norm_str = "normalized" if is_norm else "standard"
+
+            _produce_table(ctx, f"detailed_peer_table_{norm_str}", csv_log,
+                           generate_detailed_peer_table, tables_dir,
+                           proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
+
+            _produce_table(ctx, f"core_pb_peer_table_{norm_str}", csv_log,
+                           generate_core_pb_peer_table, tables_dir,
+                           proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
+
+            _produce_table(ctx, f"ratio_components_{norm_str}", csv_log,
+                           generate_ratio_components_table, tables_dir,
+                           proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
+
+            _produce_table(ctx, f"cre_segment_{norm_str}", csv_log,
+                           generate_segment_focus_table, tables_dir,
+                           proc_df_with_peers, subject_bank_cert,
+                           segment_name="CRE", is_normalized=is_norm)
+
+            _produce_table(ctx, f"resi_segment_{norm_str}", csv_log,
+                           generate_segment_focus_table, tables_dir,
+                           proc_df_with_peers, subject_bank_cert,
+                           segment_name="Resi", is_normalized=is_norm)
+
+        # FRED macro table
+        _produce_table(ctx, "fred_table", csv_log,
+                       build_fred_macro_table, tables_dir,
+                       excel_file, list(fred_short_names))
 
         # ------------------------------------------------------------------
-        # STANDARD CREDIT DETERIORATION CHART -> charts_dir
+        # PHASE 4: CREDIT DETERIORATION CHARTS (full_local only)
         # ------------------------------------------------------------------
         print("\n" + "-" * 60)
-        print("GENERATING STANDARD CREDIT DETERIORATION CHART")
-        print("-" * 60)
-        std_chart_path = str(charts_dir / f"{base}_standard_credit_chart.png")
-        create_credit_deterioration_chart_ppt(
-            proc_df_with_peers=proc_df_with_peers,
-            subject_bank_cert=subject_bank_cert,
-            start_date=start_date,
-            bar_metric="TTM_NCO_Rate",
-            line_metric="NPL_to_Gross_Loans_Rate",
-            bar_entities=[subject_bank_cert, ACTIVE_STANDARD_COMPOSITES["all_peers"], ACTIVE_STANDARD_COMPOSITES["core_pb"]],
-            line_entities=[subject_bank_cert, ACTIVE_STANDARD_COMPOSITES["all_peers"], ACTIVE_STANDARD_COMPOSITES["core_pb"]],
-            custom_title="TTM NCO Rate (bars) vs NPL to Gross Loans Rate (lines)",
-            save_path=std_chart_path,
-        )
-        print(f"  Standard chart saved: {std_chart_path}")
-        csv_log.log_file_written(std_chart_path, phase="charts", component="standard_credit_chart")
-
-        # ------------------------------------------------------------------
-        # NORMALIZED CREDIT DETERIORATION CHART -> charts_dir
-        # ------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("GENERATING NORMALIZED CREDIT DETERIORATION CHART")
+        print("GENERATING CHARTS")
         print("-" * 60)
 
-        # Use true normalized composite CERTs directly — no alias-row duplication
-        norm_df_plot = proc_df_with_peers
+        _produce_chart(ctx, "standard_credit_chart", csv_log,
+                       create_credit_deterioration_chart_ppt, charts_dir,
+                       proc_df_with_peers=proc_df_with_peers,
+                       subject_bank_cert=subject_bank_cert,
+                       start_date=start_date,
+                       bar_metric="TTM_NCO_Rate",
+                       line_metric="NPL_to_Gross_Loans_Rate",
+                       bar_entities=[subject_bank_cert, ACTIVE_STANDARD_COMPOSITES["all_peers"], ACTIVE_STANDARD_COMPOSITES["core_pb"]],
+                       line_entities=[subject_bank_cert, ACTIVE_STANDARD_COMPOSITES["all_peers"], ACTIVE_STANDARD_COMPOSITES["core_pb"]],
+                       custom_title="TTM NCO Rate (bars) vs NPL to Gross Loans Rate (lines)")
 
-        # Determine line metric with fallback
+        # Normalized credit chart
         norm_line_metric = "Norm_Nonaccrual_Rate"
-        if norm_line_metric not in norm_df_plot.columns:
+        if norm_line_metric not in proc_df_with_peers.columns:
             norm_line_metric = "Norm_NPL_to_Gross_Loans_Rate"
 
-        norm_chart_path = str(charts_dir / f"{base}_normalized_credit_chart.png")
-
-        fig, ax = create_credit_deterioration_chart_ppt(
-            proc_df_with_peers=norm_df_plot,
-            subject_bank_cert=subject_bank_cert,
-            start_date=start_date,
-            bar_metric="Norm_NCO_Rate",
-            line_metric=norm_line_metric,
-            bar_entities=[subject_bank_cert, ACTIVE_NORMALIZED_COMPOSITES["all_peers"], ACTIVE_NORMALIZED_COMPOSITES["core_pb"]],
-            line_entities=[subject_bank_cert, ACTIVE_NORMALIZED_COMPOSITES["all_peers"], ACTIVE_NORMALIZED_COMPOSITES["core_pb"]],
-            figsize=credit_figsize,
-            title_size=title_size,
-            axis_label_size=axis_label_size,
-            tick_size=tick_size,
-            tag_size=tag_size,
-            legend_fontsize=legend_fontsize,
-            economist_style=True,
-            custom_title=credit_title or "Norm NCO Rate (bars) vs Norm Nonaccrual Rate (lines)",
-            save_path=norm_chart_path,
-        )
-        print(f"  Normalized chart saved: {norm_chart_path}")
-        csv_log.log_file_written(norm_chart_path, phase="charts", component="normalized_credit_chart")
+        _produce_chart(ctx, "normalized_credit_chart", csv_log,
+                       create_credit_deterioration_chart_ppt, charts_dir,
+                       proc_df_with_peers=proc_df_with_peers,
+                       subject_bank_cert=subject_bank_cert,
+                       start_date=start_date,
+                       bar_metric="Norm_NCO_Rate",
+                       line_metric=norm_line_metric,
+                       bar_entities=[subject_bank_cert, ACTIVE_NORMALIZED_COMPOSITES["all_peers"], ACTIVE_NORMALIZED_COMPOSITES["core_pb"]],
+                       line_entities=[subject_bank_cert, ACTIVE_NORMALIZED_COMPOSITES["all_peers"], ACTIVE_NORMALIZED_COMPOSITES["core_pb"]],
+                       figsize=credit_figsize,
+                       title_size=title_size,
+                       axis_label_size=axis_label_size,
+                       tick_size=tick_size,
+                       tag_size=tag_size,
+                       legend_fontsize=legend_fontsize,
+                       economist_style=True,
+                       custom_title=credit_title or "Norm NCO Rate (bars) vs Norm Nonaccrual Rate (lines)")
 
         # ------------------------------------------------------------------
-        # B5: DUAL SCATTERS (STANDARD + NORMALIZED) -> scatter_dir
+        # PHASE 5: SCATTER PLOTS (full_local only)
         # ------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("GENERATING SCATTER PLOTS (STANDARD + NORMALIZED)")
-        print("-" * 60)
-
-        # Ensure numeric columns
+        # Ensure numeric columns for scatter
         for c in ["NPL_to_Gross_Loans_Rate", "TTM_NCO_Rate", "Past_Due_Rate",
                    "Norm_Nonaccrual_Rate", "Norm_NCO_Rate"]:
             if c in rolling8q_df.columns:
                 rolling8q_df[c] = pd.to_numeric(rolling8q_df[c], errors="coerce")
 
-        # -- Standard scatters --
-        # Use true composite CERTs directly; peer avg displayed via 90003 (All Peers)
-        s1_path = scatter_dir / f"{base}_scatter_nco_vs_npl.png"
-        plot_scatter_dynamic(
-            df=rolling8q_df,
-            x_col="NPL_to_Gross_Loans_Rate",
-            y_col="TTM_NCO_Rate",
-            subject_cert=subject_bank_cert,
-            peer_avg_cert_primary=90003,
-            peer_avg_cert_alt=90001,
-            use_alt_peer_avg=False,
+        scatter_common = dict(
             show_peers_avg_label=True,
             show_mspbna_label=True,
             identify_outliers=True,
@@ -2330,275 +2644,138 @@ def generate_reports(
             economist_style=True,
             transparent_bg=True,
             square_axes=True,
-            save_path=str(s1_path),
         )
-        print(f"  Standard scatter (NCO vs NPL) saved: {s1_path}")
-        csv_log.log_file_written(str(s1_path), phase="scatter", component="scatter_nco_vs_npl")
 
-        s2_path = scatter_dir / f"{base}_scatter_pd_vs_npl.png"
-        plot_scatter_dynamic(
-            df=rolling8q_df,
-            x_col="NPL_to_Gross_Loans_Rate",
-            y_col="Past_Due_Rate",
-            subject_cert=subject_bank_cert,
-            peer_avg_cert_primary=90003,
-            peer_avg_cert_alt=90001,
-            use_alt_peer_avg=False,
-            show_peers_avg_label=True,
-            show_mspbna_label=True,
-            identify_outliers=True,
-            outliers_topn=outlier_topn,
-            figsize=(scatter_size, scatter_size),
-            title_size=16,
-            axis_label_size=12,
-            tick_size=tick_size,
-            tag_size=tag_size,
-            economist_style=True,
-            transparent_bg=True,
-            square_axes=True,
-            save_path=str(s2_path),
-        )
-        print(f"  Standard scatter (PD vs NPL) saved: {s2_path}")
-        csv_log.log_file_written(str(s2_path), phase="scatter", component="scatter_pd_vs_npl")
+        _produce_chart(ctx, "scatter_nco_vs_npl", csv_log,
+                       plot_scatter_dynamic, scatter_dir,
+                       df=rolling8q_df,
+                       x_col="NPL_to_Gross_Loans_Rate",
+                       y_col="TTM_NCO_Rate",
+                       subject_cert=subject_bank_cert,
+                       peer_avg_cert_primary=90003,
+                       peer_avg_cert_alt=90001,
+                       use_alt_peer_avg=False,
+                       **scatter_common)
 
-        # -- Normalized scatter — use true composite CERTs directly, no alias rows --
-        s3_path = scatter_dir / f"{base}_scatter_norm_nco_vs_nonaccrual.png"
-        plot_scatter_dynamic(
-            df=rolling8q_df,
-            x_col="Norm_Nonaccrual_Rate",
-            y_col="Norm_NCO_Rate",
-            subject_cert=subject_bank_cert,
-            peer_avg_cert_primary=90006,
-            peer_avg_cert_alt=90004,
-            use_alt_peer_avg=False,
-            show_peers_avg_label=True,
-            show_mspbna_label=True,
-            identify_outliers=True,
-            outliers_topn=outlier_topn,
-            figsize=(scatter_size, scatter_size),
-            title_size=16,
-            axis_label_size=12,
-            tick_size=tick_size,
-            tag_size=tag_size,
-            economist_style=True,
-            transparent_bg=True,
-            square_axes=True,
-            save_path=str(s3_path),
-        )
-        print(f"  Normalized scatter (Norm NCO vs Norm Nonaccrual) saved: {s3_path}")
-        csv_log.log_file_written(str(s3_path), phase="scatter", component="scatter_norm_nco_vs_nonaccrual")
+        _produce_chart(ctx, "scatter_pd_vs_npl", csv_log,
+                       plot_scatter_dynamic, scatter_dir,
+                       df=rolling8q_df,
+                       x_col="NPL_to_Gross_Loans_Rate",
+                       y_col="Past_Due_Rate",
+                       subject_cert=subject_bank_cert,
+                       peer_avg_cert_primary=90003,
+                       peer_avg_cert_alt=90001,
+                       use_alt_peer_avg=False,
+                       **scatter_common)
+
+        _produce_chart(ctx, "scatter_norm_nco_vs_nonaccrual", csv_log,
+                       plot_scatter_dynamic, scatter_dir,
+                       df=rolling8q_df,
+                       x_col="Norm_Nonaccrual_Rate",
+                       y_col="Norm_NCO_Rate",
+                       subject_cert=subject_bank_cert,
+                       peer_avg_cert_primary=90006,
+                       peer_avg_cert_alt=90004,
+                       use_alt_peer_avg=False,
+                       **scatter_common)
 
         # ------------------------------------------------------------------
-        # FRED MACRO TABLE -> tables_dir
+        # PHASE 6: SEGMENT & ROADMAP CHARTS (full_local only)
         # ------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("GENERATING FRED MACRO TABLE")
-        print("-" * 60)
-        try:
-            fred_html, fred_df = build_fred_macro_table(excel_file, list(fred_short_names))
-            fred_path = tables_dir / f"{base}_fred_table.html"
-            with open(fred_path, "w", encoding="utf-8") as f:
-                f.write(fred_html)
-            print(f"  FRED macro table saved: {fred_path}")
-        except Exception as e:
-            print(f"  Skipped FRED table: {e}")
+        _produce_chart(ctx, "portfolio_mix", csv_log,
+                       plot_portfolio_mix, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-        # ------------------------------------------------------------------
-        # DETAILED / LEGACY HTML TABLES -> tables_dir
-        # ------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("GENERATING DETAILED HTML TABLES")
-        print("-" * 60)
+        _produce_chart(ctx, "problem_asset_attribution", csv_log,
+                       plot_problem_asset_attribution, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-        # NOTE: The former mixed standard-vs-normalized comparison artifact
-        # (generate_normalized_comparison_table) has been removed.
-        # Standard and normalized metrics must not be mixed in the same
-        # table/artifact. Each artifact is single-regime only.
+        _produce_chart(ctx, "reserve_risk_allocation", csv_log,
+                       plot_reserve_risk_allocation, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-        # GENERATE DETAILED PEER, RATIO & SEGMENT TABLES
-        print("\nGENERATING DETAILED PEER, RATIO & SEGMENT TABLES...")
+        _produce_chart(ctx, "migration_ladder", csv_log,
+                       plot_migration_ladder, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-        for is_norm in [False, True]:
-            norm_str = "normalized" if is_norm else "standard"
+        _produce_chart(ctx, "years_of_reserves", csv_log,
+                       plot_years_of_reserves, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-            # Detailed Peer Table
-            dt = generate_detailed_peer_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
-            if dt:
-                with open(tables_dir / f"{base}_detailed_peer_table_{norm_str}.html", "w") as f:
-                    f.write(dt)
+        _produce_chart(ctx, "growth_vs_deterioration", csv_log,
+                       plot_growth_vs_deterioration, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-            # Core PB Detailed Table
-            cpb = generate_core_pb_peer_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
-            if cpb:
-                with open(tables_dir / f"{base}_core_pb_peer_table_{norm_str}.html", "w") as f:
-                    f.write(cpb)
+        _produce_chart(ctx, "risk_adjusted_return", csv_log,
+                       plot_risk_adjusted_return, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-            # Ratio Components
-            rc = generate_ratio_components_table(proc_df_with_peers, subject_bank_cert, is_normalized=is_norm)
-            if rc:
-                with open(tables_dir / f"{base}_ratio_components_{norm_str}.html", "w") as f:
-                    f.write(rc)
+        _produce_chart(ctx, "concentration_vs_capital", csv_log,
+                       plot_concentration_vs_capital, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-            # Segments
-            cre = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, segment_name="CRE", is_normalized=is_norm)
-            if cre:
-                with open(tables_dir / f"{base}_cre_segment_{norm_str}.html", "w") as f:
-                    f.write(cre)
+        _produce_chart(ctx, "liquidity_overlay", csv_log,
+                       plot_liquidity_overlay, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
 
-            resi = generate_segment_focus_table(proc_df_with_peers, subject_bank_cert, segment_name="Resi", is_normalized=is_norm)
-            if resi:
-                with open(tables_dir / f"{base}_resi_segment_{norm_str}.html", "w") as f:
-                    f.write(resi)
+        _produce_chart(ctx, "macro_overlay", csv_log,
+                       plot_macro_overlay, charts_dir,
+                       proc_df_with_peers, subject_bank_cert, excel_file)
 
         # ------------------------------------------------------------------
-        # SEGMENT-LEVEL CHARTS -> charts_dir
+        # PHASE 7: FRED EXPANSION CHARTS (full_local only)
         # ------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("GENERATING SEGMENT-LEVEL CHARTS")
-        print("-" * 60)
+        fred_chart_names = ["sbl_backdrop", "jumbo_conditions", "resi_credit_cycle",
+                            "cre_cycle", "cs_collateral_panel"]
+        fred_chart_fns = [plot_sbl_backdrop, plot_jumbo_conditions, plot_resi_credit_cycle,
+                          plot_cre_cycle, plot_cs_collateral_panel]
 
-        # 1. Portfolio Mix
-        mix_path = str(charts_dir / f"{base}_portfolio_mix.png")
-        fig = plot_portfolio_mix(proc_df_with_peers, subject_bank_cert, save_path=mix_path)
-        if fig:
-            print(f"  Portfolio mix chart saved: {mix_path}")
+        # Only attempt loading FRED data if any FRED charts are available in this mode
+        any_fred_available = any(should_produce(n, mode, suppressed_charts) for n in fred_chart_names)
+        if any_fred_available:
+            try:
+                fred_expansion_df = None
+                with pd.ExcelFile(excel_file) as xls:
+                    for sheet_cand in ["FRED_SBL_Backdrop", "FRED_Residential_Jumbo",
+                                       "FRED_CRE", "FRED_CaseShiller_Selected"]:
+                        if sheet_cand in xls.sheet_names:
+                            _df = pd.read_excel(xls, sheet_name=sheet_cand)
+                            if "DATE" in _df.columns:
+                                _df["DATE"] = pd.to_datetime(_df["DATE"])
+                                _df = _df.set_index("DATE")
+                            if fred_expansion_df is None:
+                                fred_expansion_df = _df
+                            else:
+                                fred_expansion_df = fred_expansion_df.join(_df, how="outer")
 
-        # 2. Problem-Asset Attribution
-        attr_path = str(charts_dir / f"{base}_problem_asset_attribution.png")
-        fig = plot_problem_asset_attribution(proc_df_with_peers, subject_bank_cert, save_path=attr_path)
-        if fig:
-            print(f"  Problem-asset attribution chart saved: {attr_path}")
-
-        # 3. Reserve Allocation vs Risk
-        reserve_path = str(charts_dir / f"{base}_reserve_risk_allocation.png")
-        fig = plot_reserve_risk_allocation(proc_df_with_peers, subject_bank_cert, save_path=reserve_path)
-        if fig:
-            print(f"  Reserve-risk allocation chart saved: {reserve_path}")
-
-        # 4. Migration Ladder
-        ladder_path = str(charts_dir / f"{base}_migration_ladder.png")
-        fig = plot_migration_ladder(proc_df_with_peers, subject_bank_cert, save_path=ladder_path)
-        if fig:
-            print(f"  Migration ladder chart saved: {ladder_path}")
-
-        # ------------------------------------------------------------------
-        # ROADMAP CHARTS -> charts_dir
-        # ------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("GENERATING ROADMAP CHARTS")
-        print("-" * 60)
-
-        # 5. Years-of-Reserves by Segment
-        yor_path = str(charts_dir / f"{base}_years_of_reserves.png")
-        fig = plot_years_of_reserves(proc_df_with_peers, subject_bank_cert, save_path=yor_path)
-        if fig:
-            print(f"  Years-of-reserves chart saved: {yor_path}")
-
-        # 6. Growth vs Deterioration Quadrant
-        gvd_path = str(charts_dir / f"{base}_growth_vs_deterioration.png")
-        fig = plot_growth_vs_deterioration(proc_df_with_peers, subject_bank_cert, save_path=gvd_path)
-        if fig:
-            print(f"  Growth-vs-deterioration chart saved: {gvd_path}")
-
-        # 7. Risk-Adjusted Return Frontier
-        rar_path = str(charts_dir / f"{base}_risk_adjusted_return.png")
-        fig = plot_risk_adjusted_return(proc_df_with_peers, subject_bank_cert, save_path=rar_path)
-        if fig:
-            print(f"  Risk-adjusted return chart saved: {rar_path}")
-
-        # 8. Concentration vs Capital Sensitivity
-        cvc_path = str(charts_dir / f"{base}_concentration_vs_capital.png")
-        fig = plot_concentration_vs_capital(proc_df_with_peers, subject_bank_cert, save_path=cvc_path)
-        if fig:
-            print(f"  Concentration-vs-capital chart saved: {cvc_path}")
-
-        # 9. Liquidity / Draw-Risk Overlay
-        liq_path = str(charts_dir / f"{base}_liquidity_overlay.png")
-        fig = plot_liquidity_overlay(proc_df_with_peers, subject_bank_cert, save_path=liq_path)
-        if fig:
-            print(f"  Liquidity overlay chart saved: {liq_path}")
-
-        # 10. Macro Overlay on Credit Trend
-        macro_path = str(charts_dir / f"{base}_macro_overlay.png")
-        fig = plot_macro_overlay(proc_df_with_peers, subject_bank_cert, excel_file, save_path=macro_path)
-        if fig:
-            print(f"  Macro overlay chart saved: {macro_path}")
+                if fred_expansion_df is not None and not fred_expansion_df.empty:
+                    for fname, ffn in zip(fred_chart_names, fred_chart_fns):
+                        _produce_chart(ctx, fname, csv_log, ffn, charts_dir, fred_expansion_df)
+                else:
+                    for fname in fred_chart_names:
+                        manifest.record(fname, mode.value, ArtifactStatus.SKIPPED_DATA,
+                                        skip_reason="FRED expansion sheets not found")
+                    print("  No FRED expansion sheets found — run fred_ingestion_engine.py first")
+            except Exception as e:
+                for fname in fred_chart_names:
+                    manifest.record(fname, mode.value, ArtifactStatus.FAILED,
+                                    skip_reason=str(e)[:200])
+                print(f"  Skipped FRED expansion charts: {e}")
+        else:
+            for fname in fred_chart_names:
+                manifest.record(fname, mode.value, ArtifactStatus.SKIPPED_MODE,
+                                skip_reason=f"not available in {mode.value}")
 
         # ------------------------------------------------------------------
-        # FRED EXPANSION CHARTS -> charts_dir
+        # SUMMARY & MANIFEST
         # ------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("GENERATING FRED EXPANSION CHARTS")
-        print("-" * 60)
+        manifest.print_summary()
 
-        try:
-            # Try to load FRED expansion sheets from the Excel file
-            fred_expansion_df = None
-            with pd.ExcelFile(excel_file) as xls:
-                for sheet_cand in ["FRED_SBL_Backdrop", "FRED_Residential_Jumbo",
-                                   "FRED_CRE", "FRED_CaseShiller_Selected"]:
-                    if sheet_cand in xls.sheet_names:
-                        _df = pd.read_excel(xls, sheet_name=sheet_cand)
-                        if "DATE" in _df.columns:
-                            _df["DATE"] = pd.to_datetime(_df["DATE"])
-                            _df = _df.set_index("DATE")
-                        if fred_expansion_df is None:
-                            fred_expansion_df = _df
-                        else:
-                            fred_expansion_df = fred_expansion_df.join(_df, how="outer")
-
-            if fred_expansion_df is not None and not fred_expansion_df.empty:
-                # 1. SBL Backdrop
-                fig = plot_sbl_backdrop(
-                    fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_sbl_backdrop.png"),
-                )
-                if fig:
-                    print(f"  SBL backdrop chart saved")
-
-                # 2. Jumbo Conditions
-                fig = plot_jumbo_conditions(
-                    fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_jumbo_conditions.png"),
-                )
-                if fig:
-                    print(f"  Jumbo conditions chart saved")
-
-                # 3. Residential Credit Cycle
-                fig = plot_resi_credit_cycle(
-                    fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_resi_credit_cycle.png"),
-                )
-                if fig:
-                    print(f"  Resi credit cycle chart saved")
-
-                # 4. CRE Cycle
-                fig = plot_cre_cycle(
-                    fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_cre_cycle.png"),
-                )
-                if fig:
-                    print(f"  CRE cycle chart saved")
-
-                # 5. Case-Shiller Collateral Panel
-                fig = plot_cs_collateral_panel(
-                    fred_expansion_df,
-                    save_path=str(charts_dir / f"{base}_cs_collateral_panel.png"),
-                )
-                if fig:
-                    print(f"  Case-Shiller collateral panel saved")
-            else:
-                print("  No FRED expansion sheets found — run fred_ingestion_engine.py first")
-        except Exception as e:
-            print(f"  Skipped FRED expansion charts: {e}")
-
-        # ------------------------------------------------------------------
-        # SUMMARY
-        # ------------------------------------------------------------------
         print("\n" + "=" * 80)
         print("REPORT GENERATION COMPLETE")
         print("=" * 80)
         print(f"Source file: {excel_file}")
+        print(f"Mode: {mode.value}")
         print(f"Charts directory: {charts_dir}")
         print(f"Scatter directory: {scatter_dir}")
         print(f"Tables directory: {tables_dir}")
@@ -2614,6 +2791,8 @@ def generate_reports(
     finally:
         plt.close("all")
         csv_log.shutdown()
+
+    return manifest
 
 
 def create_credit_deterioration_chart_ppt(
