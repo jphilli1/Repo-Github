@@ -478,6 +478,87 @@ def extract_hud_result_rows(payload: Any) -> List[Dict]:
     return []
 
 
+# Wrapper-level metadata keys — these appear on HUD wrapper rows, not on
+# actual crosswalk data rows.
+_HUD_WRAPPER_KEYS = frozenset({"year", "quarter", "input", "crosswalk_type", "results"})
+
+
+def flatten_hud_rows(rows: List[Dict]) -> List[Dict]:
+    """Flatten wrapper rows that contain nested ``results`` lists.
+
+    The HUD county-to-ZIP API (type=7) can return a shape like::
+
+        [
+          {"year": 2025, "quarter": 4, "input": "06037",
+           "crosswalk_type": "7", "results": [
+             {"zip": "90001", "county": "06037", "res_ratio": 0.85, ...},
+             {"zip": "90002", "county": "06037", "res_ratio": 0.72, ...}
+           ]},
+          ...
+        ]
+
+    Each element is a *wrapper row* whose ``results`` key holds the actual
+    crosswalk data rows.  This function detects that pattern and explodes the
+    nested lists, propagating parent metadata (year, quarter, input,
+    crosswalk_type) onto each child row where the child does not already
+    carry that key.
+
+    If the rows are already flat data rows (no nested ``results``), they are
+    returned unchanged.
+    """
+    if not rows:
+        return rows
+
+    # Quick check: does the first row look like a wrapper?
+    first = rows[0]
+    if not isinstance(first, dict):
+        return rows
+
+    first_keys = set(first.keys())
+
+    # A row is a wrapper if it has a "results" key whose value is a list
+    # AND its other keys are a subset of the known wrapper keys.
+    has_nested_results = (
+        "results" in first_keys
+        and isinstance(first.get("results"), list)
+        and (first_keys - {"results"}).issubset(_HUD_WRAPPER_KEYS)
+    )
+
+    if not has_nested_results:
+        # Already flat data rows — return as-is
+        return rows
+
+    # Flatten: explode each wrapper row's "results" into individual data rows
+    flat: List[Dict] = []
+    n_wrappers = 0
+    for wrapper in rows:
+        if not isinstance(wrapper, dict):
+            continue
+
+        inner = wrapper.get("results")
+        if not isinstance(inner, list):
+            # Not a wrapper row — keep it
+            flat.append(wrapper)
+            continue
+
+        n_wrappers += 1
+        # Parent metadata to propagate
+        parent_meta = {k: v for k, v in wrapper.items() if k != "results"}
+
+        for child in inner:
+            if not isinstance(child, dict):
+                continue
+            # Merge parent metadata into child (child values take precedence)
+            merged = {**parent_meta, **child}
+            flat.append(merged)
+
+    logger.info(
+        f"flatten_hud_rows: exploded {n_wrappers} wrapper rows → "
+        f"{len(flat)} flat data rows"
+    )
+    return flat
+
+
 # Canonical column name mappings for HUD crosswalk outputs
 _HUD_COLUMN_MAP = {
     # ZIP variants
@@ -576,42 +657,60 @@ def fetch_hud_crosswalk(
             if resp.status_code == 200:
                 data = resp.json()
 
-                # Extract flat row list from any response wrapper shape
+                # Step 1: Extract row list from top-level payload shape
                 records = extract_hud_result_rows(data)
+                n_before_flatten = len(records)
 
-                # Log payload diagnostics
+                # Step 2: Flatten wrapper rows with nested "results" lists
+                records = flatten_hud_rows(records)
+                n_after_flatten = len(records)
+
+                # Step 3: Log payload diagnostics
                 diag = _describe_payload(data)
-                diag["extracted_row_count"] = len(records)
-                if records:
-                    diag["first_row_keys"] = sorted(records[0].keys()) if isinstance(records[0], dict) else []
+                diag["extracted_row_count_before_flatten"] = n_before_flatten
+                diag["extracted_row_count_after_flatten"] = n_after_flatten
+                if records and isinstance(records[0], dict):
+                    diag["first_row_keys"] = sorted(records[0].keys())
+                    diag["has_zip_column"] = any("zip" in k.lower() for k in records[0].keys())
+                    diag["has_fips_column"] = bool(
+                        set(k.lower() for k in records[0].keys()) &
+                        {"county", "county_fips", "geoid", "countyfips", "fips"}
+                    )
                 logger.info(f"HUD response parsed: query={query}, diagnostics={diag}")
 
                 if not records:
                     logger.warning(f"HUD API returned empty/unparseable result for query={query}")
                     return pd.DataFrame()
 
-                # Flatten nested structures via json_normalize, then canonicalize
+                # Step 4: Normalize nested dicts into flat DataFrame columns
                 try:
                     df = pd.json_normalize(records, sep="_")
                 except Exception:
                     df = pd.DataFrame(records)
 
+                # Step 5: Canonicalize column names and zero-pad codes
                 df = canonicalize_hud_columns(df)
 
                 # Verify we have real crosswalk columns, not just wrapper metadata
-                wrapper_only = {"year", "quarter", "input", "crosswalk_type", "results"}
                 actual_cols = set(df.columns)
-                if actual_cols and actual_cols.issubset(wrapper_only):
+                has_zip_col = any("zip" in c for c in actual_cols)
+                has_fips_col = bool(actual_cols & {"county", "county_fips", "geoid", "countyfips", "fips"})
+
+                if actual_cols.issubset(_HUD_WRAPPER_KEYS) or (not has_zip_col and not has_fips_col):
                     logger.error(
                         f"HUD response flattened to wrapper-only columns {sorted(actual_cols)} — "
-                        f"payload may have an unrecognized nested structure. "
-                        f"Payload shape: {_describe_payload(data)}"
+                        f"payload contains nested results that could not be fully flattened. "
+                        f"rows_before_flatten={n_before_flatten}, "
+                        f"rows_after_flatten={n_after_flatten}, "
+                        f"has_zip={has_zip_col}, has_fips={has_fips_col}, "
+                        f"payload_shape={_describe_payload(data)}"
                     )
                     return pd.DataFrame()
 
                 logger.info(
                     f"HUD crosswalk fetched: {len(df)} rows, "
-                    f"columns={sorted(df.columns)}, query={query}"
+                    f"columns={sorted(df.columns)}, query={query}, "
+                    f"has_zip={has_zip_col}, has_fips={has_fips_col}"
                 )
                 return df
 
@@ -1063,12 +1162,11 @@ def build_case_shiller_zip_sheets(
 
     # --- PARSE VALIDATION ---
     # Verify combined frame has usable crosswalk columns, not just wrapper metadata
-    wrapper_only = {"year", "quarter", "input", "crosswalk_type", "results"}
     actual_cols = set(combined_xwalk.columns)
     has_zip = any("zip" in c for c in actual_cols)
     has_fips = bool(actual_cols & {"county", "county_fips", "geoid", "countyfips", "fips"})
 
-    if (not has_zip and not has_fips) or actual_cols.issubset(wrapper_only):
+    if (not has_zip and not has_fips) or actual_cols.issubset(_HUD_WRAPPER_KEYS):
         parse_diag = {
             "columns_found": sorted(actual_cols),
             "row_count": len(combined_xwalk),

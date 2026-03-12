@@ -512,6 +512,35 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-12 — HUD Response Two-Pass Flattening Fix
+
+**Problem**: Even after the initial parsing fix, runtime logs showed the combined HUD DataFrame still had only wrapper columns (`year`, `quarter`, `input`, `crosswalk_type`, `results`). The parser was stopping one layer too early.
+
+**Root cause**: The HUD type=7 API returns `{"results": [wrapper, wrapper, ...]}` where each wrapper is `{"year":..., "quarter":..., "input":..., "crosswalk_type":..., "results": [actual_row, ...]}`. `extract_hud_result_rows()` correctly extracted the wrapper list (Shape B), but `pd.DataFrame(wrapper_rows)` produced a DataFrame with wrapper columns because each wrapper's `results` key contained the actual crosswalk rows as a nested list.
+
+**Fix**: Added `flatten_hud_rows()` as a second-pass flattener that detects wrapper rows (keys ⊆ `_HUD_WRAPPER_KEYS` + nested `results` list) and explodes them into actual data rows, propagating parent metadata. The fetch pipeline is now: `extract_hud_result_rows()` → `flatten_hud_rows()` → `pd.json_normalize()` → `canonicalize_hud_columns()`.
+
+**Changes:**
+1. **case_shiller_zip_mapper.py**:
+   - `flatten_hud_rows(rows)` — NEW: detects wrapper rows, explodes nested `results`, propagates parent metadata
+   - `_HUD_WRAPPER_KEYS` — NEW: frozenset of known wrapper metadata keys
+   - `fetch_hud_crosswalk()` — now calls `flatten_hud_rows()` between extraction and normalization; logs `rows_before_flatten` and `rows_after_flatten`
+   - Wrapper-only detection uses `_HUD_WRAPPER_KEYS` constant instead of inline set
+2. **test_regression.py** — 8 new tests:
+   - `test_extract_hud_rows_wrapper_results_list`, `test_flatten_hud_rows_propagates_parent_metadata`, `test_flatten_hud_rows_already_flat`, `test_flatten_hud_rows_multiple_wrappers`, `test_fetch_hud_crosswalk_uses_flatten`, `test_wrapper_keys_constant_exists`, `test_failed_parse_not_misclassified_as_success_no_zips`, `test_end_to_end_nested_wrapper_to_canonical_columns`
+3. **CLAUDE.md** — Updated "HUD Response Parsing & Flattening" to document two-pass architecture with example payload
+
+**Example before/after parse shape:**
+```
+HUD API returns: {"results": [{"year":2025, "quarter":4, "input":"06037",
+                               "crosswalk_type":"7",
+                               "results": [{"zip":"90001","county":"06037",...}]}]}
+Pass 1 (extract): [{"year":2025, "quarter":4, "input":"06037", "results":[...]}]  ← 1 wrapper row
+Pass 2 (flatten): [{"year":2025, "quarter":4, "input":"06037", "zip":"90001", "county":"06037", ...}]  ← N data rows
+```
+
+**Test baseline**: 246 tests (previous 238 + 8 new).
+
 ### 2026-03-12 — HUD Response Parsing & Canonicalization Fix
 
 **Problem**: HUD token was no longer the blocker. The mapper was reaching the HUD API and getting responses, but the returned payload was not being flattened correctly. The resulting DataFrame had only wrapper columns (`year`, `quarter`, `input`, `crosswalk_type`, `results`) and `build_case_shiller_zip_coverage()` failed because it could not find usable ZIP/FIPS columns.
@@ -1466,9 +1495,11 @@ ZIP enrichment runs automatically as part of the MSPBNA_CR_Normalized pipeline. 
 
 **HUD token is no longer the main blocker.** The token resolution chain works correctly. The primary remaining failure mode is HUD response parsing — the API may return nested wrapper objects that must be flattened before DataFrame creation.
 
-### HUD Response Parsing & Flattening
+### HUD Response Parsing & Flattening (Two-Pass)
 
-`fetch_hud_crosswalk()` uses `extract_hud_result_rows()` to robustly extract the flat row list from any HUD API response shape:
+The HUD API response requires **two passes** to reach actual crosswalk data rows:
+
+**Pass 1 — Top-level extraction** (`extract_hud_result_rows()`):
 
 | Shape | Payload Structure | Extraction Path |
 |---|---|---|
@@ -1478,7 +1509,24 @@ ZIP enrichment runs automatically as part of the MSPBNA_CR_Normalized pipeline. 
 | D | `{"results": {"data": [row, ...]}}` | `payload["results"]["data"]` |
 | E | `{"data": [row, ...]}` | `payload["data"]` |
 
-After extraction, rows are flattened via `pd.json_normalize()` and canonicalized via `canonicalize_hud_columns()`. A wrapper-only column check (`year`, `quarter`, `input`, `crosswalk_type`, `results`) detects payloads that were not properly flattened and returns `FAILED_PARSE`.
+**Pass 2 — Wrapper row flattening** (`flatten_hud_rows()`):
+
+The HUD county-to-ZIP API (type=7) returns Shape B where each "row" is actually a **wrapper object** with metadata fields and a nested `results` list containing the actual crosswalk rows:
+```
+{"results": [
+  {"year": 2025, "quarter": 4, "input": "06037", "crosswalk_type": "7",
+   "results": [
+     {"zip": "90001", "county": "06037", "res_ratio": 0.85, ...},
+     {"zip": "90002", "county": "06037", "res_ratio": 0.72, ...}
+   ]},
+  ...
+]}
+```
+`flatten_hud_rows()` detects this pattern (row keys are a subset of `_HUD_WRAPPER_KEYS` + a nested `results` list) and explodes each wrapper into its child rows, propagating parent metadata (year, quarter, input, crosswalk_type) onto each child where the child doesn't already carry that key.
+
+**Without this second pass**, `pd.DataFrame(wrapper_rows)` produces a DataFrame with only wrapper columns (`year`, `quarter`, `input`, `crosswalk_type`, `results`) and `build_case_shiller_zip_coverage()` fails silently because no ZIP/FIPS columns exist.
+
+After both passes, rows are normalized via `pd.json_normalize()` and canonicalized via `canonicalize_hud_columns()`. A wrapper-only column check (`_HUD_WRAPPER_KEYS`) detects payloads that were not properly flattened and returns `FAILED_PARSE`.
 
 ### Canonical HUD Crosswalk Fields
 
