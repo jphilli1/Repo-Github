@@ -110,7 +110,8 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
     },
     "Wealth_Resi_Composition": {
         "short": "Wealth Resi %",
-        "long": "Wealth Residential (Jumbo 1-4 Family First Liens + HELOCs) as a % of Total Loans.",
+        "long": "Wealth-oriented residential (1-4 family incl. HELOC; jumbo not separately "
+                "identified in Call Report) as a % of Total Loans.",
     },
     "Corp_CI_Composition": {
         "short": "Corp C&I %",
@@ -122,7 +123,8 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
     },
     "CRE_Investment_Composition": {
         "short": "CRE Invest. %",
-        "long": "Investment CRE (Construction, Multifamily, Non-OO Nonfarm) as a % of Total Loans.",
+        "long": "Investment CRE (Multifamily + Non-Owner-Occ Nonfarm, excl. ADC and OO CRE) "
+                "as a % of Total Loans.",
     },
     "Consumer_Auto_Composition": {
         "short": "Auto %",
@@ -158,17 +160,24 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
     },
 
     # --- Segment Risk: SBL ---
+    # NOTE: SBL risk metrics are PROXY only — Call Report has no SBL-specific
+    # NCO/PD/NA fields.  Numerators would come from "All Other Loans" which
+    # mixes SBL with other uncategorised lending.  These are NOT computed or
+    # shown in presentation-facing outputs.  Retained for internal reference.
     "SBL_TTM_NCO_Rate": {
-        "short": "SBL NCO Rate",
-        "long": "Net Charge-offs for SBL (Estimated from All Other Loans) as a % of SBL Loans.",
+        "short": "SBL NCO Rate (proxy)",
+        "long": "PROXY — Not directly derived from SBL-specific fields. "
+                "Would use All Other Loans NCO as surrogate. Not presentation-facing.",
     },
     "SBL_TTM_PD30_Rate": {
-        "short": "SBL PD 30-89",
-        "long": "Past Due 30-89 Days for SBL (Proxy: All Other Loans) as a % of SBL Loans.",
+        "short": "SBL PD 30-89 (proxy)",
+        "long": "PROXY — Not directly derived from SBL-specific fields. "
+                "Would use All Other Loans PD as surrogate. Not presentation-facing.",
     },
     "SBL_NA_Rate": {
-        "short": "SBL Nonaccrual",
-        "long": "Nonaccrual Rate for SBL (Proxy: All Other Loans).",
+        "short": "SBL Nonaccrual (proxy)",
+        "long": "PROXY — Not directly derived from SBL-specific fields. "
+                "Would use All Other Loans NA as surrogate. Not presentation-facing.",
     },
 
     # --- Segment Risk: Fund Finance ---
@@ -224,18 +233,20 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
     },
 
     # --- Segment Risk: CRE (Investment) ---
+    # CRE Investment = Multifamily (LNREMULT) + Non-Owner-Occ Nonfarm (LNRENROT).
+    # ADC (Construction) and Owner-Occupied CRE are excluded.
     "CRE_Investment_TTM_NCO_Rate": {
         "short": "CRE Inv. NCO Rate",
-        "long": "Net Charge-offs for Investment CRE (Constr/Multi/Non-OO) "
-                "as a % of Avg Inv. CRE Loans.",
+        "long": "Net Charge-offs for Investment CRE (Multifamily + Non-OO Nonfarm, "
+                "excl. ADC and OO CRE) as a % of Avg Inv. CRE Loans.",
     },
     "CRE_Investment_TTM_PD30_Rate": {
         "short": "CRE Inv. PD 30-89",
-        "long": "Past Due 30-89 Days for Investment CRE.",
+        "long": "Past Due 30-89 Days for Investment CRE (Multifamily + Non-OO Nonfarm).",
     },
     "CRE_Investment_NA_Rate": {
         "short": "CRE Inv. Nonaccrual",
-        "long": "Nonaccrual Rate for Investment CRE.",
+        "long": "Nonaccrual Rate for Investment CRE (Multifamily + Non-OO Nonfarm).",
     },
     "CRE_Concentration_Capital_Risk": {
         "short": "Inv. CRE / Capital",
@@ -437,11 +448,13 @@ LOCAL_DERIVED_METRICS: Dict[str, Dict[str, str]] = {
     },
     "Norm_Wealth_Resi_Composition": {
         "short": "Norm. Wealth Resi %",
-        "long": "Wealth Residential (Jumbo + HELOCs) as a percentage of Normalized Gross Loans.",
+        "long": "Wealth-oriented residential (1-4 family incl. HELOC; jumbo not separately "
+                "identified in Call Report) as a percentage of Normalized Gross Loans.",
     },
     "Norm_CRE_Investment_Composition": {
         "short": "Norm. CRE Invest. %",
-        "long": "Investment CRE as a percentage of Normalized Gross Loans.",
+        "long": "Investment CRE (Multifamily + Non-OO Nonfarm, excl. ADC and OO CRE) "
+                "as a percentage of Normalized Gross Loans.",
     },
     "Norm_Exclusion_Pct": {
         "short": "Exclusion % of Total",
