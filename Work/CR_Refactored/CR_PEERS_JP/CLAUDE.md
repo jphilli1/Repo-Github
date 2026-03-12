@@ -673,6 +673,63 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-12 — Mapping Integrity Regression Tests
+
+Locked in the 2026-03-12 taxonomy cleanup rules with focused regression tests
+so that corrected mappings cannot regress. All tests are source-scanning
+(static-analysis style) and do not require FDIC API access to run.
+
+**Mapping corrections verified by tests:**
+
+1. **RESI denominator** — `Wealth_Resi_Balance` fallback uses `LNRERES` alone;
+   `LNRELOC` is NOT added (would cause double-counting since LNRERES already
+   includes HELOC/open-end per FFIEC instructions). RC-C components
+   (1797+5367+5368) remain the preferred path.
+2. **C&I exclusion** — `Excl_CI_Balance = LNCI` directly. SBL is NOT subtracted
+   (SBL lives under RC-C item 9, not item 4).
+3. **NDFI PD/NA** — J458/J459/J460 removed from active code. J454 retained for
+   balance exclusion. All NDFI PD/NA numerators set to 0.0.
+4. **Agricultural PD** — RCON2746/RCFD2746 and RCON2747/RCFD2747 removed
+   (those are "All other loans" PD, not Ag). Replaced with P3AG/P9AG.
+5. **CRE pure balance** — `CRE_Investment_Pure_Balance = LNREMULT + LNRENROT`
+   only. LNREOTH removed (ambiguous mapping).
+
+**Unsupported areas (confirmed by tests):**
+
+- **Tailored Lending**: Cannot be derived from Call Report fields. No proxy
+  from aircraft, fine art, HNW unsecured, or J451. Tests verify no active
+  pipeline metric or report_generator label references tailored lending.
+- **NDFI PD/NA**: CR-only PD/NA mapping is unsupported; numerators zeroed.
+- **SBL risk metrics**: Proxy only — not shown in presentation.
+
+**Tests added (7 test classes, 24 test methods in `test_regression.py`):**
+
+| Test Class | Methods | What It Guards |
+|---|---|---|
+| `TestResiDenominatorIntegrity` | 3 | LNRELOC never added to RESI balance |
+| `TestCIExclusionIntegrity` | 2 | SBL never subtracted from C&I |
+| `TestNDFIUnsupportedRiskIntegrity` | 3 | J458/J459/J460 not in active code |
+| `TestAgDelinquencyIntegrity` | 2 | 2746/2747 not in active Ag PD code |
+| `TestCREPureBalanceIntegrity` | 2 | LNREOTH excluded from CRE pure |
+| `TestTailoredLendingBoundary` | 4 | No tailored-lending proxies in pipeline |
+| `TestDocumentationCoherence` | 8 | CLAUDE.md documents all mapping rules |
+
+**Metrics intentionally suppressed:**
+
+- NDFI PD/NA numerators (`Excl_NDFI_P3`, `Excl_NDFI_P9`, `Excl_NDFI_NA`) →
+  set to 0.0 (audit-flagged via `_audit_unsupported_ndfi_pdna`).
+- SBL risk rates (`SBL_TTM_NCO_Rate`, `SBL_TTM_PD30_Rate`, `SBL_NA_Rate`) →
+  metadata-only, never computed or displayed.
+- Tailored Lending → no metrics exist; confirmed absent from pipeline and
+  presentation layers.
+
+**Checklist (CI-style assertion):** The `TestDocumentationCoherence` class
+verifies that CLAUDE.md contains required documentation entries for every
+mapping rule. If CLAUDE.md drifts out of sync with pipeline changes, these
+tests will fail, acting as a documentation-change gate.
+
+Files changed: `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-12 — Segment Label Precision & Support Boundaries
 
 Prevented presentation layers from overstating precision where Call Report

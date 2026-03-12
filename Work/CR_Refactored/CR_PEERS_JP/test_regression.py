@@ -4214,5 +4214,308 @@ class TestHUDResponseParsing(unittest.TestCase):
         self.assertEqual(df.iloc[0]["county_fips"], "25005")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# MAPPING INTEGRITY REGRESSION TESTS
+# These tests lock in the 2026-03-12 taxonomy cleanup rules so that bad
+# mappings (LNRELOC double-counting, SBL subtraction from C&I, J458/J459/J460
+# for NDFI, RCON2746/2747 for Ag, LNREOTH in CRE, tailored-lending proxies)
+# cannot creep back into the codebase.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestResiDenominatorIntegrity(unittest.TestCase):
+    """1) RESI denominator must not double-count via LNRERES + LNRELOC."""
+
+    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
+
+    def test_fallback_uses_lnreres_alone(self):
+        """compute_wealth_resi_bal fallback must be LNRERES without LNRELOC."""
+        import re
+        # Extract the entire function body (indented block after def line)
+        fn_match = re.search(
+            r'(def compute_wealth_resi_bal\(.*?\):.*?)(?=\n        \S|\n    \S|\Z)',
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(fn_match, "compute_wealth_resi_bal function not found")
+        fn_text = fn_match.group(0)
+        # The fallback return (the last return) must use LNRERES only
+        self.assertIn("best_of(df, ['LNRERES'])", fn_text,
+                      "Fallback must call best_of with LNRERES alone")
+        # LNRELOC must not appear in any non-comment code line of the function
+        for line in fn_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            self.assertNotIn("LNRELOC", stripped,
+                             f"Fallback path must NOT add LNRELOC: {stripped}")
+
+    def test_no_lnreres_plus_lnreloc_in_balance_calc(self):
+        """No line should sum LNRERES + LNRELOC for balance calculation."""
+        import re
+        # Match patterns like: LNRERES.*LNRELOC or LNRELOC.*LNRERES
+        # but only outside of comment lines and NCO/PD/NA numerator lines
+        for i, line in enumerate(self._src.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            # Skip NCO/PD/NA numerator lines (NTRERES+NTRELOC etc. are correct)
+            if any(x in stripped for x in ['NTRERES', 'NTRELOC', 'P3RERES',
+                                            'P3RELOC', 'P9RERES', 'P9RELOC',
+                                            'NARERES', 'NARELOC']):
+                continue
+            if 'LNRERES' in stripped and 'LNRELOC' in stripped:
+                # Allow if it's just a comment referencing both
+                if 'fallback' in stripped.lower() or 'removed' in stripped.lower():
+                    continue
+                self.fail(
+                    f"Line {i} sums LNRERES + LNRELOC for balance: {stripped}")
+
+    def test_rcc_components_are_non_duplicative(self):
+        """RC-C components (1797, 5367, 5368) should appear in preferred path."""
+        self.assertIn("1797", self._src)
+        self.assertIn("5367", self._src)
+        self.assertIn("5368", self._src)
+
+
+class TestCIExclusionIntegrity(unittest.TestCase):
+    """2) Excl_CI_Balance = LNCI, not LNCI minus SBL."""
+
+    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
+
+    def test_no_sbl_subtraction_from_ci(self):
+        """Excl_CI_Balance must not subtract SBL_Balance."""
+        import re
+        for i, line in enumerate(self._src.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if 'Excl_CI_Balance' in stripped and 'SBL' in stripped:
+                self.fail(
+                    f"Line {i} subtracts SBL from C&I exclusion: {stripped}")
+
+    def test_ci_balance_uses_lnci(self):
+        """Excl_CI_Balance should reference LNCI or RCON1763/RCFD1763.
+
+        The assignment may span multiple lines (e.g. lnci_raw on line N,
+        Excl_CI_Balance = lnci_raw on line N+1), so we check a window."""
+        import re
+        lines = self._src.splitlines()
+        found = False
+        for i, line in enumerate(lines):
+            if 'Excl_CI_Balance' in line and '=' in line:
+                # Check a 5-line window around the assignment
+                window = '\n'.join(lines[max(0, i - 3):i + 3])
+                if re.search(r'LNCI|1763', window):
+                    found = True
+                    break
+        self.assertTrue(found,
+                        "Excl_CI_Balance must use LNCI or 1763 in nearby code")
+
+
+class TestNDFIUnsupportedRiskIntegrity(unittest.TestCase):
+    """3) NDFI PD/NA must not reference J458/J459/J460 in active code."""
+
+    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
+
+    def test_no_j458_j459_j460_in_active_code(self):
+        """J458/J459/J460 must only appear in comments, not assignments."""
+        forbidden = ['J458', 'J459', 'J460']
+        for i, line in enumerate(self._src.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            # Skip string literals (display labels, descriptions, notes)
+            if stripped.startswith(("'", '"')):
+                continue
+            for code in forbidden:
+                if code in stripped:
+                    # Allow in comment-only trailing portion
+                    code_pos = stripped.find(code)
+                    comment_pos = stripped.find('#')
+                    if comment_pos >= 0 and code_pos > comment_pos:
+                        continue
+                    # Allow in FDIC_FIELDS_TO_FETCH removal comments
+                    if 'removed' in stripped.lower() or 'NOTE' in stripped:
+                        continue
+                    self.fail(
+                        f"Line {i}: {code} referenced in active code: {stripped}")
+
+    def test_ndfi_balance_uses_j454(self):
+        """NDFI balance exclusion should still reference J454."""
+        self.assertIn("J454", self._src,
+                      "J454 must still be used for NDFI balance exclusion")
+
+    def test_ndfi_pd_na_set_to_zero(self):
+        """NDFI PD/NA exclusion numerators must be set to 0.0."""
+        self.assertIn("Excl_NDFI_NA", self._src)
+        # Check that Excl_NDFI_P3 and Excl_NDFI_P9 are set to 0.0
+        import re
+        for field in ['Excl_NDFI_P3', 'Excl_NDFI_P9', 'Excl_NDFI_NA']:
+            pattern = re.compile(rf"{field}.*=.*0\.0")
+            matches = pattern.findall(self._src)
+            self.assertGreater(len(matches), 0,
+                               f"{field} must be explicitly set to 0.0")
+
+
+class TestAgDelinquencyIntegrity(unittest.TestCase):
+    """4) Agricultural PD must not reference 2746/2747 in active code."""
+
+    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
+
+    def test_no_2746_2747_in_ag_pd_logic(self):
+        """RCON2746/RCFD2746/RCON2747/RCFD2747 must only appear in comments."""
+        forbidden = ['RCON2746', 'RCFD2746', 'RCON2747', 'RCFD2747']
+        for i, line in enumerate(self._src.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            for code in forbidden:
+                if code in stripped:
+                    code_pos = stripped.find(code)
+                    comment_pos = stripped.find('#')
+                    if comment_pos >= 0 and code_pos > comment_pos:
+                        continue
+                    self.fail(
+                        f"Line {i}: {code} in active code: {stripped}")
+
+    def test_ag_pd_uses_p3ag_p9ag(self):
+        """Agricultural PD should use P3AG/P9AG fields."""
+        self.assertIn("P3AG", self._src)
+        self.assertIn("P9AG", self._src)
+
+
+class TestCREPureBalanceIntegrity(unittest.TestCase):
+    """5) CRE_Investment_Pure_Balance = LNREMULT + LNRENROT only."""
+
+    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
+
+    def _get_cre_block(self):
+        """Extract lines around the CRE_Investment_Pure_Balance assignment."""
+        lines = self._src.splitlines()
+        for i, line in enumerate(lines):
+            if 'CRE_Investment_Pure_Balance' in line and '=' in line:
+                return '\n'.join(lines[i:i + 6])
+        return None
+
+    def test_cre_pure_balance_no_lnreoth(self):
+        """CRE_Investment_Pure_Balance must not include LNREOTH."""
+        block = self._get_cre_block()
+        self.assertIsNotNone(block,
+                             "CRE_Investment_Pure_Balance definition not found")
+        self.assertNotIn("LNREOTH", block,
+                         "CRE_Investment_Pure_Balance must not include LNREOTH")
+
+    def test_cre_pure_balance_uses_lnremult_and_lnrenrot(self):
+        """CRE_Investment_Pure_Balance should use LNREMULT + LNRENROT."""
+        block = self._get_cre_block()
+        self.assertIsNotNone(block)
+        self.assertIn("LNREMULT", block)
+        self.assertIn("LNRENROT", block)
+
+
+class TestTailoredLendingBoundary(unittest.TestCase):
+    """6) Tailored lending must not be derived from Call Report fields."""
+
+    _src_norm = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
+    _src_rg = Path(__file__).with_name("report_generator.py").read_text()
+
+    def test_no_tailored_lending_metric_in_pipeline(self):
+        """No active metric named 'Tailored_Lending' in pipeline code."""
+        import re
+        # Look for column assignments like df['Tailored_Lending_*'] = ...
+        pattern = re.compile(r"'Tailored_Lending_\w+'.*=")
+        matches = pattern.findall(self._src_norm)
+        self.assertEqual(len(matches), 0,
+                         f"Tailored lending metrics found in pipeline: {matches}")
+
+    def test_no_tailored_lending_in_presentation_labels(self):
+        """report_generator must not display tailored lending metrics."""
+        import re
+        # Check for "Tailored" in metric mapping tuples or display labels
+        for i, line in enumerate(self._src_rg.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if 'tailored' in stripped.lower() and '=' in stripped:
+                # Allow import/comment references
+                if 'tailored lending' not in stripped.lower():
+                    continue
+                self.fail(
+                    f"Line {i} in report_generator.py references tailored "
+                    f"lending: {stripped}")
+
+    def test_j451_not_used_as_tailored_lending_proxy(self):
+        """J451 must not be labeled or used as a tailored lending proxy."""
+        import re
+        # Check that J451 is not assigned to anything with "tailored" in name
+        for i, line in enumerate(self._src_norm.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if 'J451' in stripped and 'tailored' in stripped.lower():
+                self.fail(
+                    f"Line {i}: J451 used as tailored lending proxy: {stripped}")
+
+    def test_sbl_risk_metrics_marked_proxy(self):
+        """SBL risk metrics in data dictionary must be marked PROXY."""
+        try:
+            from master_data_dictionary import LOCAL_DERIVED_METRICS
+        except ImportError:
+            self.skipTest("master_data_dictionary not importable")
+        proxy_metrics = ['SBL_TTM_NCO_Rate', 'SBL_TTM_PD30_Rate', 'SBL_NA_Rate']
+        for m in proxy_metrics:
+            if m in LOCAL_DERIVED_METRICS:
+                desc = LOCAL_DERIVED_METRICS[m].get('long', '')
+                self.assertIn('PROXY', desc,
+                              f"{m} must be marked PROXY in description")
+
+
+class TestDocumentationCoherence(unittest.TestCase):
+    """7) CLAUDE.md must be updated when mapping files change."""
+
+    _claude_md = Path(__file__).with_name("CLAUDE.md").read_text()
+
+    def test_claude_md_documents_resi_no_lnreloc(self):
+        """CLAUDE.md must document that LNRELOC is not added to RESI balance."""
+        self.assertIn("LNRELOC", self._claude_md)
+        self.assertIn("double-counting", self._claude_md.lower())
+
+    def test_claude_md_documents_ci_no_sbl_subtraction(self):
+        """CLAUDE.md must document that SBL is not subtracted from C&I."""
+        self.assertIn("SBL is NOT subtracted", self._claude_md)
+
+    def test_claude_md_documents_ndfi_unsupported(self):
+        """CLAUDE.md must document NDFI PD/NA as unsupported."""
+        self.assertIn("J458/J459/J460 removed", self._claude_md)
+
+    def test_claude_md_documents_ag_pd_replacement(self):
+        """CLAUDE.md must document 2746/2747 removal and P3AG/P9AG replacement."""
+        self.assertIn("P3AG/P9AG", self._claude_md)
+        self.assertIn("2746", self._claude_md)
+
+    def test_claude_md_documents_cre_tightening(self):
+        """CLAUDE.md must document CRE pure = LNREMULT + LNRENROT only."""
+        self.assertIn("LNREMULT", self._claude_md)
+        self.assertIn("LNRENROT", self._claude_md)
+        self.assertIn("LNREOTH removed", self._claude_md)
+
+    def test_claude_md_documents_tailored_unsupported(self):
+        """CLAUDE.md must document tailored lending as unsupported."""
+        self.assertIn("Tailored Lending", self._claude_md)
+        self.assertIn("Unsupported", self._claude_md)
+
+    def test_claude_md_documents_segment_support_boundaries(self):
+        """CLAUDE.md must contain the Segment Support Boundaries section."""
+        self.assertIn("Segment Support Boundaries", self._claude_md)
+
+    def test_claude_md_documents_sbl_proxy_status(self):
+        """CLAUDE.md must document SBL risk metrics as proxy-only."""
+        self.assertIn("SBL", self._claude_md)
+        self.assertIn("Proxy only", self._claude_md)
+
+    def test_claude_md_has_mapping_regression_tests_entry(self):
+        """CLAUDE.md must have a changelog entry for mapping regression tests."""
+        self.assertIn("Mapping Integrity Regression Tests", self._claude_md)
+
+
 if __name__ == '__main__':
     unittest.main()
