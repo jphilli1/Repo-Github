@@ -55,7 +55,9 @@ ENRICH_SKIPPED_NO_TOKEN = "SKIPPED_NO_TOKEN"
 ENRICH_SKIPPED_NO_REQUESTS = "SKIPPED_NO_REQUESTS"
 ENRICH_FAILED_TOKEN_AUTH = "FAILED_TOKEN_AUTH"
 ENRICH_FAILED_HTTP = "FAILED_HTTP"
+ENRICH_FAILED_PARSE = "FAILED_PARSE"
 ENRICH_FAILED_EMPTY_RESPONSE = "FAILED_EMPTY_RESPONSE"
+ENRICH_SUCCESS_NO_MATCHES = "SUCCESS_NO_MATCHES"
 ENRICH_SUCCESS_NO_ZIPS = "SUCCESS_NO_ZIPS"
 ENRICH_SUCCESS_WITH_ZIPS = "SUCCESS_WITH_ZIPS"
 
@@ -386,6 +388,144 @@ def _get_hud_token() -> Optional[str]:
     return os.getenv("HUD_USER_TOKEN")
 
 
+# ---------------------------------------------------------------------------
+# HUD response parsing helpers
+# ---------------------------------------------------------------------------
+
+def _describe_payload(payload: Any) -> Dict[str, Any]:
+    """Return concise, log-safe diagnostics about a HUD API payload shape."""
+    info: Dict[str, Any] = {"payload_type": type(payload).__name__}
+    if isinstance(payload, dict):
+        info["top_level_keys"] = sorted(payload.keys())
+        for k, v in payload.items():
+            if isinstance(v, (list, dict)):
+                info[f"{k}_type"] = type(v).__name__
+                if isinstance(v, dict):
+                    info[f"{k}_keys_sample"] = sorted(v.keys())[:10]
+                elif isinstance(v, list) and v:
+                    info[f"{k}_len"] = len(v)
+                    first = v[0]
+                    info[f"{k}_first_type"] = type(first).__name__
+                    if isinstance(first, dict):
+                        info[f"{k}_first_keys"] = sorted(first.keys())[:10]
+    elif isinstance(payload, list):
+        info["list_len"] = len(payload)
+        if payload:
+            first = payload[0]
+            info["first_type"] = type(first).__name__
+            if isinstance(first, dict):
+                info["first_keys"] = sorted(first.keys())[:10]
+    return info
+
+
+def extract_hud_result_rows(payload: Any) -> List[Dict]:
+    """Extract the flat list of row dicts from a HUD API response payload.
+
+    Handles at least these documented shapes:
+      A) payload is already a list of row dicts
+      B) payload = {"results": [row, row, ...]}
+      C) payload = {"results": {"rows": [row, ...]}}
+      D) payload = {"results": {"data": [row, ...]}}
+      E) payload = {"data": [row, row, ...]}
+
+    Returns an empty list (never raises) if no row list can be found.
+    """
+    # Shape A — already a flat list
+    if isinstance(payload, list):
+        return payload
+
+    if not isinstance(payload, dict):
+        logger.warning(
+            f"HUD payload is not dict or list (type={type(payload).__name__}). "
+            f"Returning empty rows."
+        )
+        return []
+
+    # Try "data" key first (Shape E) — common HUD v2 format
+    candidate = payload.get("data")
+    if isinstance(candidate, list):
+        return candidate
+
+    # Try "results" key (Shapes B/C/D)
+    candidate = payload.get("results")
+    if isinstance(candidate, list):
+        return candidate  # Shape B
+
+    if isinstance(candidate, dict):
+        # Shape C — {"results": {"rows": [...]}}
+        inner = candidate.get("rows")
+        if isinstance(inner, list):
+            return inner
+        # Shape D — {"results": {"data": [...]}}
+        inner = candidate.get("data")
+        if isinstance(inner, list):
+            return inner
+        # Fallback: find the first list-valued key inside results
+        for k, v in candidate.items():
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                logger.info(f"HUD results: extracted rows from nested key '{k}' ({len(v)} rows)")
+                return v
+
+    # Last resort: scan all top-level keys for a list of dicts
+    for k, v in payload.items():
+        if k in ("data", "results"):
+            continue
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            logger.info(f"HUD payload: extracted rows from top-level key '{k}' ({len(v)} rows)")
+            return v
+
+    logger.warning(f"Could not extract row list from HUD payload. Shape: {_describe_payload(payload)}")
+    return []
+
+
+# Canonical column name mappings for HUD crosswalk outputs
+_HUD_COLUMN_MAP = {
+    # ZIP variants
+    "zip": "zip", "zip_code": "zip", "zipcode": "zip", "zip5": "zip",
+    # County FIPS variants
+    "county": "county_fips", "county_fips": "county_fips", "geoid": "county_fips",
+    "county_geoid": "county_fips", "countyfips": "county_fips", "fips": "county_fips",
+    # Ratio variants
+    "residential_ratio": "res_ratio", "res_ratio": "res_ratio",
+    "business_ratio": "bus_ratio", "bus_ratio": "bus_ratio",
+    "other_ratio": "oth_ratio", "oth_ratio": "oth_ratio",
+    "total_ratio": "tot_ratio", "tot_ratio": "tot_ratio",
+}
+
+
+def canonicalize_hud_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename HUD crosswalk columns to canonical names and zero-pad codes.
+
+    Canonical fields: zip, county_fips, res_ratio, bus_ratio, oth_ratio, tot_ratio.
+    ZIP → 5-char zero-padded.  County FIPS → 5-char zero-padded.
+    """
+    if df.empty:
+        return df
+
+    df = df.copy()
+    # Lowercase and strip all column names
+    df.columns = [c.lower().strip() for c in df.columns]
+
+    # Rename to canonical
+    rename_map = {}
+    for col in df.columns:
+        canonical = _HUD_COLUMN_MAP.get(col)
+        if canonical and canonical != col:
+            rename_map[col] = canonical
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # Zero-pad ZIP to 5 chars
+    if "zip" in df.columns:
+        df["zip"] = df["zip"].astype(str).str.strip().str.split(".", n=1).str[0].str.split("-", n=1).str[0].str.zfill(5)
+
+    # Zero-pad county FIPS to 5 chars
+    if "county_fips" in df.columns:
+        df["county_fips"] = df["county_fips"].astype(str).str.strip().str.split(".", n=1).str[0].str.zfill(5)
+
+    return df
+
+
 def fetch_hud_crosswalk(
     query: str = "All",
     crosswalk_type: int = _HUD_TYPE_COUNTY_ZIP,
@@ -435,22 +575,44 @@ def fetch_hud_crosswalk(
             resp = requests.get(HUD_API_BASE, params=params, headers=headers, timeout=120)
             if resp.status_code == 200:
                 data = resp.json()
-                if isinstance(data, dict) and "data" in data:
-                    records = data["data"]
-                elif isinstance(data, dict) and "results" in data:
-                    records = data["results"]
-                elif isinstance(data, list):
-                    records = data
-                else:
-                    records = data.get("data", data) if isinstance(data, dict) else []
+
+                # Extract flat row list from any response wrapper shape
+                records = extract_hud_result_rows(data)
+
+                # Log payload diagnostics
+                diag = _describe_payload(data)
+                diag["extracted_row_count"] = len(records)
+                if records:
+                    diag["first_row_keys"] = sorted(records[0].keys()) if isinstance(records[0], dict) else []
+                logger.info(f"HUD response parsed: query={query}, diagnostics={diag}")
 
                 if not records:
-                    logger.warning(f"HUD API returned empty result for query={query}")
+                    logger.warning(f"HUD API returned empty/unparseable result for query={query}")
                     return pd.DataFrame()
 
-                df = pd.DataFrame(records)
-                df.columns = [c.lower().strip() for c in df.columns]
-                logger.info(f"HUD crosswalk fetched: {len(df)} rows for query={query}")
+                # Flatten nested structures via json_normalize, then canonicalize
+                try:
+                    df = pd.json_normalize(records, sep="_")
+                except Exception:
+                    df = pd.DataFrame(records)
+
+                df = canonicalize_hud_columns(df)
+
+                # Verify we have real crosswalk columns, not just wrapper metadata
+                wrapper_only = {"year", "quarter", "input", "crosswalk_type", "results"}
+                actual_cols = set(df.columns)
+                if actual_cols and actual_cols.issubset(wrapper_only):
+                    logger.error(
+                        f"HUD response flattened to wrapper-only columns {sorted(actual_cols)} — "
+                        f"payload may have an unrecognized nested structure. "
+                        f"Payload shape: {_describe_payload(data)}"
+                    )
+                    return pd.DataFrame()
+
+                logger.info(
+                    f"HUD crosswalk fetched: {len(df)} rows, "
+                    f"columns={sorted(df.columns)}, query={query}"
+                )
                 return df
 
             if resp.status_code in (429, 500, 502, 503, 504):
@@ -577,8 +739,10 @@ def build_case_shiller_zip_coverage(
     if not fips_col or not zip_col:
         logger.error(
             f"Cannot find required columns in HUD data. "
-            f"Available: {list(county_xwalk.columns)}. "
-            f"Need county FIPS col (found: {fips_col}) and ZIP col (found: {zip_col})"
+            f"Available: {sorted(county_xwalk.columns.tolist())}. "
+            f"Need county FIPS col (found: {fips_col}) and ZIP col (found: {zip_col}). "
+            f"Shape: {county_xwalk.shape}. "
+            f"First row keys: {list(county_xwalk.iloc[0].index) if len(county_xwalk) else 'N/A'}"
         )
         return pd.DataFrame()
 
@@ -598,8 +762,27 @@ def build_case_shiller_zip_coverage(
     # Filter HUD data to only rows matching our county FIPS codes
     matched_xwalk = county_xwalk[county_xwalk["_fips_norm"].isin(map_fips_set)].copy()
 
+    # Structured diagnostics
+    n_total = len(county_xwalk)
+    n_unique_fips_hud = county_xwalk["_fips_norm"].nunique()
+    n_matched = len(matched_xwalk)
+    n_unique_fips_map = len(map_fips_set)
+    matched_fips = set(matched_xwalk["_fips_norm"].unique()) if not matched_xwalk.empty else set()
+    unmatched_fips = map_fips_set - matched_fips
+    logger.info(
+        f"HUD coverage join: total_hud_rows={n_total}, "
+        f"distinct_hud_fips={n_unique_fips_hud}, "
+        f"map_fips_count={n_unique_fips_map}, "
+        f"matched_rows={n_matched}, "
+        f"unmatched_county_count={len(unmatched_fips)}"
+    )
+
     if matched_xwalk.empty:
-        logger.warning("No HUD crosswalk rows matched any S&P county FIPS codes")
+        logger.warning(
+            f"No HUD crosswalk rows matched any S&P county FIPS codes. "
+            f"HUD FIPS sample: {sorted(county_xwalk['_fips_norm'].unique())[:5]}, "
+            f"Map FIPS sample: {sorted(list(map_fips_set))[:5]}"
+        )
         return pd.DataFrame()
 
     # Build FIPS → county map info lookup
@@ -878,6 +1061,28 @@ def build_case_shiller_zip_sheets(
     combined_xwalk = pd.concat(all_xwalk_frames, ignore_index=True)
     logger.info(f"Combined HUD crosswalk: {len(combined_xwalk)} total rows from {len(all_xwalk_frames)} counties")
 
+    # --- PARSE VALIDATION ---
+    # Verify combined frame has usable crosswalk columns, not just wrapper metadata
+    wrapper_only = {"year", "quarter", "input", "crosswalk_type", "results"}
+    actual_cols = set(combined_xwalk.columns)
+    has_zip = any("zip" in c for c in actual_cols)
+    has_fips = bool(actual_cols & {"county", "county_fips", "geoid", "countyfips", "fips"})
+
+    if (not has_zip and not has_fips) or actual_cols.issubset(wrapper_only):
+        parse_diag = {
+            "columns_found": sorted(actual_cols),
+            "row_count": len(combined_xwalk),
+            "has_zip_column": has_zip,
+            "has_fips_column": has_fips,
+        }
+        logger.error(
+            f"HUD response parsed but lacks usable ZIP/FIPS columns. "
+            f"This indicates the response payload was not flattened correctly. "
+            f"Diagnostics: {parse_diag}"
+        )
+        audit_df["comments"] = audit_df["comments"] + f" | {ENRICH_FAILED_PARSE}"
+        return _result(ENRICH_FAILED_PARSE, diag=diag)
+
     # Build coverage
     coverage_df = build_case_shiller_zip_coverage(combined_xwalk, county_map_df)
     summary_df = summarize_case_shiller_zip_coverage(coverage_df)
@@ -896,15 +1101,28 @@ def build_case_shiller_zip_sheets(
 
     # Determine final status
     if coverage_df.empty:
-        status = ENRICH_SUCCESS_NO_ZIPS
-        logger.warning("HUD API responded but produced zero ZIP coverage rows")
+        # Distinguish: HUD rows existed but nothing matched county map
+        if len(combined_xwalk) > 0 and has_fips:
+            status = ENRICH_SUCCESS_NO_MATCHES
+            logger.warning(
+                f"HUD returned {len(combined_xwalk)} rows but none matched "
+                f"S&P county FIPS codes — zero coverage rows produced"
+            )
+        else:
+            status = ENRICH_SUCCESS_NO_ZIPS
+            logger.warning("HUD API responded but produced zero ZIP coverage rows")
     else:
         status = ENRICH_SUCCESS_WITH_ZIPS
+        # Downstream write validation
+        zip_coverage_count = len(coverage_df)
+        zip_summary_count = len(summary_df)
+        metro_count = coverage_df["case_shiller_region"].nunique() if "case_shiller_region" in coverage_df.columns else 0
         logger.info(
             f"Case-Shiller ZIP coverage complete: "
-            f"{len(coverage_df)} coverage rows, "
-            f"{len(summary_df)} metros, "
-            f"{len(issues)} validation issues"
+            f"zip_coverage_rows={zip_coverage_count}, "
+            f"zip_summary_rows={zip_summary_count}, "
+            f"metro_count={metro_count}, "
+            f"validation_issues={len(issues)}"
         )
 
     return _result(status, cov=coverage_df, summ=summary_df, diag=diag)

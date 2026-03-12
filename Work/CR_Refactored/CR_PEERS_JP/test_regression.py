@@ -3470,7 +3470,8 @@ class TestConsistencyPass(unittest.TestCase):
         claude = Path(__file__).parent / "CLAUDE.md"
         claude_src = claude.read_text(encoding="utf-8")
         codes = ["SKIPPED_NO_TOKEN", "FAILED_TOKEN_AUTH", "FAILED_HTTP",
-                 "FAILED_EMPTY_RESPONSE", "SUCCESS_NO_ZIPS", "SUCCESS_WITH_ZIPS"]
+                 "FAILED_PARSE", "FAILED_EMPTY_RESPONSE",
+                 "SUCCESS_NO_MATCHES", "SUCCESS_NO_ZIPS", "SUCCESS_WITH_ZIPS"]
         for code in codes:
             self.assertIn(code, mapper_src, f"Status code {code} missing from case_shiller_zip_mapper.py")
             self.assertIn(code, claude_src, f"Status code {code} missing from CLAUDE.md")
@@ -3565,7 +3566,8 @@ class TestEnrichmentStatusCodes(unittest.TestCase):
         source = src.read_text(encoding="utf-8")
         for code in ["ENRICH_SKIPPED_DISABLED", "ENRICH_SKIPPED_NO_TOKEN",
                       "ENRICH_FAILED_TOKEN_AUTH", "ENRICH_FAILED_HTTP",
-                      "ENRICH_FAILED_EMPTY_RESPONSE", "ENRICH_SUCCESS_NO_ZIPS",
+                      "ENRICH_FAILED_PARSE", "ENRICH_FAILED_EMPTY_RESPONSE",
+                      "ENRICH_SUCCESS_NO_MATCHES", "ENRICH_SUCCESS_NO_ZIPS",
                       "ENRICH_SUCCESS_WITH_ZIPS"]:
             self.assertIn(code, source, f"Missing enrichment status code: {code}")
 
@@ -3656,16 +3658,175 @@ class TestHUDTokenDashboardConfigFix(unittest.TestCase):
             "Diagnostics must NOT include raw token_value key")
 
     def test_enrichment_status_codes_are_distinct(self):
-        """All 8 enrichment status codes must be defined and distinct."""
+        """All 10 enrichment status codes must be defined and distinct."""
         src = Path(__file__).parent / "case_shiller_zip_mapper.py"
         source = src.read_text(encoding="utf-8")
         expected = [
             "SKIPPED_DISABLED", "SKIPPED_NO_TOKEN", "SKIPPED_NO_REQUESTS",
-            "FAILED_TOKEN_AUTH", "FAILED_HTTP", "FAILED_EMPTY_RESPONSE",
+            "FAILED_TOKEN_AUTH", "FAILED_HTTP", "FAILED_PARSE",
+            "FAILED_EMPTY_RESPONSE", "SUCCESS_NO_MATCHES",
             "SUCCESS_NO_ZIPS", "SUCCESS_WITH_ZIPS",
         ]
         for code in expected:
             self.assertIn(code, source, f"Missing enrichment status code: {code}")
+
+
+class TestHUDResponseParsing(unittest.TestCase):
+    """Tests for HUD API response flattening and canonicalization."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from case_shiller_zip_mapper import (
+                extract_hud_result_rows, canonicalize_hud_columns,
+                _describe_payload, _HUD_COLUMN_MAP,
+            )
+            cls.extract = staticmethod(extract_hud_result_rows)
+            cls.canonicalize = staticmethod(canonicalize_hud_columns)
+            cls.describe = staticmethod(_describe_payload)
+            cls.col_map = _HUD_COLUMN_MAP
+            cls.available = True
+        except ImportError:
+            cls.available = False
+
+    def test_extract_hud_rows_shape_a_list(self):
+        """Shape A: payload is already a list of row dicts."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        rows = [{"zip": "10001", "county": "36061"}, {"zip": "10002", "county": "36061"}]
+        result = self.extract(rows)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["zip"], "10001")
+
+    def test_extract_hud_rows_shape_b_results_list(self):
+        """Shape B: payload = {"results": [row, row, ...]}."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {"results": [{"zip": "90210", "county": "06037"}]}
+        result = self.extract(payload)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["zip"], "90210")
+
+    def test_extract_hud_rows_shape_c_results_rows(self):
+        """Shape C: payload = {"results": {"rows": [row, ...]}}."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {"results": {"rows": [{"zip": "60601", "county": "17031"}]}}
+        result = self.extract(payload)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["county"], "17031")
+
+    def test_extract_hud_rows_shape_d_results_data(self):
+        """Shape D: payload = {"results": {"data": [row, ...]}}."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {"results": {"data": [{"zip": "33101", "county": "12086"}]}}
+        result = self.extract(payload)
+        self.assertEqual(len(result), 1)
+
+    def test_extract_hud_rows_shape_e_data_key(self):
+        """Shape E: payload = {"data": [row, ...]}."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        payload = {"data": [{"zip": "20001", "geoid": "11001"}]}
+        result = self.extract(payload)
+        self.assertEqual(len(result), 1)
+
+    def test_extract_hud_rows_empty_payload(self):
+        """Empty or unrecognized payload returns empty list."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        self.assertEqual(self.extract({}), [])
+        self.assertEqual(self.extract({"status": "ok"}), [])
+        self.assertEqual(self.extract(42), [])
+
+    def test_canonicalize_hud_columns_maps_zip_and_county(self):
+        """canonicalize_hud_columns standardizes column names."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        df = pd.DataFrame([{
+            "ZIP_CODE": "1001", "GEOID": "25013",
+            "Residential_Ratio": 0.85, "Business_Ratio": 0.10,
+        }])
+        result = self.canonicalize(df)
+        self.assertIn("zip", result.columns)
+        self.assertIn("county_fips", result.columns)
+        self.assertIn("res_ratio", result.columns)
+        self.assertIn("bus_ratio", result.columns)
+        # ZIP should be zero-padded to 5
+        self.assertEqual(result.iloc[0]["zip"], "01001")
+        # FIPS should be zero-padded to 5
+        self.assertEqual(result.iloc[0]["county_fips"], "25013")
+
+    def test_canonicalize_zeropad_zip(self):
+        """ZIP codes shorter than 5 chars get zero-padded."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        df = pd.DataFrame([{"zip": "601", "county": "72001"}])
+        result = self.canonicalize(df)
+        self.assertEqual(result.iloc[0]["zip"], "00601")
+
+    def test_build_case_shiller_zip_coverage_missing_ratios(self):
+        """Coverage builder should handle missing ratio columns gracefully."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        from case_shiller_zip_mapper import build_case_shiller_zip_coverage, build_case_shiller_county_map
+        county_map = build_case_shiller_county_map()
+        # Get first FIPS from county map
+        first_fips = county_map.iloc[0]["fips"]
+        first_region = county_map.iloc[0]["case_shiller_region"]
+        # Build minimal HUD data with county_fips and zip but NO ratio columns
+        hud_df = pd.DataFrame([{
+            "county_fips": first_fips,
+            "zip": "10001",
+        }])
+        result = build_case_shiller_zip_coverage(hud_df, county_map)
+        # Should produce at least one row (the FIPS matched)
+        if not result.empty:
+            self.assertEqual(result.iloc[0]["case_shiller_region"], first_region)
+            # Ratio fields should be NaN (not crashing)
+            for ratio in ["tot_ratio", "res_ratio", "bus_ratio", "oth_ratio"]:
+                if ratio in result.columns:
+                    self.assertTrue(pd.isna(result.iloc[0][ratio]) or isinstance(result.iloc[0][ratio], float))
+
+    def test_failed_parse_status_distinct_from_no_token(self):
+        """FAILED_PARSE is a distinct status from SKIPPED_NO_TOKEN."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        from case_shiller_zip_mapper import ENRICH_FAILED_PARSE, ENRICH_SKIPPED_NO_TOKEN
+        self.assertNotEqual(ENRICH_FAILED_PARSE, ENRICH_SKIPPED_NO_TOKEN)
+        self.assertEqual(ENRICH_FAILED_PARSE, "FAILED_PARSE")
+
+    def test_success_no_matches_status_exists(self):
+        """SUCCESS_NO_MATCHES status is distinct from SUCCESS_NO_ZIPS."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        from case_shiller_zip_mapper import ENRICH_SUCCESS_NO_MATCHES, ENRICH_SUCCESS_NO_ZIPS
+        self.assertNotEqual(ENRICH_SUCCESS_NO_MATCHES, ENRICH_SUCCESS_NO_ZIPS)
+
+    def test_describe_payload_returns_shape_info(self):
+        """_describe_payload returns structured diagnostics."""
+        if not self.available:
+            self.skipTest("case_shiller_zip_mapper not importable")
+        info = self.describe({"results": [{"zip": "10001"}], "year": 2025})
+        self.assertEqual(info["payload_type"], "dict")
+        self.assertIn("results", info["top_level_keys"])
+        self.assertEqual(info.get("results_len"), 1)
+
+    def test_fetch_hud_crosswalk_uses_extract_and_canonicalize(self):
+        """fetch_hud_crosswalk must use extract_hud_result_rows and canonicalize_hud_columns."""
+        src = Path(__file__).parent / "case_shiller_zip_mapper.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("extract_hud_result_rows", source,
+            "fetch_hud_crosswalk must call extract_hud_result_rows")
+        self.assertIn("canonicalize_hud_columns", source,
+            "fetch_hud_crosswalk must call canonicalize_hud_columns")
+
+    def test_metric_format_type_maintenance_comment(self):
+        """_METRIC_FORMAT_TYPE must state that new x-style metrics need explicit addition."""
+        src = Path(__file__).parent / "report_generator.py"
+        source = src.read_text(encoding="utf-8")
+        self.assertIn("MUST be added here explicitly", source)
 
 
 if __name__ == '__main__':

@@ -512,6 +512,62 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-12 — HUD Response Parsing & Canonicalization Fix
+
+**Problem**: HUD token was no longer the blocker. The mapper was reaching the HUD API and getting responses, but the returned payload was not being flattened correctly. The resulting DataFrame had only wrapper columns (`year`, `quarter`, `input`, `crosswalk_type`, `results`) and `build_case_shiller_zip_coverage()` failed because it could not find usable ZIP/FIPS columns.
+
+**Root cause**: `fetch_hud_crosswalk()` extracted `data["results"]` but if that was still a wrapper dict (not a flat list of row dicts), `pd.DataFrame(records)` produced a single-row DataFrame with wrapper columns instead of the actual crosswalk rows.
+
+**Changes by file:**
+
+1. **case_shiller_zip_mapper.py** — 6 new/refactored functions:
+   - `extract_hud_result_rows(payload)` — Robust row-list extractor handling 5 documented HUD response shapes (A: flat list, B: `results` list, C: `results.rows`, D: `results.data`, E: `data` key)
+   - `canonicalize_hud_columns(df)` — Renames HUD column variants to canonical names (`zip`, `county_fips`, `res_ratio`, etc.) and zero-pads ZIP/FIPS to 5 chars
+   - `_describe_payload(payload)` — Log-safe payload shape diagnostics (type, keys, nested types, sample keys)
+   - `_HUD_COLUMN_MAP` — Canonical column name mapping dict (14 variant → 6 canonical)
+   - `fetch_hud_crosswalk()` — Now uses `extract_hud_result_rows()` + `pd.json_normalize()` + `canonicalize_hud_columns()`. Detects wrapper-only columns and rejects them.
+   - `build_case_shiller_zip_coverage()` — Added structured diagnostics (total HUD rows, distinct FIPS counts, matched/unmatched counts, FIPS samples on mismatch)
+   - `build_case_shiller_zip_sheets()` — New `FAILED_PARSE` status when columns are wrapper-only. New `SUCCESS_NO_MATCHES` status when HUD rows exist but none match S&P FIPS. Downstream write validation logs `zip_coverage_rows`, `zip_summary_rows`, `metro_count` before returning.
+
+2. **test_regression.py** — 14 new tests in `TestHUDResponseParsing`:
+   - `test_extract_hud_rows_shape_a_list` through `test_extract_hud_rows_shape_e_data_key` (5 shape tests)
+   - `test_extract_hud_rows_empty_payload`
+   - `test_canonicalize_hud_columns_maps_zip_and_county`
+   - `test_canonicalize_zeropad_zip`
+   - `test_build_case_shiller_zip_coverage_missing_ratios`
+   - `test_failed_parse_status_distinct_from_no_token`
+   - `test_success_no_matches_status_exists`
+   - `test_describe_payload_returns_shape_info`
+   - `test_fetch_hud_crosswalk_uses_extract_and_canonicalize`
+   - `test_metric_format_type_maintenance_comment`
+   - Updated 3 existing tests for new status codes (`FAILED_PARSE`, `SUCCESS_NO_MATCHES`)
+
+3. **CLAUDE.md** — Updated Section 11:
+   - Added "HUD Response Parsing & Flattening" subsection with 5-shape table
+   - Added "Canonical HUD Crosswalk Fields" subsection with variant mapping
+   - Expanded enrichment status table from 8 to 10 codes
+   - Noted that token is no longer the main blocker
+
+**Enrichment status transitions:**
+```
+Token missing     → SKIPPED_NO_TOKEN
+Token found + 401 → FAILED_TOKEN_AUTH
+Token found + 5xx → FAILED_HTTP
+Token found + 200 + wrapper-only columns → FAILED_PARSE
+Token found + 200 + empty results        → FAILED_EMPTY_RESPONSE
+Token found + 200 + rows but no FIPS match → SUCCESS_NO_MATCHES
+Token found + 200 + rows + FIPS match + 0 ZIPs → SUCCESS_NO_ZIPS
+Token found + 200 + rows + FIPS match + ZIPs   → SUCCESS_WITH_ZIPS
+```
+
+**Example normalized HUD columns after parsing:**
+```
+Before: year | quarter | input | crosswalk_type | results
+After:  zip | county_fips | res_ratio | bus_ratio | oth_ratio | tot_ratio | year | quarter
+```
+
+**Test baseline**: 238 tests (previous 224 + 14 new).
+
 ### 2026-03-11 — Final Consistency Pass (HUD Token + ACL Semantics)
 
 **Objective**: Verify code, tests, and CLAUDE.md all agree after the DashboardConfig HUD token fix and ACL coverage/share semantics fix.
@@ -1406,11 +1462,57 @@ The `CASE_SHILLER_COUNTY_MAP` list contains the official county-level definition
 
 ### Integration
 
-ZIP enrichment runs automatically as part of the MSPBNA_CR_Normalized pipeline. Token is resolved once at startup via `_validate_runtime_env()`, stored on `DashboardConfig.hud_user_token` (attribute assignment, never dict-style), and passed explicitly to `build_case_shiller_zip_sheets(hud_user_token=config.hud_user_token)`. The pipeline reads the token via `getattr(self.config, "hud_user_token", None)`. Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`). Returns structured status codes (`SKIPPED_NO_TOKEN`, `FAILED_TOKEN_AUTH`, `FAILED_HTTP`, `FAILED_EMPTY_RESPONSE`, `SUCCESS_NO_ZIPS`, `SUCCESS_WITH_ZIPS`) to distinguish skip vs failure vs empty vs success.
+ZIP enrichment runs automatically as part of the MSPBNA_CR_Normalized pipeline. Token is resolved once at startup via `_validate_runtime_env()`, stored on `DashboardConfig.hud_user_token` (attribute assignment, never dict-style), and passed explicitly to `build_case_shiller_zip_sheets(hud_user_token=config.hud_user_token)`. The pipeline reads the token via `getattr(self.config, "hud_user_token", None)`. Controlled by `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` (default: `true`).
+
+**HUD token is no longer the main blocker.** The token resolution chain works correctly. The primary remaining failure mode is HUD response parsing — the API may return nested wrapper objects that must be flattened before DataFrame creation.
+
+### HUD Response Parsing & Flattening
+
+`fetch_hud_crosswalk()` uses `extract_hud_result_rows()` to robustly extract the flat row list from any HUD API response shape:
+
+| Shape | Payload Structure | Extraction Path |
+|---|---|---|
+| A | `[row, row, ...]` | Direct — payload is already the row list |
+| B | `{"results": [row, ...]}` | `payload["results"]` |
+| C | `{"results": {"rows": [row, ...]}}` | `payload["results"]["rows"]` |
+| D | `{"results": {"data": [row, ...]}}` | `payload["results"]["data"]` |
+| E | `{"data": [row, ...]}` | `payload["data"]` |
+
+After extraction, rows are flattened via `pd.json_normalize()` and canonicalized via `canonicalize_hud_columns()`. A wrapper-only column check (`year`, `quarter`, `input`, `crosswalk_type`, `results`) detects payloads that were not properly flattened and returns `FAILED_PARSE`.
+
+### Canonical HUD Crosswalk Fields
+
+After canonicalization, all downstream code uses these standard column names:
+
+| Canonical Name | Variants Accepted |
+|---|---|
+| `zip` | `zip`, `zip_code`, `zipcode`, `zip5` |
+| `county_fips` | `county`, `county_fips`, `geoid`, `county_geoid`, `countyfips`, `fips` |
+| `res_ratio` | `res_ratio`, `residential_ratio` |
+| `bus_ratio` | `bus_ratio`, `business_ratio` |
+| `oth_ratio` | `oth_ratio`, `other_ratio` |
+| `tot_ratio` | `tot_ratio`, `total_ratio` |
+
+ZIP codes are zero-padded to 5 chars. County FIPS are zero-padded to 5 chars.
+
+### Enrichment Status Codes
+
+| Status | Meaning |
+|---|---|
+| `SKIPPED_DISABLED` | `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT=false` |
+| `SKIPPED_NO_TOKEN` | Token not visible to current Python process |
+| `SKIPPED_NO_REQUESTS` | `requests` library not installed |
+| `FAILED_TOKEN_AUTH` | HTTP 401/403 from HUD API |
+| `FAILED_HTTP` | Non-auth HTTP failures |
+| `FAILED_PARSE` | HTTP success but response could not be flattened to usable ZIP/FIPS columns |
+| `FAILED_EMPTY_RESPONSE` | API responded but all counties returned empty |
+| `SUCCESS_NO_MATCHES` | HUD returned rows but none matched S&P county FIPS codes |
+| `SUCCESS_NO_ZIPS` | Enrichment ran but produced zero ZIP rows |
+| `SUCCESS_WITH_ZIPS` | Normal success |
 
 ### HUD API: County-to-ZIP (Type 7)
 
-The HUD USPS Crosswalk API is called with `type=7` (county-to-ZIP) for each unique FIPS code in `CASE_SHILLER_COUNTY_MAP`. The API returns all ZIP codes that overlap each county along with allocation ratios (`tot_ratio`, `res_ratio`, `bus_ratio`, `oth_ratio`). Results are joined strictly on 5-digit FIPS code.
+The HUD USPS Crosswalk API is called with `type=7` (county-to-ZIP) for each unique FIPS code in `CASE_SHILLER_COUNTY_MAP`. The API returns all ZIP codes that overlap each county along with allocation ratios (`tot_ratio`, `res_ratio`, `bus_ratio`, `oth_ratio`). Results are joined strictly on 5-digit FIPS code. After fetching, the combined frame is validated for usable columns before proceeding to the coverage join.
 
 ### Output Sheets
 
