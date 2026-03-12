@@ -2508,8 +2508,35 @@ def generate_reports(
                        plot_liquidity_overlay, charts_dir,
                        proc_df_with_peers, subject_bank_cert)
 
-        _produce_chart(ctx, "macro_overlay", csv_log,
-                       plot_macro_overlay, charts_dir,
+        # Macro correlation heatmap (HTML — BOTH modes)
+        art_name = "macro_corr_heatmap_lag1"
+        if should_produce(art_name, mode, manifest, suppressed_charts):
+            try:
+                cap = ARTIFACT_REGISTRY.get(art_name)
+                suffix = cap.filename_suffix if cap else f"_{art_name}.html"
+                save = str(tables_dir / f"{base}{suffix}")
+                html = generate_macro_corr_heatmap(
+                    proc_df_with_peers, subject_bank_cert, excel_file,
+                    save_path=save,
+                )
+                if html is not None:
+                    manifest.record_generated(art_name, save)
+                    csv_log.log_file_written(save, phase="table", component=art_name)
+                    print(f"  {art_name} saved: {save}")
+                else:
+                    manifest.record_failed(art_name, "generator returned None")
+            except Exception as exc:
+                manifest.record_failed(art_name, str(exc)[:200])
+                print(f"  [{art_name}] FAILED: {exc}")
+
+        # Macro overlay — credit stress (PNG — full_local only)
+        _produce_chart(ctx, "macro_overlay_credit_stress", csv_log,
+                       plot_macro_overlay_credit_stress, charts_dir,
+                       proc_df_with_peers, subject_bank_cert, excel_file)
+
+        # Macro overlay — rates & housing (PNG — full_local only)
+        _produce_chart(ctx, "macro_overlay_rates_housing", csv_log,
+                       plot_macro_overlay_rates_housing, charts_dir,
                        proc_df_with_peers, subject_bank_cert, excel_file)
 
         # ------------------------------------------------------------------
@@ -3685,83 +3712,402 @@ def plot_liquidity_overlay(
     return fig
 
 
-def plot_macro_overlay(
+# =====================================================================
+# Macro Series Constants — deterministic, no heuristic fallback
+# =====================================================================
+
+# Exact required FRED series IDs for macro charts
+MACRO_CORR_INTERNAL_METRICS = [
+    "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+    "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+    "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_NCO_Rate", "RIC_CRE_ACL_Coverage",
+]
+
+MACRO_CORR_FRED_SERIES = [
+    "FEDFUNDS", "T10Y2Y", "BAMLH0A0HYM2", "VIXCLS", "NFCI",
+    "STLFSI2", "DRTSCILM", "DRALACBS", "DRCRELEXFACBS", "DRSFRMACBS",
+    "MORTGAGE30US", "HOUST", "CSUSHPISA",
+]
+
+# Human-readable display names for FRED series
+_FRED_DISPLAY = {
+    "FEDFUNDS": "Fed Funds", "T10Y2Y": "10Y-2Y Spread",
+    "BAMLH0A0HYM2": "HY OAS", "VIXCLS": "VIX", "NFCI": "NFCI",
+    "STLFSI2": "St. Louis FSI v2", "DRTSCILM": "C&I Standards",
+    "DRALACBS": "All Loans Delinq", "DRCRELEXFACBS": "CRE Delinq",
+    "DRSFRMACBS": "Resi Delinq", "MORTGAGE30US": "30Y Mortgage",
+    "HOUST": "Housing Starts", "CSUSHPISA": "Case-Shiller (SA)",
+}
+
+
+def _fred_to_quarterly(fred_df: pd.DataFrame, series_id: str) -> pd.Series:
+    """Extract a single FRED series and resample to quarter-end frequency.
+
+    Returns a Series indexed by quarterly period-end dates.
+    """
+    sel = fred_df[fred_df["SeriesID"] == series_id].copy()
+    if sel.empty:
+        return pd.Series(dtype=float)
+    sel = sel.sort_values("DATE")
+    sel["VALUE"] = pd.to_numeric(sel["VALUE"], errors="coerce")
+    sel = sel.dropna(subset=["VALUE"]).set_index("DATE")
+    # Resample to quarter-end, taking the last available observation per quarter
+    qtr = sel["VALUE"].resample("QE").last().dropna()
+    return qtr
+
+
+def generate_macro_corr_heatmap(
+    df: pd.DataFrame,
+    subject_cert: int,
+    excel_file: str,
+    trailing_quarters: int = 20,
+    internal_metrics: Optional[list] = None,
+    fred_series: Optional[list] = None,
+    save_path: Optional[str] = None,
+) -> Optional[str]:
+    """Generate a self-contained HTML correlation heatmap.
+
+    Rows = internal bank metrics, Columns = FRED macro series.
+    Macro series are lagged +1 quarter relative to internal metrics
+    (i.e., macro Q(t-1) correlated with bank metric Q(t)).
+    Pearson correlation over trailing window.  Insufficient overlap → N/A.
+    """
+    if internal_metrics is None:
+        internal_metrics = MACRO_CORR_INTERNAL_METRICS
+    if fred_series is None:
+        fred_series = MACRO_CORR_FRED_SERIES
+
+    # --- Load internal bank data ---
+    if "REPDTE" not in df.columns:
+        return None
+    subj = df[df["CERT"] == subject_cert].copy()
+    if subj.empty:
+        print("  Skipped macro_corr_heatmap: no subject bank data")
+        return None
+    subj["REPDTE"] = pd.to_datetime(subj["REPDTE"])
+    subj = subj.sort_values("REPDTE").set_index("REPDTE")
+    available_internal = [m for m in internal_metrics if m in subj.columns]
+    if not available_internal:
+        print("  Skipped macro_corr_heatmap: no internal metrics in data")
+        return None
+
+    # --- Load FRED data ---
+    try:
+        fred_raw, desc = _load_fred_tables(excel_file)
+    except Exception as e:
+        print(f"  Skipped macro_corr_heatmap: {e}")
+        return None
+
+    # Build quarterly FRED DataFrame
+    fred_q_dict = {}
+    for sid in fred_series:
+        qtr = _fred_to_quarterly(fred_raw, sid)
+        if not qtr.empty:
+            fred_q_dict[sid] = qtr
+    if not fred_q_dict:
+        print("  Skipped macro_corr_heatmap: no FRED series available")
+        return None
+    fred_q = pd.DataFrame(fred_q_dict)
+
+    # --- Align: lag FRED by +1 quarter (shift FRED index forward by 1Q) ---
+    fred_q_lagged = fred_q.copy()
+    fred_q_lagged.index = fred_q_lagged.index + pd.DateOffset(months=3)
+
+    # Restrict internal metrics to trailing window
+    dates = sorted(subj.index.unique())
+    cutoff_dates = dates[-trailing_quarters:] if len(dates) >= trailing_quarters else dates
+    subj_trail = subj.loc[subj.index.isin(cutoff_dates), available_internal]
+
+    # Align indices
+    common_idx = subj_trail.index.intersection(fred_q_lagged.index)
+    if len(common_idx) < 4:
+        print(f"  Skipped macro_corr_heatmap: only {len(common_idx)} overlapping quarters (need ≥4)")
+        return None
+
+    sub_aligned = subj_trail.loc[common_idx]
+    fred_aligned = fred_q_lagged.loc[common_idx]
+
+    # --- Compute Pearson correlations ---
+    from metric_semantics import get_semantic
+    import scipy.stats as stats
+
+    n_rows = len(available_internal)
+    n_cols = len(fred_q_dict)
+    corr_data = []
+    for m in available_internal:
+        sem = get_semantic(m)
+        label = sem.display_name if sem else m.replace("_", " ")
+        row = {"metric": label}
+        m_vals = pd.to_numeric(sub_aligned[m], errors="coerce")
+        for sid in fred_q_dict:
+            f_vals = pd.to_numeric(fred_aligned[sid], errors="coerce") if sid in fred_aligned.columns else pd.Series(dtype=float)
+            valid = m_vals.notna() & f_vals.notna()
+            n_valid = valid.sum()
+            if n_valid >= 4:
+                r, _ = stats.pearsonr(m_vals[valid], f_vals[valid])
+                row[sid] = r
+            else:
+                row[sid] = None  # N/A — insufficient overlap
+        corr_data.append(row)
+
+    # --- Build HTML ---
+    fred_cols = list(fred_q_dict.keys())
+    date_str = common_idx.max().strftime("%Y Q%q").replace("Q%q", f"Q{(common_idx.max().month - 1) // 3 + 1}") if hasattr(common_idx.max(), 'strftime') else str(common_idx.max())
+
+    def _corr_color(v):
+        """Return background color for a correlation value."""
+        if v is None:
+            return "#F5F5F5"
+        if v > 0.7:
+            return "#C62828"  # strong positive (red = risk comovement)
+        if v > 0.4:
+            return "#EF9A9A"  # moderate positive
+        if v > 0.2:
+            return "#FFCDD2"  # weak positive
+        if v > -0.2:
+            return "#F5F5F5"  # negligible
+        if v > -0.4:
+            return "#C8E6C9"  # weak negative
+        if v > -0.7:
+            return "#81C784"  # moderate negative
+        return "#2E7D32"  # strong negative (green = counter-cyclical)
+
+    def _corr_text_color(v):
+        if v is None:
+            return "#999"
+        return "#FFF" if abs(v) > 0.7 else "#333"
+
+    html = f"""<html><head><style>
+        body {{ font-family: Arial, sans-serif; }}
+        .corr-container {{ max-width: 1100px; margin: 0 auto; padding: 20px; }}
+        h3 {{ color: #002F6C; text-align: center; margin-bottom: 5px; }}
+        p.subtitle {{ text-align: center; color: #555; font-size: 11px; margin-top: 0; }}
+        table {{ border-collapse: collapse; font-size: 10px; width: 100%; }}
+        th {{ background-color: #002F6C; color: white; padding: 5px 6px;
+              border: 1px solid #1a3a5c; text-align: center; font-size: 9px;
+              white-space: nowrap; }}
+        th.metric-hdr {{ text-align: left; min-width: 160px; }}
+        td {{ padding: 4px 6px; border: 1px solid #e0e0e0; text-align: center;
+              font-variant-numeric: tabular-nums; font-weight: 600; }}
+        td.metric-name {{ text-align: left; font-weight: 700; color: #2c3e50;
+                          white-space: nowrap; background: #f8f9fa; }}
+        .legend {{ margin-top: 10px; font-size: 10px; color: #555; text-align: center; }}
+    </style></head><body>
+    <div class="corr-container">
+        <h3>Macro–Credit Correlation Heatmap (Lag +1Q)</h3>
+        <p class="subtitle">Pearson ρ | Trailing {trailing_quarters}Q window ending {date_str} | Macro series lagged one quarter</p>
+        <table>
+        <thead><tr>
+            <th class="metric-hdr">Internal Metric</th>
+"""
+    for sid in fred_cols:
+        disp = _FRED_DISPLAY.get(sid, sid)
+        html += f'            <th>{disp}</th>\n'
+    html += "        </tr></thead>\n        <tbody>\n"
+
+    for row in corr_data:
+        html += f'        <tr><td class="metric-name">{row["metric"]}</td>\n'
+        for sid in fred_cols:
+            v = row.get(sid)
+            bg = _corr_color(v)
+            tc = _corr_text_color(v)
+            cell = f"{v:+.2f}" if v is not None else "N/A"
+            html += f'            <td style="background:{bg};color:{tc};">{cell}</td>\n'
+        html += "        </tr>\n"
+
+    html += """        </tbody></table>
+        <div class="legend">
+            Color scale: <span style="color:#2E7D32;">■</span> strong negative (ρ &lt; −0.7) →
+            <span style="color:#81C784;">■</span> moderate negative →
+            neutral →
+            <span style="color:#EF9A9A;">■</span> moderate positive →
+            <span style="color:#C62828;">■</span> strong positive (ρ &gt; 0.7) |
+            N/A = insufficient overlap (&lt;4 quarters)
+        </div>
+    </div></body></html>"""
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(html)
+    return html
+
+
+def plot_macro_overlay_credit_stress(
     df: pd.DataFrame,
     subject_bank_cert: int,
     excel_file: str,
     save_path: Optional[str] = None,
 ) -> Optional[plt.Figure]:
-    """Dual-axis chart: Norm_NCO_Rate on left axis, key FRED macro series on right axis."""
+    """Dual-axis chart: MSPBNA Norm_NCO_Rate (left) vs BAMLH0A0HYM2 & NFCI z-scores (right).
+
+    Series selection is deterministic — BAMLH0A0HYM2 (HY OAS) and NFCI only.
+    Right-axis series are z-scored over the plotted window for readability.
+    Title explicitly names the series used.
+    """
     nco_col = "Norm_NCO_Rate"
     if nco_col not in df.columns:
-        print("  Skipped macro overlay: Norm_NCO_Rate not in data")
+        print("  Skipped macro_overlay_credit_stress: Norm_NCO_Rate not in data")
         return None
 
     subj = df[df["CERT"] == subject_bank_cert].copy()
     if subj.empty:
-        print("  Skipped macro overlay: no subject bank data")
+        print("  Skipped macro_overlay_credit_stress: no subject bank data")
         return None
     subj = subj.sort_values("REPDTE")
+    subj["REPDTE"] = pd.to_datetime(subj["REPDTE"])
     subj[nco_col] = pd.to_numeric(subj[nco_col], errors="coerce")
 
-    # Load FRED data
     try:
-        fred, desc = _load_fred_tables(excel_file)
+        fred_raw, desc = _load_fred_tables(excel_file)
     except Exception as e:
-        print(f"  Skipped macro overlay: {e}")
+        print(f"  Skipped macro_overlay_credit_stress: {e}")
         return None
 
-    # Pick a macro series: prefer Fed Funds, fall back to Unemployment, then any available
-    target_names = ["Fed Funds", "Unemployment", "All Loans Delinquency Rate"]
-    sel = None
-    chosen_name = None
-    for tn in target_names:
-        match = desc[desc["ShortName"] == tn]
-        if not match.empty:
-            sid = match.iloc[0]["SeriesID"]
-            candidate = fred[fred["SeriesID"] == sid].copy()
-            if not candidate.empty:
-                sel = candidate
-                chosen_name = tn
-                break
-    if sel is None:
-        # Fall back to any available series
-        if not fred.empty:
-            first_sid = fred["SeriesID"].iloc[0]
-            sel = fred[fred["SeriesID"] == first_sid].copy()
-            match = desc[desc["SeriesID"] == first_sid]
-            chosen_name = match.iloc[0]["ShortName"] if not match.empty else first_sid
-        else:
-            print("  Skipped macro overlay: no FRED data available")
-            return None
-
-    sel = sel.sort_values("DATE")
-    sel["VALUE"] = pd.to_numeric(sel["VALUE"], errors="coerce")
+    # Extract quarterly FRED series — deterministic IDs, no fallback
+    hy_oas = _fred_to_quarterly(fred_raw, "BAMLH0A0HYM2")
+    nfci = _fred_to_quarterly(fred_raw, "NFCI")
+    if hy_oas.empty and nfci.empty:
+        print("  Skipped macro_overlay_credit_stress: neither BAMLH0A0HYM2 nor NFCI available")
+        return None
 
     fig, ax = plt.subplots(figsize=(14, 7))
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
     _economist_ax(ax)
 
+    # Left axis: MSPBNA Norm NCO Rate
     ax.plot(subj["REPDTE"], subj[nco_col], color="#F7A81B", linewidth=2.5,
             marker="o", markersize=4, label="MSPBNA Norm NCO Rate", zorder=3)
     ax.set_ylabel("Norm NCO Rate", fontsize=13, fontweight="bold", color="#F7A81B")
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2%}"))
 
+    # Right axis: z-scored stress indicators
     ax2 = ax.twinx()
-    ax2.plot(sel["DATE"], sel["VALUE"], color="#4C78A8", linewidth=2, linestyle="--",
-             label=chosen_name, alpha=0.85)
-    ax2.set_ylabel(chosen_name, fontsize=13, fontweight="bold", color="#4C78A8")
+    right_series = []
+    colors_right = {"BAMLH0A0HYM2": "#4C78A8", "NFCI": "#E15759"}
+    labels_right = {"BAMLH0A0HYM2": "HY OAS (z)", "NFCI": "NFCI (z)"}
+    for sid, qtr_data in [("BAMLH0A0HYM2", hy_oas), ("NFCI", nfci)]:
+        if qtr_data.empty:
+            continue
+        # Z-score over the plotted window
+        mu = qtr_data.mean()
+        sigma = qtr_data.std()
+        if sigma > 0:
+            z = (qtr_data - mu) / sigma
+        else:
+            z = qtr_data * 0.0
+        ax2.plot(z.index, z.values, color=colors_right[sid], linewidth=1.8,
+                 linestyle="--", alpha=0.85, label=labels_right[sid])
+        right_series.append(sid)
+
+    ax2.set_ylabel("Z-Score", fontsize=13, fontweight="bold", color="#4C78A8")
     for sp in ["top"]:
         ax2.spines[sp].set_visible(False)
+    ax2.axhline(0, color="#888", linewidth=0.5, linestyle=":")
 
     ax.set_xlabel("Date", fontsize=13, fontweight="bold")
-    ax.set_title(f"Macro Overlay: Norm NCO Rate vs {chosen_name}",
-                 fontsize=18, fontweight="bold", color="#2B2B2B")
+    series_names = " + ".join(labels_right[s].replace(" (z)", "") for s in right_series)
+    ax.set_title(f"Credit Stress Overlay: Norm NCO Rate vs {series_names}",
+                 fontsize=16, fontweight="bold", color="#2B2B2B")
 
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", frameon=True, fontsize=11)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_macro_overlay_rates_housing(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    excel_file: str,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Dual-axis chart: Resi credit quality (left) vs rates & housing macro (right).
+
+    Left axis: RIC_Resi_Nonaccrual_Rate if present, else Norm_Nonaccrual_Rate.
+    Right axis: FEDFUNDS, MORTGAGE30US, CSUSHPISA (converted to YoY % change).
+    All series quarterly-aligned. Title names the actual selected series.
+    """
+    # Determine left-axis metric
+    left_col = None
+    for candidate in ["RIC_Resi_Nonaccrual_Rate", "Norm_Nonaccrual_Rate"]:
+        if candidate in df.columns:
+            left_col = candidate
+            break
+    if left_col is None:
+        print("  Skipped macro_overlay_rates_housing: no resi/norm nonaccrual metric")
+        return None
+
+    subj = df[df["CERT"] == subject_bank_cert].copy()
+    if subj.empty:
+        print("  Skipped macro_overlay_rates_housing: no subject bank data")
+        return None
+    subj = subj.sort_values("REPDTE")
+    subj["REPDTE"] = pd.to_datetime(subj["REPDTE"])
+    subj[left_col] = pd.to_numeric(subj[left_col], errors="coerce")
+
+    try:
+        fred_raw, desc = _load_fred_tables(excel_file)
+    except Exception as e:
+        print(f"  Skipped macro_overlay_rates_housing: {e}")
+        return None
+
+    # Extract quarterly FRED series — deterministic IDs
+    fedfunds = _fred_to_quarterly(fred_raw, "FEDFUNDS")
+    mortgage30 = _fred_to_quarterly(fred_raw, "MORTGAGE30US")
+    csushpisa_raw = _fred_to_quarterly(fred_raw, "CSUSHPISA")
+
+    # Convert CSUSHPISA to YoY % change
+    csushpisa_yoy = csushpisa_raw.pct_change(4) * 100 if len(csushpisa_raw) > 4 else pd.Series(dtype=float)
+    csushpisa_yoy = csushpisa_yoy.dropna()
+
+    if fedfunds.empty and mortgage30.empty and csushpisa_yoy.empty:
+        print("  Skipped macro_overlay_rates_housing: no FRED macro series available")
+        return None
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    left_label = left_col.replace("_", " ")
+    ax.plot(subj["REPDTE"], subj[left_col], color="#F7A81B", linewidth=2.5,
+            marker="o", markersize=4, label=f"MSPBNA {left_label}", zorder=3)
+    ax.set_ylabel(left_label, fontsize=13, fontweight="bold", color="#F7A81B")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2%}"))
+
+    ax2 = ax.twinx()
+    right_plotted = []
+    macro_specs = [
+        ("FEDFUNDS", fedfunds, "#4C78A8", "-", "Fed Funds Rate (%)"),
+        ("MORTGAGE30US", mortgage30, "#70AD47", "--", "30Y Mortgage (%)"),
+        ("CSUSHPISA", csushpisa_yoy, "#9C6FB6", "-.", "Case-Shiller YoY (%)"),
+    ]
+    for sid, series, color, ls, label in macro_specs:
+        if series.empty:
+            continue
+        ax2.plot(series.index, series.values, color=color, linewidth=1.8,
+                 linestyle=ls, alpha=0.85, label=label)
+        right_plotted.append(label)
+
+    ax2.set_ylabel("Rate / YoY %", fontsize=13, fontweight="bold", color="#4C78A8")
+    for sp in ["top"]:
+        ax2.spines[sp].set_visible(False)
+
+    ax.set_xlabel("Date", fontsize=13, fontweight="bold")
+    right_names = ", ".join(right_plotted)
+    ax.set_title(f"Rates & Housing Overlay: {left_label} vs {right_names}",
+                 fontsize=14, fontweight="bold", color="#2B2B2B")
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", frameon=True, fontsize=10)
     plt.tight_layout()
 
     if save_path:

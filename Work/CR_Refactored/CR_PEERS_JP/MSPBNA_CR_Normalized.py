@@ -780,6 +780,7 @@ FRED_SERIES_TO_FETCH = {
     },
     'Financial Stress & Risk': {
         'STLFSI4': {'short': 'St. Louis FSI', 'long': 'St. Louis Fed Financial Stress Index'},
+        'STLFSI2': {'short': 'St. Louis FSI v2', 'long': 'St. Louis Fed Financial Stress Index (v2, weekly)'},
         'VIXCLS': {'short': 'VIX', 'long': 'CBOE Volatility Index: VIX'},
         'NFCI': {'short': 'NFCI', 'long': 'Chicago Fed National Financial Conditions Index'}
     },
@@ -802,6 +803,7 @@ FRED_SERIES_TO_FETCH = {
     },
     'Real Estate & Housing': {
         'CSUSHPINSA': {'short': 'Case-Shiller National', 'long': 'S&P CoreLogic Case-Shiller U.S. National Home Price Index'},
+        'CSUSHPISA': {'short': 'Case-Shiller National (SA)', 'long': 'S&P CoreLogic Case-Shiller U.S. National Home Price Index (Seasonally Adjusted)'},
         'HOUST': {'short': 'Housing Starts', 'long': 'Housing Starts: Total: New Privately Owned Housing Units Started'},
         'PERMIT': {'short': 'Building Permits', 'long': 'New Private Housing Units Authorized by Building Permits'},
         'MSPUS': {'short': 'Median Sales Price', 'long': 'Median Sales Price of Houses Sold for the United States'},

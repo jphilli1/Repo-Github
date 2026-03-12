@@ -186,8 +186,12 @@ _reg("concentration_vs_capital", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "Concentration vs capital sensitivity quadrant scatter")
 _reg("liquidity_overlay", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "Liquidity / draw-risk overlay combo chart")
-_reg("macro_overlay", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "Macro overlay on credit trend dual-axis chart")
+_reg("macro_corr_heatmap_lag1", ArtifactAvailability.BOTH, "table",
+     "Lagged Pearson correlation heatmap (internal metrics vs FRED macro, +1Q lag)")
+_reg("macro_overlay_credit_stress", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "Macro overlay: Norm NCO Rate vs HY OAS + NFCI (z-scored)")
+_reg("macro_overlay_rates_housing", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "Macro overlay: Resi credit vs FEDFUNDS + MORTGAGE30US + CSUSHPISA YoY")
 
 # --- FRED Expansion Charts (matplotlib → full_local only) ---
 _reg("sbl_backdrop", ArtifactAvailability.FULL_LOCAL_ONLY, "fred_chart",

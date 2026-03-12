@@ -158,12 +158,14 @@ report_generator.py
   - `{stem}_risk_adjusted_return.png`
   - `{stem}_concentration_vs_capital.png`
   - `{stem}_liquidity_overlay.png`
-  - `{stem}_macro_overlay.png`
   - `{stem}_yoy_heatmap_standard.html`
   - `{stem}_yoy_heatmap_normalized.html`
   - `{stem}_kri_bullet_standard.png`
   - `{stem}_kri_bullet_normalized.png`
   - `{stem}_sparkline_summary.html`
+  - `{stem}_macro_corr_heatmap_lag1.html`
+  - `{stem}_macro_overlay_credit_stress.png`
+  - `{stem}_macro_overlay_rates_housing.png`
 
 Where `{stem}` = `Bank_Performance_Dashboard_YYYYMMDD`
 
@@ -692,6 +694,76 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Macro Chart Tranche (3 Artifacts, Deterministic Series Selection)
+
+**Objective**: Implement macro-to-credit correlation and overlay charts using precise named FRED series. Replace the old heuristic "pick first available" macro overlay with deterministic, documented series selection.
+
+**3 Artifacts:**
+
+| Artifact | File | Mode | Type |
+|---|---|---|---|
+| `macro_corr_heatmap_lag1` | `{stem}_macro_corr_heatmap_lag1.html` | BOTH | HTML table |
+| `macro_overlay_credit_stress` | `{stem}_macro_overlay_credit_stress.png` | FULL_LOCAL_ONLY | PNG chart |
+| `macro_overlay_rates_housing` | `{stem}_macro_overlay_rates_housing.png` | FULL_LOCAL_ONLY | PNG chart |
+
+**Required FRED Series (13):**
+
+| Category | Series ID | Short Name | Frequency |
+|---|---|---|---|
+| Rates/Curve | FEDFUNDS | Fed Funds Rate | Monthly |
+| Rates/Curve | T10Y2Y | 10Y-2Y Spread | Daily |
+| Credit/Stress | BAMLH0A0HYM2 | HY OAS | Daily |
+| Credit/Stress | VIXCLS | VIX | Daily |
+| Credit/Stress | NFCI | Chicago Fed NFCI | Weekly |
+| Credit/Stress | STLFSI2 | St. Louis FSI v2 | Weekly |
+| Credit/Stress | DRTSCILM | C&I Standards (Large/Med) | Quarterly |
+| Bank Health | DRALACBS | All Loans Delinquency | Quarterly |
+| Bank Health | DRCRELEXFACBS | CRE Delinq (ex-farm) | Quarterly |
+| Bank Health | DRSFRMACBS | 1-4 Resi Delinquency | Quarterly |
+| Housing | MORTGAGE30US | 30Y Mortgage Rate | Weekly |
+| Housing | HOUST | Housing Starts | Monthly |
+| Housing | CSUSHPISA | Case-Shiller National (SA) | Monthly |
+
+**Series availability:** All 13 series are now in `FRED_SERIES_TO_FETCH` (legacy ingestion path). STLFSI2 and CSUSHPISA were added in this prompt. Other 11 were already present.
+
+**Artifact 1 — macro_corr_heatmap_lag1.html:**
+- Internal metric rows (8): Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, RIC_CRE_Nonaccrual_Rate, RIC_CRE_NCO_Rate, RIC_CRE_ACL_Coverage
+- Macro columns (13): All 13 FRED series above
+- Pearson correlation, trailing 20Q window
+- Macro series lagged +1 quarter vs internal metrics
+- Insufficient overlap (< 4 quarters) → N/A cell
+- Color scale: green (strong negative/counter-cyclical) → neutral → red (strong positive/comovement)
+- All series quarterly-aligned via `_fred_to_quarterly()` (last-observation-per-quarter resampling)
+
+**Artifact 2 — macro_overlay_credit_stress.png:**
+- Left axis: MSPBNA Norm_NCO_Rate (gold, solid)
+- Right axis: BAMLH0A0HYM2 (blue, dashed) + NFCI (red, dashed), both z-scored over plotted window
+- Z-scoring: `(value - mean) / std` for readability when units differ
+- Title: "Credit Stress Overlay: Norm NCO Rate vs HY OAS + NFCI"
+
+**Artifact 3 — macro_overlay_rates_housing.png:**
+- Left axis: RIC_Resi_Nonaccrual_Rate (preferred) or Norm_Nonaccrual_Rate (fallback)
+- Right axis: FEDFUNDS (solid), MORTGAGE30US (dashed), CSUSHPISA YoY % (dash-dot)
+- CSUSHPISA transformed: `pct_change(4) * 100` (quarterly YoY %)
+- Title dynamically names the actual plotted series
+
+**Critical change — heuristic fallback deleted:**
+The old `plot_macro_overlay()` used: `target_names = ["Fed Funds", "Unemployment", "All Loans Delinquency Rate"]` with fallback to "any available series". This has been completely removed. Macro chart selection is now deterministic — each chart function specifies exact FRED series IDs. No fallback to random/first-available series. The old `macro_overlay` artifact is replaced by 3 deterministic artifacts.
+
+**Changes:**
+
+1. **MSPBNA_CR_Normalized.py** — Added STLFSI2 and CSUSHPISA to `FRED_SERIES_TO_FETCH` so both are fetched into the workbook FRED_Data sheet.
+
+2. **rendering_mode.py** — Replaced `macro_overlay` (FULL_LOCAL_ONLY) with 3 new registrations: `macro_corr_heatmap_lag1` (BOTH), `macro_overlay_credit_stress` (FULL_LOCAL_ONLY), `macro_overlay_rates_housing` (FULL_LOCAL_ONLY).
+
+3. **report_generator.py** — Deleted old `plot_macro_overlay()` with its heuristic fallback. Added constants `MACRO_CORR_INTERNAL_METRICS` (8 metrics), `MACRO_CORR_FRED_SERIES` (13 series), `_FRED_DISPLAY` (human-readable names). Added `_fred_to_quarterly()` helper for quarterly alignment. Added 3 new generators: `generate_macro_corr_heatmap()`, `plot_macro_overlay_credit_stress()`, `plot_macro_overlay_rates_housing()`. Updated `generate_reports()` Phase 6 to call all 3 new artifacts instead of the old single macro_overlay.
+
+4. **test_regression.py** — Added `TestMacroChartTranche` class (18 tests): all 3 artifacts registered, mode declarations correct, old macro_overlay removed, no heuristic fallback in source, all 13 FRED series in fetch list, exact internal metric list, exact FRED column list, deterministic series in credit stress, deterministic series in rates/housing, left-axis preference order, chart titles include series names, empty data handling, new artifacts referenced in report_generator, _fred_to_quarterly exists, z-scoring verified, STLFSI2 in fetch, CSUSHPISA in fetch. Updated `test_registry_covers_known_artifacts` to include new artifacts.
+
+5. **CLAUDE.md** — Added artifact table, series table, transformations, quarterly alignment, and changelog.
+
+**Files changed:** `MSPBNA_CR_Normalized.py`, `rendering_mode.py`, `report_generator.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Executive Chart Tranche (5 Artifacts)
 

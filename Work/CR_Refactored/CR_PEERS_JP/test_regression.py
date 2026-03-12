@@ -4737,6 +4737,8 @@ class TestArtifactRegistryCanonical(unittest.TestCase):
             "portfolio_mix", "migration_ladder", "fred_table",
             "yoy_heatmap_standard", "kri_bullet_standard", "kri_bullet_normalized",
             "sparkline_summary",
+            "macro_corr_heatmap_lag1", "macro_overlay_credit_stress",
+            "macro_overlay_rates_housing",
         }
         for name in expected:
             self.assertIn(name, ARTIFACT_REGISTRY, f"Missing artifact: {name}")
@@ -5081,6 +5083,199 @@ class TestExecutiveChartTranche(unittest.TestCase):
         from metric_semantics import METRIC_SEMANTICS
         for code in HEATMAP_METRICS_STANDARD + HEATMAP_METRICS_NORMALIZED:
             self.assertIn(code, METRIC_SEMANTICS, f"Missing semantic: {code}")
+
+
+class TestMacroChartTranche(unittest.TestCase):
+    """Regression tests for the 3-artifact macro chart tranche."""
+
+    def test_all_three_macro_artifacts_registered(self):
+        """All 3 macro artifacts must exist in ARTIFACT_REGISTRY."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        expected = [
+            "macro_corr_heatmap_lag1",
+            "macro_overlay_credit_stress",
+            "macro_overlay_rates_housing",
+        ]
+        for name in expected:
+            self.assertIn(name, ARTIFACT_REGISTRY, f"Missing: {name}")
+
+    def test_macro_corr_heatmap_is_both(self):
+        """macro_corr_heatmap_lag1 must be available in both render modes (HTML)."""
+        from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
+        cap = ARTIFACT_REGISTRY["macro_corr_heatmap_lag1"]
+        self.assertEqual(cap.availability, ArtifactAvailability.BOTH)
+
+    def test_macro_overlays_are_full_local_only(self):
+        """Both PNG macro overlays must be full_local only."""
+        from rendering_mode import ARTIFACT_REGISTRY, ArtifactAvailability
+        for name in ["macro_overlay_credit_stress", "macro_overlay_rates_housing"]:
+            cap = ARTIFACT_REGISTRY[name]
+            self.assertEqual(cap.availability, ArtifactAvailability.FULL_LOCAL_ONLY,
+                             f"{name} should be FULL_LOCAL_ONLY")
+
+    def test_old_macro_overlay_removed(self):
+        """The old heuristic 'macro_overlay' must no longer exist in the registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertNotIn("macro_overlay", ARTIFACT_REGISTRY,
+                         "Old macro_overlay should be replaced by deterministic variants")
+
+    def test_no_heuristic_fallback_in_report_generator(self):
+        """report_generator.py must not contain the old heuristic series selection."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Old pattern: "Fed Funds", "Unemployment", "All Loans Delinquency Rate"
+        self.assertNotIn('"Fed Funds", "Unemployment"', source,
+                         "Old heuristic fallback list still present")
+        # Old "fall back to any available series"
+        self.assertNotIn("Fall back to any available series", source)
+
+    def test_required_fred_series_in_legacy_fetch(self):
+        """All 13 required FRED series must appear in FRED_SERIES_TO_FETCH source."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        required = [
+            "FEDFUNDS", "T10Y2Y", "BAMLH0A0HYM2", "VIXCLS", "NFCI",
+            "STLFSI2", "DRTSCILM", "DRALACBS", "DRCRELEXFACBS", "DRSFRMACBS",
+            "MORTGAGE30US", "HOUST", "CSUSHPISA",
+        ]
+        for sid in required:
+            self.assertIn(f"'{sid}'", source,
+                          f"Required FRED series {sid} missing from MSPBNA_CR_Normalized.py")
+
+    def test_corr_heatmap_exact_metric_rows(self):
+        """Correlation heatmap internal metric list must match spec exactly."""
+        try:
+            from report_generator import MACRO_CORR_INTERNAL_METRICS
+        except ImportError:
+            self.skipTest("report_generator import failed (matplotlib)")
+            return
+        expected = [
+            "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+            "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+            "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_NCO_Rate", "RIC_CRE_ACL_Coverage",
+        ]
+        self.assertEqual(MACRO_CORR_INTERNAL_METRICS, expected)
+
+    def test_corr_heatmap_exact_fred_columns(self):
+        """Correlation heatmap FRED series list must match spec exactly."""
+        try:
+            from report_generator import MACRO_CORR_FRED_SERIES
+        except ImportError:
+            self.skipTest("report_generator import failed (matplotlib)")
+            return
+        expected = [
+            "FEDFUNDS", "T10Y2Y", "BAMLH0A0HYM2", "VIXCLS", "NFCI",
+            "STLFSI2", "DRTSCILM", "DRALACBS", "DRCRELEXFACBS", "DRSFRMACBS",
+            "MORTGAGE30US", "HOUST", "CSUSHPISA",
+        ]
+        self.assertEqual(MACRO_CORR_FRED_SERIES, expected)
+
+    def test_credit_stress_uses_deterministic_series(self):
+        """Credit stress overlay must use BAMLH0A0HYM2 and NFCI, not heuristic fallback."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Function must reference exact series IDs
+        self.assertIn("BAMLH0A0HYM2", source)
+        self.assertIn("NFCI", source)
+        # Title must name the series
+        self.assertIn("Norm NCO Rate vs", source)
+
+    def test_rates_housing_uses_deterministic_series(self):
+        """Rates/housing overlay must use FEDFUNDS, MORTGAGE30US, CSUSHPISA."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn('"FEDFUNDS"', source)
+        self.assertIn('"MORTGAGE30US"', source)
+        self.assertIn('"CSUSHPISA"', source)
+        # CSUSHPISA must be converted to YoY
+        self.assertIn("pct_change(4)", source)
+
+    def test_rates_housing_prefers_resi_nonaccrual(self):
+        """Rates/housing overlay must prefer RIC_Resi_Nonaccrual_Rate over Norm_."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Preference order check: RIC_Resi first, Norm second
+        idx_resi = source.index('"RIC_Resi_Nonaccrual_Rate"')
+        idx_norm = source.index('"Norm_Nonaccrual_Rate"', idx_resi)
+        self.assertLess(idx_resi, idx_norm,
+                        "RIC_Resi_Nonaccrual_Rate should be checked before Norm_Nonaccrual_Rate")
+
+    def test_chart_titles_include_series_names(self):
+        """Both overlay chart functions must build titles from actual selected series."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Credit stress: title includes series_names variable (built from actual series)
+        self.assertIn("Credit Stress Overlay:", source)
+        # Rates housing: title includes right_names variable
+        self.assertIn("Rates & Housing Overlay:", source)
+
+    def test_corr_heatmap_handles_empty_data(self):
+        """Correlation heatmap generator must return None for empty data."""
+        try:
+            from report_generator import generate_macro_corr_heatmap
+        except ImportError:
+            self.skipTest("report_generator import failed (matplotlib)")
+            return
+        df = pd.DataFrame(columns=["CERT", "REPDTE"])
+        result = generate_macro_corr_heatmap(df, 34221, "/nonexistent.xlsx")
+        self.assertIsNone(result)
+
+    def test_report_generator_references_new_artifacts(self):
+        """report_generator.py must reference all 3 new macro artifact names."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        for art in ["macro_corr_heatmap_lag1", "macro_overlay_credit_stress",
+                     "macro_overlay_rates_housing"]:
+            self.assertIn(art, source, f"Missing {art} in report_generator.py")
+
+    def test_fred_to_quarterly_helper_exists(self):
+        """_fred_to_quarterly helper must exist for quarterly alignment."""
+        try:
+            from report_generator import _fred_to_quarterly
+        except ImportError:
+            self.skipTest("report_generator import failed")
+            return
+        self.assertTrue(callable(_fred_to_quarterly))
+
+    def test_z_scoring_in_credit_stress(self):
+        """Credit stress overlay must z-score the right-axis series."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "report_generator.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # Look for z-score computation pattern
+        self.assertIn("z = (qtr_data - mu) / sigma", source)
+        self.assertIn("Z-Score", source)
+
+    def test_stlfsi2_added_to_fetch_list(self):
+        """STLFSI2 must be in the FRED fetch source."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("'STLFSI2'", source, "STLFSI2 missing from MSPBNA_CR_Normalized.py")
+
+    def test_csushpisa_sa_in_fetch_list(self):
+        """CSUSHPISA (seasonally adjusted) must be in the FRED fetch source."""
+        src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "MSPBNA_CR_Normalized.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        self.assertIn("'CSUSHPISA'", source, "CSUSHPISA missing from MSPBNA_CR_Normalized.py")
 
 
 if __name__ == '__main__':
