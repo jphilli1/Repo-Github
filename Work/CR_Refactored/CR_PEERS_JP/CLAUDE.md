@@ -599,7 +599,56 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ---
 
+### Normalized Segment Taxonomy (Loan-Segmentation Alignment)
+
+The following rules govern the normalized segment definitions. They were aligned
+to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
+
+| Segment | Balance Definition | Notes |
+|---|---|---|
+| **Wealth Resi** | RC-C components (1797+5367+5368) preferred; fallback: **LNRERES alone** (includes HELOC/open-end). LNRELOC is NOT added to avoid double-counting. | Numerators (NCO, PD, NA) still use split fields (NTRERES+NTRELOC, etc.) |
+| **C&I Exclusion** | `Excl_CI_Balance = LNCI` (or best_of RCON1763/RCFD1763) directly. SBL is NOT subtracted — SBL lives under RC-C item 9, not item 4. | |
+| **NDFI / Fund Finance** | J454 retained for balance exclusion. **J458/J459/J460 removed** — not Call Report-consistent for PD/NA. All NDFI PD/NA numerators set to 0.0. | LIMITATION: CR-only PD/NA mapping is unsupported for NDFI. |
+| **Agricultural PD** | **RCON2746/RCFD2746 and RCON2747/RCFD2747 removed** (mis-mapped — those are "All other loans" PD). Replaced with P3AG/P9AG. | |
+| **CRE Investment Pure** | `LNREMULT + LNRENROT` only. **LNREOTH removed** from the calculation path. | Owner-occupied CRE excluded separately. |
+| **Tailored Lending** | **Unsupported** in Call Report-only mode. No proxy from fine art, aircraft, bespoke HNW unsecured, J451, or other CR proxies. Internal product tags would be required. | |
+
+### Known Limitations (Segment Taxonomy)
+
+- **NDFI credit quality**: Call Report does not publish NDFI-specific delinquency/nonaccrual.
+  J458/J459/J460 were removed; PD/NA exclusion numerators are 0.0 until an internal data
+  source is integrated.
+- **Tailored Lending**: Cannot be inferred from Call Report data. Requires internal product tags.
+  No proxy math is present in this codebase.
+- **Ag PD fallback**: If P3AG/P9AG are absent from the FDIC dataset for a given bank, the
+  exclusion PD defaults to 0.0 via `best_of(...).fillna(0)`. This is preferred over mis-mapping
+  RCON2746/2747.
+
+---
+
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Normalized Segment Taxonomy Alignment
+
+Aligned the normalized segment taxonomy to Call Report research and removed
+non-CR-consistent mappings. Changes:
+
+1. **RESI denominator correction**: Removed `LNRERES + LNRELOC` fallback;
+   denominator now uses `LNRERES` alone (already includes HELOC/open-end).
+   Split numerators (NTRERES+NTRELOC, etc.) preserved.
+2. **C&I exclusion**: Changed `Excl_CI_Balance` from `max(0, LNCI - SBL_Balance)`
+   to `LNCI` directly. SBL is RC-C item 9, not item 4.
+3. **NDFI (Fund Finance)**: Removed J458/J459/J460 from all credit-quality
+   mappings (PD30, PD90, NA). J454 retained for balance. NDFI PD/NA set to 0.0
+   with limitation flags.
+4. **Ag past due**: Replaced RCON2746/RCFD2746 and RCON2747/RCFD2747 with
+   P3AG/P9AG (actual agricultural past-due fields).
+5. **CRE pure balance**: Tightened to `LNREMULT + LNRENROT` only; removed
+   LNREOTH.
+6. **Tailored lending**: Documented as unsupported in CR-only mode. No proxy
+   math added.
+
+Files changed: `MSPBNA_CR_Normalized.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Dual-Mode Rendering Architecture (Preflight Refactor)
 
