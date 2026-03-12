@@ -6297,9 +6297,17 @@ class TestNCOMDRMMapping(unittest.TestCase):
         # RIAD4635 should only appear in the CRITICAL FIX comment, not in best_of() calls
         self.assertNotIn("best_of(df_processed, ['RIAD4635'])", block_text)
 
-    def test_ag_nco_uses_ntag_ntreag(self):
-        """Ag NCO should use NTAG with NTREAG as fallback."""
-        self.assertIn("best_of(df_processed, ['NTAG', 'NTREAG'])", self._src)
+    def test_ag_nco_uses_riad4655_4665(self):
+        """Ag NCO should use RIAD4655 (charge-offs) and RIAD4665 (recoveries) as primary."""
+        import re
+        ag_block = re.search(
+            r"# Ag NCO:.*?_Ag_NCO_Gated", self._src, re.DOTALL
+        )
+        block_text = ag_block.group(0)
+        self.assertIn("RIAD4655", block_text)
+        self.assertIn("RIAD4665", block_text)
+        # NTAG kept as fallback
+        self.assertIn("NTAG", block_text)
 
     def test_riad4635_not_in_fdic_fetch_list(self):
         """RIAD4635 must be removed from FDIC_FIELDS_TO_FETCH."""
@@ -6334,13 +6342,16 @@ class TestNCOMDRMMapping(unittest.TestCase):
         block_text = adc_block.group(0)
         self.assertNotIn("'NTLS'", block_text)
 
-    def test_adc_nco_uses_ntrecons(self):
-        """ADC NCO should use NTRECONS (construction NCOs)."""
+    def test_adc_nco_uses_riad3582_3583(self):
+        """ADC NCO should use RIAD3582 (charge-offs) and RIAD3583 (recoveries) as primary."""
         import re
         adc_block = re.search(
             r"# ADC NCO:.*?_ADC_NCO_Gated", self._src, re.DOTALL
         )
         block_text = adc_block.group(0)
+        self.assertIn("RIAD3582", block_text)
+        self.assertIn("RIAD3583", block_text)
+        # NTRECONS kept as fallback
         self.assertIn("NTRECONS", block_text)
 
     def test_riad4658_not_in_ffiec_fetch(self):
@@ -6450,6 +6461,242 @@ class TestNCOMDRMMapping(unittest.TestCase):
             for call in best_of_calls:
                 self.assertNotIn("'NTLS'", call,
                                  f"NTLS found in exclusion best_of call: {call}")
+
+
+class TestSegmentPerformanceTracingFix(unittest.TestCase):
+    """Regression tests for the 12-part segment performance series tracing fix (2026-03-12).
+
+    Validates MDRM mapping corrections, NDFI audit flag, residential itemization,
+    TTM numerator usage, composition renaming, ACL coverage denominator,
+    reconciliation worksheet, and fetch list completeness.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        src_path = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        cls._src = src_path.read_text(encoding="utf-8")
+
+    # --- 1. ADC NCO uses RIAD3582/3583 ---
+
+    def test_adc_nco_uses_canonical_mdrm(self):
+        """ADC NCO block must use RIAD3582 for charge-offs and RIAD3583 for recoveries."""
+        import re
+        adc_block = re.search(r"# ADC NCO:.*?_ADC_NCO_Gated", self._src, re.DOTALL)
+        self.assertIsNotNone(adc_block)
+        block = adc_block.group(0)
+        self.assertIn("'RIAD3582'", block)
+        self.assertIn("'RIAD3583'", block)
+
+    # --- 2. Ag NCO uses RIAD4655/4665 ---
+
+    def test_ag_nco_uses_canonical_mdrm(self):
+        """Ag NCO block must use RIAD4655 for charge-offs and RIAD4665 for recoveries."""
+        import re
+        ag_block = re.search(r"# Ag NCO:.*?_Ag_NCO_Gated", self._src, re.DOTALL)
+        self.assertIsNotNone(ag_block)
+        block = ag_block.group(0)
+        self.assertIn("'RIAD4655'", block)
+        self.assertIn("'RIAD4665'", block)
+
+    # --- 3. Ag PD uses RCON1594/1597 ---
+
+    def test_ag_pd_uses_rcon1594(self):
+        """Excl_Ag_P3 must use RCON1594 as primary."""
+        self.assertIn("'RCON1594'", self._src)
+        import re
+        ag_pd_block = re.search(r"Excl_Ag_P3.*?Excl_Ag_P9", self._src, re.DOTALL)
+        self.assertIsNotNone(ag_pd_block)
+        self.assertIn("RCON1594", ag_pd_block.group(0))
+
+    def test_ag_pd_uses_rcon1597(self):
+        """Excl_Ag_P9 must use RCON1597 as primary."""
+        import re
+        # Check that RCON1597 appears in the Ag PD assignment
+        self.assertRegex(self._src, r"Excl_Ag_P9.*RCON1597")
+
+    def test_ag_pd_no_rcon2746(self):
+        """RCON2746 must NOT appear in any best_of() call."""
+        import re
+        best_of_calls = re.findall(r"best_of\(df_processed,\s*\[.*?\]\)", self._src)
+        for call in best_of_calls:
+            self.assertNotIn("RCON2746", call, f"RCON2746 found in best_of: {call}")
+
+    # --- 4. NDFI Fund Finance PD/NA ---
+
+    def test_ndfi_fund_finance_pd_is_nan(self):
+        """RIC_Fund_Finance_PD30/PD90 must be np.nan, not 0.0."""
+        self.assertIn("df_processed['RIC_Fund_Finance_PD30'] = np.nan", self._src)
+        self.assertIn("df_processed['RIC_Fund_Finance_PD90'] = np.nan", self._src)
+
+    def test_ndfi_fund_finance_nonaccrual_is_nan(self):
+        """RIC_Fund_Finance_Nonaccrual must be np.nan, not 0.0."""
+        self.assertIn("df_processed['RIC_Fund_Finance_Nonaccrual'] = np.nan", self._src)
+
+    def test_ndfi_audit_flag_exists(self):
+        """_NDFI_PD_NA_NotIsolatable audit flag must be set to True."""
+        self.assertIn("_NDFI_PD_NA_NotIsolatable", self._src)
+        self.assertIn("_NDFI_PD_NA_NotIsolatable'] = True", self._src)
+
+    # --- 5. Residential itemization uses 5368, not 1799 ---
+
+    def test_resi_itemization_uses_5368(self):
+        """RIC_Resi_Cost must use RCON5368 (junior liens), not RCON1799."""
+        import re
+        resi_block = re.search(
+            r"# C\. Residential.*?RIC_Resi_Cost.*?=.*?resi_sum",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(resi_block, "Residential itemization block not found")
+        block = resi_block.group(0)
+        self.assertIn("RCON5368", block, "RCON5368 (junior liens) missing from resi itemization")
+        self.assertNotIn("RCON1799", block, "RCON1799 should not be used in resi itemization")
+
+    def test_resi_comments_correct_labels(self):
+        """Residential comments must label 1797 as open-end/revolving, not first lien."""
+        import re
+        resi_block = re.search(
+            r"# C\. Residential.*?resi_sum =",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(resi_block)
+        block = resi_block.group(0)
+        # Must mention "open-end" or "revolving" for 1797
+        self.assertTrue(
+            "open-end" in block.lower() or "revolving" in block.lower(),
+            "Comments should describe 1797 as open-end/revolving"
+        )
+
+    # --- 6. Wealth_Resi_TTM_NCO_Rate uses TTM ---
+
+    def test_wealth_resi_ttm_nco_rate_uses_ttm(self):
+        """Wealth_Resi_TTM_NCO_Rate must use RIC_Resi_NCO_TTM, not raw YTD."""
+        import re
+        # Find the Wealth_Resi_TTM_NCO_Rate assignment
+        rate_match = re.search(
+            r"Wealth_Resi_TTM_NCO_Rate.*?=.*?safe_div\((.*?),",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(rate_match)
+        numerator = rate_match.group(1)
+        self.assertIn("wealth_resi_nco_ttm", numerator,
+                       "TTM numerator must be used, not raw YTD")
+
+    def test_wealth_resi_nco_ttm_from_ric(self):
+        """wealth_resi_nco_ttm must reference RIC_Resi_NCO_TTM."""
+        self.assertIn("RIC_Resi_NCO_TTM", self._src)
+        self.assertIn("wealth_resi_nco_ttm", self._src)
+
+    # --- 7. Normalized composition renamed ---
+
+    def test_no_norm_cre_oo_composition(self):
+        """Norm_CRE_OO_Composition must be renamed (excluded category)."""
+        self.assertNotIn("'Norm_CRE_OO_Composition'", self._src)
+        self.assertNotIn('"Norm_CRE_OO_Composition"', self._src)
+
+    def test_no_norm_adc_composition(self):
+        """Norm_ADC_Composition must be renamed (excluded category)."""
+        self.assertNotIn("'Norm_ADC_Composition'", self._src)
+        self.assertNotIn('"Norm_ADC_Composition"', self._src)
+
+    def test_excluded_share_metrics_exist(self):
+        """Excluded_CRE_OO_Share_of_Norm and Excluded_ADC_Share_of_Norm must exist."""
+        self.assertIn("Excluded_CRE_OO_Share_of_Norm", self._src)
+        self.assertIn("Excluded_ADC_Share_of_Norm", self._src)
+
+    # --- 8. Norm_Comm_ACL_Coverage uses LNCI ---
+
+    def test_norm_comm_acl_coverage_uses_lnci(self):
+        """Norm_Comm_ACL_Coverage must use LNCI as denominator, not SBL_Balance."""
+        import re
+        coverage_match = re.search(
+            r"Norm_Comm_ACL_Coverage.*?=.*?safe_div\(.*?,\s*(.*?)\)",
+            self._src
+        )
+        self.assertIsNotNone(coverage_match)
+        denominator_area = coverage_match.group(1)
+        self.assertNotIn("SBL_Balance", denominator_area,
+                          "SBL_Balance must not be the denominator for Norm_Comm_ACL_Coverage")
+
+    def test_ci_bal_for_coverage_uses_lnci(self):
+        """ci_bal_for_coverage should derive from LNCI."""
+        self.assertIn("ci_bal_for_coverage", self._src)
+        import re
+        ci_bal_match = re.search(r"ci_bal_for_coverage\s*=\s*best_of\(.*?\)", self._src)
+        self.assertIsNotNone(ci_bal_match)
+        self.assertIn("LNCI", ci_bal_match.group(0))
+
+    # --- 9. Fetch list completeness ---
+
+    def test_riad3582_in_fetch_list(self):
+        """RIAD3582 (ADC charge-offs) must be in the fetch list."""
+        import re
+        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
+        self.assertIn('"RIAD3582"', fetch_match.group(0))
+
+    def test_riad3583_in_fetch_list(self):
+        """RIAD3583 (ADC recoveries) must be in the fetch list."""
+        import re
+        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
+        self.assertIn('"RIAD3583"', fetch_match.group(0))
+
+    def test_riad4655_in_fetch_list(self):
+        """RIAD4655 (ag charge-offs) must be in the fetch list."""
+        import re
+        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
+        self.assertIn('"RIAD4655"', fetch_match.group(0))
+
+    def test_riad4665_in_fetch_list(self):
+        """RIAD4665 (ag recoveries) must be in the fetch list."""
+        import re
+        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
+        self.assertIn('"RIAD4665"', fetch_match.group(0))
+
+    def test_rcon1594_in_fetch_list(self):
+        """RCON1594 (ag PD 30-89) must be in the fetch list."""
+        import re
+        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
+        self.assertIn('"RCON1594"', fetch_match.group(0))
+
+    def test_rcon1597_in_fetch_list(self):
+        """RCON1597 (ag PD 90+) must be in the fetch list."""
+        import re
+        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
+        self.assertIn('"RCON1597"', fetch_match.group(0))
+
+    # --- 10. Reconciliation worksheet ---
+
+    def test_reconciliation_sheet_in_excel_output(self):
+        """Normalization_Reconciliation_Sample must be passed to write_excel_output."""
+        self.assertIn("Normalization_Reconciliation_Sample=recon_df", self._src)
+
+    def test_reconciliation_has_nco_check_column(self):
+        """Reconciliation sheet must have an NCO check column."""
+        self.assertIn("NCO_Check_ExclPlusNormMinusTotal", self._src)
+
+    def test_reconciliation_has_loans_check_column(self):
+        """Reconciliation sheet must have a Loans check column."""
+        self.assertIn("Loans_Check_ExclPlusNormMinusTotal", self._src)
+
+    def test_reconciliation_has_excl_gt_total_flag(self):
+        """Reconciliation must flag where Excluded > Total."""
+        self.assertIn("NCO_Flag_Excl_GT_Total", self._src)
+        self.assertIn("Loans_Flag_Excl_GT_Total", self._src)
+
+    # --- 11. FFIEC fetch list ---
+
+    def test_riad3582_in_ffiec_fetch(self):
+        """RIAD3582 must be in the FFIEC healing list (__init__)."""
+        import re
+        init_match = re.search(r"def __init__\(self.*?\n(?=    def )", self._src, re.DOTALL)
+        self.assertIsNotNone(init_match)
+        self.assertIn("'RIAD3582'", init_match.group(0))
+
+    def test_riad4655_in_ffiec_fetch(self):
+        """RIAD4655 must be in the FFIEC healing list (__init__)."""
+        import re
+        init_match = re.search(r"def __init__\(self.*?\n(?=    def )", self._src, re.DOTALL)
+        self.assertIsNotNone(init_match)
+        self.assertIn("'RIAD4655'", init_match.group(0))
 
 
 if __name__ == '__main__':
