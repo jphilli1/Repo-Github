@@ -2582,27 +2582,32 @@ def generate_reports(
                         manifest.record_failed(art_name, str(exc))
                         print(f"  Failed {art_name}: {exc}")
 
-            # KRI Bullet Chart (matplotlib — full_local only)
-            art_name = "kri_bullet_chart"
-            if should_produce(art_name, mode, manifest, suppressed_charts):
-                try:
-                    save = str(charts_dir / f"{base}_kri_bullet_chart.png")
-                    fig = generate_kri_bullet_chart(
-                        proc_df_with_peers, subject_bank_cert,
-                        wealth_cert=ACTIVE_STANDARD_COMPOSITES["core_pb"],
-                        all_peers_cert=ACTIVE_STANDARD_COMPOSITES["all_peers"],
-                        save_path=save,
-                    )
-                    if fig is not None:
-                        manifest.record_generated(art_name, save)
-                        print(f"  Generated: {art_name}")
-                        csv_log.log_file_written(save, phase="executive_charts",
-                                                 component=art_name)
-                    else:
-                        manifest.record_failed(art_name, "insufficient data")
-                except Exception as exc:
-                    manifest.record_failed(art_name, str(exc))
-                    print(f"  Failed {art_name}: {exc}")
+            # KRI Bullet Charts — standard and normalized (matplotlib — full_local only)
+            for is_norm in [False, True]:
+                norm_str = "normalized" if is_norm else "standard"
+                art_name = f"kri_bullet_{norm_str}"
+                if should_produce(art_name, mode, manifest, suppressed_charts):
+                    try:
+                        save = str(charts_dir / f"{base}_kri_bullet_{norm_str}.png")
+                        composites = (ACTIVE_NORMALIZED_COMPOSITES if is_norm
+                                      else ACTIVE_STANDARD_COMPOSITES)
+                        fig = generate_kri_bullet_chart(
+                            proc_df_with_peers, subject_bank_cert,
+                            wealth_cert=composites["core_pb"],
+                            all_peers_cert=composites["all_peers"],
+                            is_normalized=is_norm,
+                            save_path=save,
+                        )
+                        if fig is not None:
+                            manifest.record_generated(art_name, save)
+                            print(f"  Generated: {art_name}")
+                            csv_log.log_file_written(save, phase="executive_charts",
+                                                     component=art_name)
+                        else:
+                            manifest.record_failed(art_name, "insufficient data")
+                    except Exception as exc:
+                        manifest.record_failed(art_name, str(exc))
+                        print(f"  Failed {art_name}: {exc}")
 
             # Sparkline Summary Table (HTML — both modes)
             art_name = "sparkline_summary"
@@ -2612,6 +2617,7 @@ def generate_reports(
                     html = generate_sparkline_table(
                         proc_df_with_peers, subject_bank_cert,
                         peer_cert=ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                        norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"],
                         save_path=save,
                     )
                     if html:

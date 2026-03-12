@@ -159,6 +159,11 @@ report_generator.py
   - `{stem}_concentration_vs_capital.png`
   - `{stem}_liquidity_overlay.png`
   - `{stem}_macro_overlay.png`
+  - `{stem}_yoy_heatmap_standard.html`
+  - `{stem}_yoy_heatmap_normalized.html`
+  - `{stem}_kri_bullet_standard.png`
+  - `{stem}_kri_bullet_normalized.png`
+  - `{stem}_sparkline_summary.html`
 
 Where `{stem}` = `Bank_Performance_Dashboard_YYYYMMDD`
 
@@ -642,6 +647,54 @@ to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Executive Chart Tranche (5 Artifacts)
+
+**Objective**: Complete and harden the first executive chart tranche using existing workbook data only. No new external dependencies.
+
+**5 Artifacts:**
+
+| Artifact | File | Mode | Type |
+|---|---|---|---|
+| `yoy_heatmap_standard` | `{stem}_yoy_heatmap_standard.html` | BOTH | HTML table |
+| `yoy_heatmap_normalized` | `{stem}_yoy_heatmap_normalized.html` | BOTH | HTML table |
+| `kri_bullet_standard` | `{stem}_kri_bullet_standard.png` | FULL_LOCAL_ONLY | PNG chart |
+| `kri_bullet_normalized` | `{stem}_kri_bullet_normalized.png` | FULL_LOCAL_ONLY | PNG chart |
+| `sparkline_summary` | `{stem}_sparkline_summary.html` | BOTH | HTML table |
+
+**Exact metric lists:**
+
+| Artifact | Metrics |
+|---|---|
+| Standard heatmap (12) | TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Past_Due_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, SBL_Composition, RIC_CRE_Loan_Share, RIC_Resi_Loan_Share, RIC_CRE_ACL_Coverage, RIC_CRE_Risk_Adj_Coverage, RIC_CRE_Nonaccrual_Rate, RIC_CRE_NCO_Rate |
+| Normalized heatmap (10) | Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share |
+| Standard bullet (7) | TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Past_Due_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, RIC_CRE_ACL_Coverage, RIC_CRE_Risk_Adj_Coverage |
+| Normalized bullet (7) | Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share |
+| Sparkline (10) | TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, Past_Due_Rate, Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_ACL_Coverage, RIC_CRE_Nonaccrual_Rate, RIC_CRE_ACL_Coverage |
+
+**Comparator CERTs:**
+
+| Artifact | Standard | Normalized |
+|---|---|---|
+| Heatmap | 90003 (All Peers) | 90006 (All Peers Norm) |
+| Bullet | 90001 (Core PB) + 90003 (All Peers) | 90004 (Core PB Norm) + 90006 (All Peers Norm) |
+| Sparkline | 90003 for standard rows | 90006 for Norm_ rows (per-metric selection) |
+
+**Changes:**
+
+1. **executive_charts.py** — Split `BULLET_METRICS` into `BULLET_METRICS_STANDARD` (7 metrics) and `BULLET_METRICS_NORMALIZED` (7 metrics). Added `is_normalized` parameter to `generate_kri_bullet_chart()` which selects correct metric list and chart title. Added `norm_peer_cert` parameter to `generate_sparkline_table()` — sparkline peer lookup uses 90006 for `Norm_*` metrics, 90003 for standard metrics. Backward-compatible `BULLET_METRICS` alias retained.
+
+2. **rendering_mode.py** — Replaced single `kri_bullet_chart` registration with two: `kri_bullet_standard` (FULL_LOCAL_ONLY) and `kri_bullet_normalized` (FULL_LOCAL_ONLY). Heatmaps and sparkline remain BOTH.
+
+3. **report_generator.py** — Phase 8 executive charts section now loops over `[False, True]` for bullet charts (same pattern as heatmaps), producing both `kri_bullet_standard` and `kri_bullet_normalized` with correct composite CERTs per variant. Sparkline call now passes `norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"]`.
+
+4. **test_regression.py** — Updated 3 existing tests (`test_executive_chart_artifacts_registered`, `test_executive_charts_integrated_in_report_generator`, `test_corp_safe_skips_bullet_chart`) to reflect new artifact names. Updated `test_registry_covers_known_artifacts` to include both bullet variants. Added `TestExecutiveChartTranche` class (16 tests): all 5 artifacts registered, heatmap metric allowlists exact match, bullet metric lists exact match, sparkline metrics exact match, is_normalized parameter exists, norm_peer_cert parameter exists with default 90006, mode support declarations correct, missing metric resilience (heatmap and sparkline), ordered_metrics usage verified, both bullet variants in report_generator, sparkline norm peer logic verified, N/A cells explicit, old kri_bullet_chart removed, all metrics in semantic registry.
+
+5. **CLAUDE.md** — Added artifact table, exact metric lists, comparator CERTs, and changelog.
+
+**Verification:** Heatmaps already use `ordered_metrics()` (from `metric_semantics.py`) for GROUP_ORDER row sorting. All metrics in all lists are registered in `metric_semantics.py`. Missing metrics skip individually (not whole artifact). Missing values render as explicit "N/A". HTML artifacts are self-contained.
+
+**Files changed:** `executive_charts.py`, `rendering_mode.py`, `report_generator.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Architecture Reconciliation (Merge Conflict Resolution)
 

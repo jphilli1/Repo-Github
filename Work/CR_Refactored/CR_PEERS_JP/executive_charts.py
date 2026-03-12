@@ -347,12 +347,20 @@ def generate_yoy_heatmap(
 # 2. KRI BULLET CHART (matplotlib — full_local only)
 # =====================================================================
 
-BULLET_METRICS = [
-    "TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate",
+BULLET_METRICS_STANDARD = [
+    "TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate", "Past_Due_Rate",
     "Allowance_to_Gross_Loans_Rate", "Risk_Adj_Allowance_Coverage",
-    "Past_Due_Rate",
-    "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_ACL_Coverage",
+    "RIC_CRE_ACL_Coverage", "RIC_CRE_Risk_Adj_Coverage",
 ]
+
+BULLET_METRICS_NORMALIZED = [
+    "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
+    "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
+    "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+]
+
+# Backward-compatible alias (points to standard list)
+BULLET_METRICS = BULLET_METRICS_STANDARD
 
 
 def generate_kri_bullet_chart(
@@ -361,6 +369,7 @@ def generate_kri_bullet_chart(
     wealth_cert: int = 90001,
     all_peers_cert: int = 90003,
     metrics: Optional[List[str]] = None,
+    is_normalized: bool = False,
     save_path: Optional[str] = None,
 ) -> Optional["plt.Figure"]:
     """Generate a horizontal bullet / football-field chart.
@@ -369,11 +378,17 @@ def generate_kri_bullet_chart(
       - Gray band: range between Wealth Peers and All Peers
       - Gold marker: MSPBNA value
       - Optional threshold bands from metric_semantics
+
+    Parameters
+    ----------
+    is_normalized : bool
+        If True, uses normalized metric list and comparator CERTs
+        (90004 Wealth Peers Norm, 90006 All Peers Norm).
     """
     _ensure_mpl()
 
     if metrics is None:
-        metrics = BULLET_METRICS
+        metrics = BULLET_METRICS_NORMALIZED if is_normalized else BULLET_METRICS_STANDARD
     metrics = [m for m in metrics if m in df.columns]
     if not metrics:
         print("  Skipped KRI bullet chart: no matching metrics in data")
@@ -441,7 +456,8 @@ def generate_kri_bullet_chart(
     ax.set_yticklabels(labels, fontsize=10)
     ax.invert_yaxis()
     ax.set_xlabel("Metric Value", fontsize=11, fontweight="bold")
-    ax.set_title("Key Risk Indicators — MSPBNA vs Peer Range",
+    norm_label = "Normalized" if is_normalized else "Standard"
+    ax.set_title(f"Key Risk Indicators — MSPBNA vs Peer Range ({norm_label})",
                  fontsize=16, fontweight="bold", color="#2B2B2B", pad=15)
     for sp in ["top", "right"]:
         ax.spines[sp].set_visible(False)
@@ -453,7 +469,9 @@ def generate_kri_bullet_chart(
     legend_elements = [
         Line2D([0], [0], marker="D", color="w", markerfacecolor="#F7A81B",
                markeredgecolor="black", markersize=10, label="MSPBNA"),
-        Patch(facecolor="#D0D0D0", edgecolor="#B0B0B0", label="Wealth Peers ↔ All Peers"),
+        Patch(facecolor="#D0D0D0", edgecolor="#B0B0B0",
+              label="Wealth Peers Norm ↔ All Peers Norm" if is_normalized
+              else "Wealth Peers ↔ All Peers"),
     ]
     ax.legend(handles=legend_elements, loc="lower right", frameon=True, fontsize=9)
 
@@ -515,6 +533,7 @@ def generate_sparkline_table(
     df: pd.DataFrame,
     subject_cert: int,
     peer_cert: int = 90003,
+    norm_peer_cert: int = 90006,
     metrics: Optional[List[str]] = None,
     trailing_quarters: int = 8,
     save_path: Optional[str] = None,
@@ -522,6 +541,13 @@ def generate_sparkline_table(
     """Generate an HTML table with inline SVG sparklines for trend context.
 
     Each row shows: metric name | sparkline | current value | YoY change | vs peers.
+
+    Parameters
+    ----------
+    peer_cert : int
+        Comparator CERT for standard metrics (default 90003 = All Peers).
+    norm_peer_cert : int
+        Comparator CERT for Norm_* metrics (default 90006 = All Peers Norm).
     """
     if "REPDTE" not in df.columns:
         return None
@@ -555,7 +581,9 @@ def generate_sparkline_table(
         return pd.to_numeric(row[col].iloc[0], errors="coerce")
 
     def _peer_val(dt, col):
-        row = df[(df["CERT"] == peer_cert) & (df["REPDTE"] == dt)]
+        # Use normalized peer CERT for Norm_ metrics, standard peer for others
+        effective_cert = norm_peer_cert if col.startswith("Norm_") else peer_cert
+        row = df[(df["CERT"] == effective_cert) & (df["REPDTE"] == dt)]
         if row.empty:
             return np.nan
         return pd.to_numeric(row[col].iloc[0], errors="coerce")
