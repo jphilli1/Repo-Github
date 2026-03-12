@@ -87,7 +87,7 @@
     &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;
   }
 }</component>
-  <component name="RunManager" selected="Python.MSPBNA_CR_Normalized">
+  <component name="RunManager" selected="Python.report_generator">
     <configuration name="MSPBNA_CR_Normalized" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="CR_PEERS_JP" />
       <option name="ENV_FILES" value="" />
@@ -159,8 +159,8 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.MSPBNA_CR_Normalized" />
         <item itemvalue="Python.report_generator" />
+        <item itemvalue="Python.MSPBNA_CR_Normalized" />
         <item itemvalue="Python.metric_registry" />
       </list>
     </recent_temporary>
