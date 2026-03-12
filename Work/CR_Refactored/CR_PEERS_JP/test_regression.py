@@ -6064,5 +6064,190 @@ class TestRenderingReconciliation(unittest.TestCase):
         self.assertIn("from rendering_mode import", self._rg_src)
 
 
+class TestNCOMDRMMapping(unittest.TestCase):
+    """Regression tests for the MDRM mapping fix (2026-03-12).
+
+    Validates that:
+    - RIAD4635/4645 (total charge-offs/recoveries) are NOT used for Ag NCOs
+    - NTLS/RIAD4658 (total NCOs) are NOT used for ADC NCOs
+    - RIAD4608/4609 (unverified) are NOT used as C&I fallback
+    - NTAG is in the FDIC fetch list
+    - Ceiling constraint exists for Excluded_NCO_TTM
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        src_path = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
+        cls._src = src_path.read_text(encoding="utf-8")
+
+    # --- Edit 1: Ag NCO mapping ---
+
+    def test_ag_nco_does_not_use_riad4635(self):
+        """RIAD4635 must NOT appear in the Ag NCO calculation block."""
+        # Find the Ag NCO block (between "Ag NCO:" comment and "_Ag_NCO_Gated")
+        import re
+        ag_block = re.search(
+            r"# Ag NCO:.*?_Ag_NCO_Gated", self._src, re.DOTALL
+        )
+        self.assertIsNotNone(ag_block, "Ag NCO block not found")
+        block_text = ag_block.group(0)
+        # RIAD4635 should only appear in the CRITICAL FIX comment, not in best_of() calls
+        self.assertNotIn("best_of(df_processed, ['RIAD4635'])", block_text)
+
+    def test_ag_nco_uses_ntag_ntreag(self):
+        """Ag NCO should use NTAG with NTREAG as fallback."""
+        self.assertIn("best_of(df_processed, ['NTAG', 'NTREAG'])", self._src)
+
+    def test_riad4635_not_in_fdic_fetch_list(self):
+        """RIAD4635 must be removed from FDIC_FIELDS_TO_FETCH."""
+        import re
+        # Find the FDIC_FIELDS_TO_FETCH list
+        fetch_match = re.search(
+            r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL
+        )
+        self.assertIsNotNone(fetch_match, "FDIC_FIELDS_TO_FETCH not found")
+        fetch_text = fetch_match.group(0)
+        # RIAD4635 should not be a fetched field (may appear in comments)
+        self.assertNotIn('"RIAD4635"', fetch_text)
+
+    def test_riad4645_not_in_fdic_fetch_list(self):
+        """RIAD4645 must be removed from FDIC_FIELDS_TO_FETCH."""
+        import re
+        fetch_match = re.search(
+            r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL
+        )
+        fetch_text = fetch_match.group(0)
+        self.assertNotIn('"RIAD4645"', fetch_text)
+
+    # --- Edit 2: ADC NCO mapping ---
+
+    def test_adc_nco_does_not_use_ntls(self):
+        """ADC NCO block must NOT use NTLS (total portfolio NCOs)."""
+        import re
+        adc_block = re.search(
+            r"# ADC NCO:.*?_ADC_NCO_Gated", self._src, re.DOTALL
+        )
+        self.assertIsNotNone(adc_block, "ADC NCO block not found")
+        block_text = adc_block.group(0)
+        self.assertNotIn("'NTLS'", block_text)
+
+    def test_adc_nco_uses_ntrecons(self):
+        """ADC NCO should use NTRECONS (construction NCOs)."""
+        import re
+        adc_block = re.search(
+            r"# ADC NCO:.*?_ADC_NCO_Gated", self._src, re.DOTALL
+        )
+        block_text = adc_block.group(0)
+        self.assertIn("NTRECONS", block_text)
+
+    def test_riad4658_not_in_ffiec_fetch(self):
+        """RIAD4658 must be removed from FFIEC fetch list."""
+        import re
+        init_match = re.search(
+            r"def __init__\(self.*?\n(?=    def )", self._src, re.DOTALL
+        )
+        self.assertIsNotNone(init_match, "__init__ method not found")
+        init_text = init_match.group(0)
+        self.assertNotIn("'RIAD4658'", init_text)
+
+    # --- Edit 3: C&I NCO fallback ---
+
+    def test_ci_nco_no_riad4608_fallback(self):
+        """C&I NCO must NOT use RIAD4608/4609 in best_of() calls."""
+        import re
+        ci_block = re.search(
+            r"# C&I NCO:.*?_CI_NCO_Gated", self._src, re.DOTALL
+        )
+        self.assertIsNotNone(ci_block, "C&I NCO block not found")
+        block_text = ci_block.group(0)
+        # Check best_of calls only, not comments
+        best_of_calls = re.findall(r"best_of\(.*?\)", block_text)
+        for call in best_of_calls:
+            self.assertNotIn("RIAD4608", call,
+                             f"RIAD4608 found in C&I best_of call: {call}")
+            self.assertNotIn("RIAD4609", call,
+                             f"RIAD4609 found in C&I best_of call: {call}")
+
+    def test_ci_nco_uses_ntci(self):
+        """C&I NCO should use NTCI as primary source."""
+        import re
+        ci_block = re.search(
+            r"# C&I NCO:.*?_CI_NCO_Gated", self._src, re.DOTALL
+        )
+        block_text = ci_block.group(0)
+        self.assertIn("NTCI", block_text)
+
+    def test_ci_nco_has_balance_gate(self):
+        """C&I NCO should be balance-gated."""
+        import re
+        ci_block = re.search(
+            r"# C&I NCO:.*?_CI_NCO_Gated", self._src, re.DOTALL
+        )
+        block_text = ci_block.group(0)
+        self.assertIn("ci_bal", block_text)
+        self.assertIn("_CI_NCO_Gated", block_text)
+
+    # --- Edit 4: Ceiling constraint ---
+
+    def test_ceiling_constraint_exists_for_nco(self):
+        """Excluded_NCO_TTM ceiling constraint must exist."""
+        self.assertIn("Excluded_NCO_TTM'] > df_processed['Total_NCO_TTM']", self._src)
+
+    def test_ceiling_constraint_uses_min(self):
+        """Ceiling should use min(Excluded, Total) to cap."""
+        self.assertIn("['Excluded_NCO_TTM', 'Total_NCO_TTM']].min(axis=1)", self._src)
+
+    def test_ceiling_constraint_exists_for_nonaccrual(self):
+        """Excluded_Nonaccrual ceiling constraint must exist."""
+        self.assertIn("Excluded_Nonaccrual'] > df_processed[total_na_col]", self._src)
+
+    def test_ceiling_logs_warning(self):
+        """Ceiling constraint should log a warning when applied."""
+        self.assertIn("[NORM] Ceiling applied:", self._src)
+
+    # --- Edit 5: Fetch list ---
+
+    def test_ntag_in_fdic_fetch_list(self):
+        """NTAG must be in FDIC_FIELDS_TO_FETCH for ag production NCOs."""
+        import re
+        fetch_match = re.search(
+            r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL
+        )
+        fetch_text = fetch_match.group(0)
+        self.assertIn('"NTAG"', fetch_text)
+
+    # --- Edit 6: NTLS comment ---
+
+    def test_ntls_comment_warns_not_for_exclusions(self):
+        """NTLS comment must clarify it's for Total_NCO_TTM only."""
+        self.assertIn("NOT for exclusions", self._src)
+
+    # --- Structural ---
+
+    def test_no_riad4635_in_best_of_calls(self):
+        """RIAD4635 must never appear in any best_of() call."""
+        import re
+        best_of_calls = re.findall(r"best_of\(df_processed,\s*\[.*?\]\)", self._src)
+        for call in best_of_calls:
+            self.assertNotIn("RIAD4635", call,
+                             f"RIAD4635 found in best_of call: {call}")
+
+    def test_no_ntls_in_exclusion_best_of_calls(self):
+        """NTLS must not appear in any exclusion NCO best_of() call (only in Total_NCO)."""
+        import re
+        # Find all best_of calls within the exclusion NCO section
+        excl_section = re.search(
+            r"# --- B\. Calculate Exclusion NCOs.*?# --- C\. Calculate Exclusion Nonaccruals",
+            self._src, re.DOTALL
+        )
+        if excl_section:
+            best_of_calls = re.findall(
+                r"best_of\(df_processed,\s*\[.*?\]\)", excl_section.group(0)
+            )
+            for call in best_of_calls:
+                self.assertNotIn("'NTLS'", call,
+                                 f"NTLS found in exclusion best_of call: {call}")
+
+
 if __name__ == '__main__':
     unittest.main()

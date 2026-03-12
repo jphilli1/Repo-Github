@@ -690,7 +690,7 @@ Normalized composites (90004/90006) must have ≥50% non-NaN contributor share p
 **Critical normalized metrics for coverage checks:**
 - `Norm_NCO_Rate`, `Norm_Nonaccrual_Rate`, `Norm_ACL_Coverage`, `Norm_Risk_Adj_Allowance_Coverage`, `Norm_Gross_Loans`
 
-**Important**: Normalized NCO is NOT fully solved — many G-SIBs still produce `material_nan` severity because their excluded categories exceed totals by >5%. The composite coverage threshold mitigates misleading averages but does not fix the upstream data quality issue.
+**Important (2026-03-12 update)**: The primary cause of over-exclusion (RIAD4635/NTLS MDRM mapping errors) has been fixed. A ceiling constraint now caps `Excluded_NCO_TTM` at `Total_NCO_TTM`. Residual over-exclusion from minor mapping gaps is expected to be rare. If the ceiling constraint fires in production, investigate the specific exclusion category.
 
 ### Case-Shiller ZIP Enrichment
 
@@ -762,6 +762,37 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Fix Normalized Exclusion NCO MDRM Mapping Errors
+
+**Problem**: Two confirmed MDRM mapping errors caused `Excluded_NCO_TTM` to exceed `Total_NCO_TTM` for every major peer bank (JPM, BAC, WFC, Citi, GS). The balance-gate only masked the issue for banks with zero excluded balance. Banks with ANY Ag or ADC balance got their entire portfolio NCOs misattributed.
+
+**Root causes**:
+1. `RIAD4635` was used for Ag charge-offs but is actually **Total Gross Charge-offs on ALL Loans** (RI-B Item 9, Col A). This attributed every bank's entire charge-off base to "Ag".
+2. `NTLS` was used for ADC charge-offs but is actually **Total Net Loan & Lease NCOs** (entire portfolio). Combined with `RIAD4659` recoveries, this double-subtracted recoveries.
+3. `RIAD4608/RIAD4609` C&I fallback was unverified against the current MDRM dictionary.
+
+**6-part fix**:
+
+1. **Ag NCO mapping** — Replaced `RIAD4635 - RIAD4645` with `best_of(['NTAG', 'NTREAG'])`. NTAG = ag production NCOs (RI-B Item 3), NTREAG = farmland-secured NCOs (RI-B Item 1.b) as fallback.
+2. **ADC NCO mapping** — Replaced `NTLS/RIAD4658 - RIAD4659` with `best_of(['NTRECONS'])`. NTRECONS = construction NCOs (RI-B Item 1.a).
+3. **C&I NCO fallback** — Removed `RIAD4608/RIAD4609` fallback. NTCI + RIAD4638 alone are authoritative. Added balance-gating for C&I (was missing).
+4. **Ceiling constraint** — After `Excluded_NCO_TTM` rolling sum, cap at `Total_NCO_TTM` via `min(axis=1)`. Same ceiling for `Excluded_Nonaccrual` vs `Total_Nonaccrual`/`NALL`. Logs warning when applied.
+5. **Fetch list cleanup** — Removed `RIAD4635`, `RIAD4645` from FDIC fetch; removed `RIAD4658`, `RIAD4659`, `RIAD4608`, `RIAD4609` from FFIEC fetch. Added `NTAG` to FDIC fetch list.
+6. **NTLS comment** — Updated to clarify: "Used ONLY for Total_NCO_TTM, NOT for exclusions."
+
+**Expected impact**:
+- `Excl_Ag_NCO_YTD` drops from ~$9.6B to <$50M for major banks (actual ag NCOs are tiny)
+- `Excluded_NCO_TTM` will never exceed `Total_NCO_TTM` (ceiling enforced)
+- `Norm_NCO_Rate` will no longer be N/A for peer banks
+- `dominant_exclusion_category` shifts from "Ag" to "CI" or "CreditCard" for large banks
+
+**Remaining risks**:
+- NTAG may not be populated for all banks in the FDIC API. Fallback to NTREAG (farmland-secured) is conservative but maps to a different balance category (RC-C Item 1.b vs RCFD1590).
+- NTRECONS availability for smaller banks is untested. If absent, ADC NCO defaults to 0 via `fillna(0)`.
+- The ceiling constraint is a safeguard, not a fix. If triggered in production, it indicates a remaining upstream mapping error that should be investigated.
+
+**Files changed**: `MSPBNA_CR_Normalized.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Normalized KRI Bullet Chart Split (Rates vs Composition)
 
