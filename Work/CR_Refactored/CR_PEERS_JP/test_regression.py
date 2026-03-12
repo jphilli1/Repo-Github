@@ -5977,5 +5977,146 @@ class TestHUDHTTPDiagnosticsAndHardening(unittest.TestCase):
                           f"Failure summary must track '{cat}' category")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Rendering Architecture Reconciliation (Final Verification)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRenderingReconciliation(unittest.TestCase):
+    """Focused regression tests confirming report_generator.py is fully
+    aligned with the canonical rendering architecture in rendering_mode.py,
+    executive_charts.py, and the deterministic macro chart design."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+        cls._rg_path = os.path.join(cls._script_dir, "report_generator.py")
+        with open(cls._rg_path, "r") as f:
+            cls._rg_src = f.read()
+        cls._rm_path = os.path.join(cls._script_dir, "rendering_mode.py")
+        with open(cls._rm_path, "r") as f:
+            cls._rm_src = f.read()
+
+    # --- A. No merge conflict markers ---
+    def test_no_merge_conflicts_report_generator(self):
+        """report_generator.py must contain zero merge conflict markers."""
+        import re
+        for pattern in [r"^<{7} ", r"^>{7} ", r"^={7}$"]:
+            matches = re.findall(pattern, self._rg_src, re.MULTILINE)
+            self.assertEqual(len(matches), 0,
+                             f"Merge conflict marker found in report_generator.py: {pattern}")
+
+    # --- A. No duplicate local rendering abstractions ---
+    def test_no_duplicate_ReportMode(self):
+        self.assertNotIn("class ReportMode", self._rg_src)
+
+    def test_no_duplicate_ArtifactStatus_class(self):
+        self.assertNotIn("class ArtifactStatus", self._rg_src)
+
+    def test_no_duplicate_ArtifactSpec(self):
+        self.assertNotIn("class ArtifactSpec", self._rg_src)
+
+    def test_no_duplicate_ManifestEntry(self):
+        self.assertNotIn("class ManifestEntry", self._rg_src)
+
+    def test_no_duplicate_ArtifactManifest(self):
+        self.assertNotIn("class ArtifactManifest", self._rg_src)
+
+    def test_no_local_ARTIFACT_REGISTRY_definition(self):
+        self.assertNotIn("ARTIFACT_REGISTRY: list", self._rg_src)
+        self.assertNotIn("ARTIFACT_REGISTRY = [", self._rg_src)
+
+    def test_no_local_should_produce(self):
+        self.assertNotIn("def should_produce(", self._rg_src)
+
+    def test_no_resolve_report_mode_for_generator(self):
+        self.assertNotIn("def resolve_report_mode_for_generator", self._rg_src)
+
+    # --- Obsolete artifact names gone from report_generator.py ---
+    def test_no_obsolete_kri_bullet_chart(self):
+        """The obsolete artifact name 'kri_bullet_chart' must not appear
+        as an artifact name string in report_generator.py."""
+        # The function name generate_kri_bullet_chart is fine — it's the
+        # artifact name string literal we're checking
+        import re
+        # Match quoted "kri_bullet_chart" that is NOT part of generate_kri_bullet_chart
+        matches = re.findall(r'["\']kri_bullet_chart["\']', self._rg_src)
+        self.assertEqual(len(matches), 0,
+                         "Obsolete artifact name 'kri_bullet_chart' found in report_generator.py")
+
+    def test_no_obsolete_macro_overlay_artifact(self):
+        """The obsolete artifact name 'macro_overlay' (bare, not
+        macro_overlay_credit_stress/rates_housing) must not appear."""
+        import re
+        # Match quoted "macro_overlay" that is NOT followed by _credit_stress or _rates_housing
+        matches = re.findall(r'["\']macro_overlay["\']', self._rg_src)
+        self.assertEqual(len(matches), 0,
+                         "Obsolete artifact name 'macro_overlay' found in report_generator.py")
+
+    # --- Canonical executive artifact names are present ---
+    def test_canonical_executive_artifacts_in_report_generator(self):
+        """report_generator.py must produce all 5 executive artifacts.
+        Names are constructed dynamically via f-string, so check patterns."""
+        # Heatmaps: f"yoy_heatmap_{norm_str}" for standard/normalized
+        self.assertIn("yoy_heatmap_", self._rg_src)
+        # Bullet charts: f"kri_bullet_{norm_str}" for standard/normalized
+        self.assertIn("kri_bullet_", self._rg_src)
+        # Sparkline: literal name
+        self.assertIn("sparkline_summary", self._rg_src)
+        # Both loops iterate [False, True] for standard and normalized
+        self.assertIn("for is_norm in [False, True]", self._rg_src)
+
+    # --- Deterministic macro artifact names are present ---
+    def test_deterministic_macro_artifacts_in_report_generator(self):
+        """All 3 deterministic macro artifact names must appear in report_generator.py."""
+        for name in ["macro_corr_heatmap_lag1", "macro_overlay_credit_stress",
+                      "macro_overlay_rates_housing"]:
+            self.assertIn(name, self._rg_src,
+                          f"Deterministic macro artifact '{name}' missing from report_generator.py")
+
+    # --- No heuristic macro fallback logic ---
+    def test_no_heuristic_macro_fallback(self):
+        """report_generator.py must not contain the old heuristic macro series selection."""
+        self.assertNotIn('"Fed Funds", "Unemployment"', self._rg_src)
+        self.assertNotIn("Fall back to any available series", self._rg_src)
+        self.assertNotIn("def plot_macro_overlay(", self._rg_src)
+
+    # --- rendering_mode.py remains the canonical source ---
+    def test_rendering_mode_defines_RenderMode(self):
+        self.assertIn("class RenderMode", self._rm_src)
+
+    def test_rendering_mode_defines_select_mode(self):
+        self.assertIn("def select_mode(", self._rm_src)
+
+    def test_rendering_mode_defines_ArtifactManifest(self):
+        self.assertIn("class ArtifactManifest", self._rm_src)
+
+    def test_rendering_mode_defines_ARTIFACT_REGISTRY(self):
+        self.assertIn("ARTIFACT_REGISTRY", self._rm_src)
+
+    def test_rendering_mode_defines_should_produce(self):
+        self.assertIn("def should_produce(", self._rm_src)
+
+    def test_rendering_mode_has_all_executive_artifacts(self):
+        """rendering_mode.py registry must contain all 5 executive chart artifacts."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        for name in ["yoy_heatmap_standard", "yoy_heatmap_normalized",
+                      "kri_bullet_standard", "kri_bullet_normalized",
+                      "sparkline_summary"]:
+            self.assertIn(name, ARTIFACT_REGISTRY,
+                          f"Registry missing executive artifact: {name}")
+
+    def test_rendering_mode_has_all_macro_artifacts(self):
+        """rendering_mode.py registry must contain all 3 deterministic macro artifacts."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        for name in ["macro_corr_heatmap_lag1", "macro_overlay_credit_stress",
+                      "macro_overlay_rates_housing"]:
+            self.assertIn(name, ARTIFACT_REGISTRY,
+                          f"Registry missing macro artifact: {name}")
+
+    def test_report_generator_imports_from_rendering_mode(self):
+        """report_generator.py must import from rendering_mode, not define locally."""
+        self.assertIn("from rendering_mode import", self._rg_src)
+
+
 if __name__ == '__main__':
     unittest.main()
