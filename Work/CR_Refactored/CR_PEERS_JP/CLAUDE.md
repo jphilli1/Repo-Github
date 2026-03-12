@@ -673,6 +673,69 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-12 — HUD Parse Robustness & Per-Query Failure Classification
+
+Finished the HUD ZIP fix by making the response parser fully robust and by
+classifying parse failures correctly at both the per-query and orchestration
+levels.
+
+**HUD parsing now has:**
+
+1. **Top-level extraction** (`extract_hud_result_rows`) — handles 5 payload
+   shapes (A–E).
+2. **Row-by-row recursive flattening** (`flatten_hud_rows`) — processes each
+   row independently (not just first-row heuristic). Wrapper rows with extra
+   metadata keys beyond `_HUD_WRAPPER_KEYS` are still flattened. Iterates
+   until no row contains a list-valued `results` (handles multi-level nesting).
+   Mixed payloads (some flat, some wrapper) handled safely.
+3. **Dotted column canonicalization** (`canonicalize_hud_columns`) — maps
+   `results.zip` → `zip`, `results.county` → `county_fips`, etc. When both
+   canonical and dotted versions exist, prefers canonical non-null; gaps filled
+   from dotted column.
+
+**Parse failure is distinct from empty response:**
+
+- `fetch_hud_crosswalk()` now returns structured outcome metadata:
+  `{"dataframe": df, "status": QUERY_*, "diagnostics": {...}}`
+- Query-level statuses: `SUCCESS_ROWS`, `FAILED_PARSE`, `FAILED_EMPTY_RESPONSE`,
+  `FAILED_HTTP`, `FAILED_TOKEN_AUTH`
+- `build_case_shiller_zip_sheets()` aggregates query outcomes: if all counties
+  returned empty AND at least one had `FAILED_PARSE`, final status is
+  `FAILED_PARSE` (not `FAILED_EMPTY_RESPONSE`). `FAILED_EMPTY_RESPONSE` is
+  only used when the API truly returned no usable rows without parse failure.
+
+**Per-query diagnostics logged:** `payload_type`, `top_level_keys`,
+`extracted_row_count_before_flatten`, `extracted_row_count_after_flatten`,
+`normalized_columns`, `has_zip_column`, `has_fips_column`, `query_status`.
+
+**Orchestration diagnostics logged:** `county_queries_total`,
+`county_queries_success`, `county_queries_failed_parse`,
+`county_queries_failed_http`, `county_queries_failed_empty`,
+`combined_row_count`, `final_enrichment_status`.
+
+**Standalone CLI block hardened:** `__main__` now checks
+`isinstance(value, pd.DataFrame)` before calling `.shape`/`.empty`/`.to_excel()`.
+Non-DataFrame metadata values (`enrichment_status`, `token_diagnostics`) are
+printed separately.
+
+**Final ZIP coverage requires actual ZIP/FIPS columns** — wrapper-only columns
+always produce `FAILED_PARSE`, not misleading "no zips" messages.
+
+**Tests added (1 new class, 8 test methods in `test_regression.py`):**
+
+| Test | What It Guards |
+|---|---|
+| `test_flatten_hud_rows_mixed_wrapper_and_final_rows` | Mixed row shapes flatten correctly |
+| `test_flatten_hud_rows_wrapper_with_extra_metadata_keys` | Extra wrapper keys don't block flattening |
+| `test_flatten_hud_rows_recursive_nested_results` | Multi-level nesting fully resolved |
+| `test_canonicalize_hud_columns_accepts_dotted_result_columns` | `results.zip` etc. map to canonical names |
+| `test_fetch_hud_crosswalk_returns_failed_parse_status_for_wrapper_only_output` | Structured outcome with status/diagnostics |
+| `test_build_case_shiller_zip_sheets_classifies_all_parse_failures_as_failed_parse` | Parse failures not misclassified as empty |
+| `test_build_case_shiller_zip_sheets_does_not_misclassify_parse_failure_as_failed_empty_response` | `FAILED_EMPTY_RESPONSE` only when no parse failures |
+| `test_main_smoke_block_handles_non_dataframe_return_values` | `__main__` doesn't crash on metadata values |
+
+Files changed: `case_shiller_zip_mapper.py`, `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-12 — Mapping Integrity Regression Tests
 
 Locked in the 2026-03-12 taxonomy cleanup rules with focused regression tests
@@ -1831,11 +1894,15 @@ The HUD county-to-ZIP API (type=7) returns Shape B where each "row" is actually 
   ...
 ]}
 ```
-`flatten_hud_rows()` detects this pattern (row keys are a subset of `_HUD_WRAPPER_KEYS` + a nested `results` list) and explodes each wrapper into its child rows, propagating parent metadata (year, quarter, input, crosswalk_type) onto each child where the child doesn't already carry that key.
+`flatten_hud_rows()` processes **each row independently** (not just a first-row heuristic). Any row with a list-valued `results` key is a wrapper — it is exploded into its child rows with parent metadata propagated (child keys take precedence). Wrapper rows with extra metadata keys beyond `_HUD_WRAPPER_KEYS` are still flattened correctly. The function iterates until no row contains a list-valued `results`, handling multi-level nesting. Mixed payloads (some wrapper, some already flat) are handled safely in the same pass.
 
 **Without this second pass**, `pd.DataFrame(wrapper_rows)` produces a DataFrame with only wrapper columns (`year`, `quarter`, `input`, `crosswalk_type`, `results`) and `build_case_shiller_zip_coverage()` fails silently because no ZIP/FIPS columns exist.
 
-After both passes, rows are normalized via `pd.json_normalize()` and canonicalized via `canonicalize_hud_columns()`. A wrapper-only column check (`_HUD_WRAPPER_KEYS`) detects payloads that were not properly flattened and returns `FAILED_PARSE`.
+After both passes, rows are normalized via `pd.json_normalize()` and canonicalized via `canonicalize_hud_columns()`. Canonicalization also handles **dotted column variants** from `json_normalize` (e.g. `results.zip` → `zip`, `results.county` → `county_fips`). When both canonical and dotted columns exist, the canonical value is preferred where non-null; gaps are filled from the dotted version.
+
+A wrapper-only column check (`_HUD_WRAPPER_KEYS`) detects payloads that were not properly flattened and returns `FAILED_PARSE`.
+
+**Query-level outcome tracking**: `fetch_hud_crosswalk()` returns a structured dict `{"dataframe", "status", "diagnostics"}` with per-query status (`SUCCESS_ROWS`, `FAILED_PARSE`, `FAILED_EMPTY_RESPONSE`, `FAILED_HTTP`, `FAILED_TOKEN_AUTH`). The orchestrator aggregates these: if all counties returned empty and at least one had `FAILED_PARSE`, the final status is `FAILED_PARSE` (not `FAILED_EMPTY_RESPONSE`). `FAILED_EMPTY_RESPONSE` is only used when the API returned no usable rows without any parse failures.
 
 ### Canonical HUD Crosswalk Fields
 
@@ -1843,11 +1910,11 @@ After canonicalization, all downstream code uses these standard column names:
 
 | Canonical Name | Variants Accepted |
 |---|---|
-| `zip` | `zip`, `zip_code`, `zipcode`, `zip5` |
-| `county_fips` | `county`, `county_fips`, `geoid`, `county_geoid`, `countyfips`, `fips` |
-| `res_ratio` | `res_ratio`, `residential_ratio` |
-| `bus_ratio` | `bus_ratio`, `business_ratio` |
-| `oth_ratio` | `oth_ratio`, `other_ratio` |
+| `zip` | `zip`, `zip_code`, `zipcode`, `zip5`, `results.zip`, `results.zip_code` |
+| `county_fips` | `county`, `county_fips`, `geoid`, `county_geoid`, `countyfips`, `fips`, `results.county`, `results.county_fips` |
+| `res_ratio` | `res_ratio`, `residential_ratio`, `results.res_ratio` |
+| `bus_ratio` | `bus_ratio`, `business_ratio`, `results.bus_ratio` |
+| `oth_ratio` | `oth_ratio`, `other_ratio`, `results.oth_ratio` |
 | `tot_ratio` | `tot_ratio`, `total_ratio` |
 
 ZIP codes are zero-padded to 5 chars. County FIPS are zero-padded to 5 chars.
