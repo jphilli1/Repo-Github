@@ -6699,5 +6699,250 @@ class TestSegmentPerformanceTracingFix(unittest.TestCase):
         self.assertIn("'RIAD4655'", init_match.group(0))
 
 
+# =====================================================================
+# Chart Pipeline Quality Improvements — 9-Part Spec Regression Tests
+# =====================================================================
+
+class TestChartColorSystem(unittest.TestCase):
+    """Part 6: Centralized CHART_COLORS constant and _build_cert_color_map."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
+            cls._src = f.read()
+
+    def test_chart_colors_exists(self):
+        self.assertIn("CHART_COLORS", self._src)
+
+    def test_chart_colors_required_keys(self):
+        for key in ["subject", "wealth_peers", "all_peers", "peer_cloud", "guide"]:
+            self.assertIn(f'"{key}"', self._src, f"CHART_COLORS missing key: {key}")
+
+    def test_chart_colors_subject_is_gold(self):
+        self.assertIn('"subject":       "#F7A81B"', self._src)
+
+    def test_chart_colors_wealth_peers_is_purple(self):
+        self.assertIn('"wealth_peers":  "#9C6FB6"', self._src)
+
+    def test_chart_colors_all_peers_is_blue(self):
+        self.assertIn('"all_peers":     "#5B9BD5"', self._src)
+
+    def test_chart_colors_peer_cloud_is_muted(self):
+        self.assertIn('"peer_cloud":    "#A8B8C8"', self._src)
+
+    def test_chart_colors_guide_is_slate(self):
+        self.assertIn('"guide":         "#6B7B8D"', self._src)
+
+    def test_build_cert_color_map_exists(self):
+        self.assertIn("def _build_cert_color_map", self._src)
+
+    def test_cert_color_map_returns_subject_and_composites(self):
+        # _build_cert_color_map should map 90001 and 90003
+        import re
+        func_match = re.search(
+            r"def _build_cert_color_map.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(func_match)
+        body = func_match.group(0)
+        self.assertIn("90001", body)
+        self.assertIn("90003", body)
+
+    def test_no_hardcoded_4C78A8_in_scatter(self):
+        """Scatter function should use CHART_COLORS, not hardcoded '#4C78A8'."""
+        import re
+        scatter_match = re.search(
+            r"def plot_scatter_dynamic.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(scatter_match)
+        scatter_src = scatter_match.group(0)
+        self.assertNotIn('"#4C78A8"', scatter_src)
+        self.assertNotIn("'#4C78A8'", scatter_src)
+
+    def test_no_hardcoded_7F8C8D_in_scatter(self):
+        """Scatter function should use CHART_COLORS, not hardcoded '#7F8C8D'."""
+        import re
+        scatter_match = re.search(
+            r"def plot_scatter_dynamic.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(scatter_match)
+        scatter_src = scatter_match.group(0)
+        self.assertNotIn('"#7F8C8D"', scatter_src)
+        self.assertNotIn("'#7F8C8D'", scatter_src)
+
+
+class TestLabelPlacer(unittest.TestCase):
+    """Part 2: Shared label-placement helper."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
+            cls._src = f.read()
+
+    def test_label_placer_class_exists(self):
+        self.assertIn("class LabelPlacer", self._src)
+
+    def test_label_placer_has_place_method(self):
+        self.assertIn("def place(self", self._src)
+
+    def test_label_placer_has_reserve_method(self):
+        self.assertIn("def reserve(self", self._src)
+
+    def test_label_placer_has_collision_candidates(self):
+        self.assertIn("_DEFAULT_CANDIDATES", self._src)
+        self.assertIn("_INLINE_CANDIDATES", self._src)
+
+    def test_scatter_uses_label_placer(self):
+        """plot_scatter_dynamic must use LabelPlacer instead of inline pick_offset."""
+        import re
+        scatter_match = re.search(
+            r"def plot_scatter_dynamic.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(scatter_match)
+        scatter_src = scatter_match.group(0)
+        self.assertIn("LabelPlacer", scatter_src)
+        self.assertNotIn("def pick_offset", scatter_src)
+
+
+class TestYAxisFormatting(unittest.TestCase):
+    """Part 8: y-axis percent formatting bugs — must use f'{v:.0%}' not f'{v:.1f}%'."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
+            cls._src = f.read()
+
+    def _get_func_source(self, func_name):
+        import re
+        match = re.search(
+            rf"def {func_name}\(.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        return match.group(0) if match else ""
+
+    def test_portfolio_mix_uses_correct_percent_format(self):
+        src = self._get_func_source("plot_portfolio_mix")
+        self.assertNotIn('f"{v:.1f}%"', src,
+                         "plot_portfolio_mix should use f'{v:.0%}' not f'{v:.1f}%'")
+        self.assertIn("{v:.0%}", src)
+
+    def test_reserve_risk_allocation_uses_correct_percent_format(self):
+        src = self._get_func_source("plot_reserve_risk_allocation")
+        self.assertNotIn('f"{v:.1f}%"', src,
+                         "plot_reserve_risk_allocation should use f'{v:.0%}' not f'{v:.1f}%'")
+        self.assertIn("{v:.0%}", src)
+
+    def test_liquidity_overlay_uses_correct_percent_format(self):
+        src = self._get_func_source("plot_liquidity_overlay")
+        self.assertNotIn('f"{v:.1f}%"', src,
+                         "plot_liquidity_overlay should use f'{v:.0%}' not f'{v:.1f}%'")
+        self.assertIn("{v:.0%}", src)
+
+
+class TestWealthPeersInCharts(unittest.TestCase):
+    """Part 1: Wealth Peers comparator added to charts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
+            cls._src = f.read()
+
+    def _get_func_source(self, func_name):
+        import re
+        match = re.search(
+            rf"def {func_name}\(.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        return match.group(0) if match else ""
+
+    def test_scatter_dynamic_has_wealth_peers(self):
+        src = self._get_func_source("plot_scatter_dynamic")
+        self.assertIn("Wealth Peers", src)
+        self.assertIn("wealth_avg", src)
+
+    def test_growth_vs_deterioration_has_wealth_peers(self):
+        src = self._get_func_source("plot_growth_vs_deterioration")
+        self.assertIn("Wealth Peers", src)
+
+    def test_risk_adjusted_return_has_wealth_peers(self):
+        src = self._get_func_source("plot_risk_adjusted_return")
+        self.assertIn("Wealth Peers", src)
+
+    def test_years_of_reserves_has_wealth_peers(self):
+        src = self._get_func_source("plot_years_of_reserves")
+        self.assertIn("Wealth Peers", src)
+        self.assertIn("wealth_vals", src)
+
+    def test_years_of_reserves_conditional_title(self):
+        """If only CRE available, title should say 'CRE Years of Reserves'."""
+        src = self._get_func_source("plot_years_of_reserves")
+        self.assertIn("CRE Years of Reserves", src)
+
+
+class TestNormalizedChartLabelClutter(unittest.TestCase):
+    """Part 3: Peer entities get labels only at latest period."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
+            cls._src = f.read()
+
+    def test_peer_labels_latest_only(self):
+        """Peer line labels should only appear at the latest period, not all Q4s."""
+        import re
+        func = re.search(
+            r"def create_credit_deterioration_chart_ppt\(.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        self.assertIsNotNone(func)
+        src = func.group(0)
+        self.assertIn("label_indices", src)
+        # Subject bank gets full idx_to_label, peers get [latest only]
+        self.assertIn("subject_bank_cert", src)
+
+
+class TestChartPolish(unittest.TestCase):
+    """Part 7: Chart-specific polish items."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
+            cls._src = f.read()
+
+    def _get_func_source(self, func_name):
+        import re
+        match = re.search(
+            rf"def {func_name}\(.*?(?=\ndef |\nclass |\Z)",
+            self._src, re.DOTALL
+        )
+        return match.group(0) if match else ""
+
+    def test_migration_ladder_uses_composites(self):
+        src = self._get_func_source("plot_migration_ladder")
+        self.assertIn("ACTIVE_STANDARD_COMPOSITES", src)
+
+    def test_migration_ladder_line_styles(self):
+        """Migration ladder should have solid/dashed/dotted for subject/wealth/all."""
+        src = self._get_func_source("plot_migration_ladder")
+        self.assertIn('"-"', src)   # solid for subject
+        self.assertIn('"--"', src)  # dashed for wealth
+        self.assertIn('":"', src)   # dotted for all peers
+
+    def test_concentration_vs_capital_uses_chart_colors(self):
+        src = self._get_func_source("plot_concentration_vs_capital")
+        self.assertIn('CC["peer_cloud"]', src)
+        self.assertIn('CC["subject"]', src)
+        self.assertIn('CC["guide"]', src)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -479,17 +479,25 @@ Every ratio-component row label **must** match its denominator type:
 
 Dict-style access (`config["key"]`, `config.get("key")`) will raise `TypeError` on `DashboardConfig` and is forbidden.
 
-### CHARTING STYLES
+### CHARTING STYLES — Centralized Color System
 
-All charts must use this color palette consistently:
+All charts must use the centralized `CHART_COLORS` dict and `_build_cert_color_map()` from `report_generator.py`. **No inline hex color strings** in chart functions.
 
-| Entity | Hex Color | Description |
-|---|---|---|
-| **MSPBNA (Subject Bank)** | `#F7A81B` | Gold |
-| **All Peers** | `#5B9BD5` or `#4C78A8` | Blue |
-| **Core PB / Peers (Ex. F&V)** | `#70AD47` or `#9C6FB6` | Green or Purple |
+| Entity | Key | Hex Color | Description |
+|---|---|---|---|
+| **MSPBNA (Subject Bank)** | `subject` | `#F7A81B` | Gold |
+| **Wealth Peers (Core PB)** | `wealth_peers` | `#9C6FB6` | Purple |
+| **All Peers** | `all_peers` | `#5B9BD5` | Blue |
+| **Peer Cloud (scatter dots)** | `peer_cloud` | `#A8B8C8` | Muted blue-gray |
+| **Guide Lines** | `guide` | `#6B7B8D` | Slate-gray |
 
-**Do not alter** the internal matplotlib/seaborn plotting logic in `create_credit_deterioration_chart_ppt` or `plot_scatter_dynamic` without explicit permission from the project owner.
+**`_build_cert_color_map(subject_cert)`** returns a CERT→color dict for entity-iteration in chart functions.
+
+**Wealth Peers** are plotted as purple diamonds in scatter/lollipop charts. All Peers are plotted as blue squares. Both use the centralized color map.
+
+**Label collision avoidance**: The `LabelPlacer` class in `report_generator.py` provides pixel-coordinate overlap detection for chart annotations. All scatter and comparator charts must use `LabelPlacer` instead of inline `pick_offset()` helpers. Labels are placed in priority order (lower number = better position). The `_INLINE_CANDIDATES` variant prefers horizontal-only offsets for guide-line labels.
+
+**Normalized credit chart label strategy**: The subject bank gets value labels at every Q4 + latest period. Peer entities get labels only at the latest period to reduce visual clutter.
 
 ### CSS CLASS NAMING
 
@@ -723,6 +731,32 @@ to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Chart Pipeline Quality Improvements (9-Part Spec)
+
+**Objective**: Bring the reporting pipeline to professional, presentation-ready standard with targeted fixes across 9 areas.
+
+**9-part implementation:**
+
+1. **Wealth Peers comparator** (Part 1) — Added Wealth Peers (Core PB composite, CERT 90001/90004) as a purple diamond marker to 4 charts: `plot_scatter_dynamic`, `plot_growth_vs_deterioration`, `plot_risk_adjusted_return`, `plot_years_of_reserves`. All Peers shown as blue squares. The 3 standard scatter charts (`scatter_pd_vs_npl`, `scatter_nco_vs_npl`, `scatter_norm_nco_vs_nonaccrual`) gain Wealth Peers automatically through `plot_scatter_dynamic`.
+
+2. **Shared label-placement helper** (Part 2) — Created `LabelPlacer` class with pixel-coordinate collision avoidance. Replaces per-chart `pick_offset()` hacks. 16 default + 8 inline candidate positions. Supports priority-based placement (lower = better position). `plot_scatter_dynamic` now uses `LabelPlacer` instead of inline collision logic.
+
+3. **Normalized credit chart label clutter** (Part 3) — Subject bank gets value labels at every Q4 + latest. Peer entities get labels only at the latest period. Reduces label overload from 18+ to ~8 labels.
+
+4. **KRI bullet chart split** (Part 4) — Already implemented in prior session. `kri_bullet_normalized_rates` (5 rate metrics) and `kri_bullet_normalized_composition` (5 composition metrics) with separate axes.
+
+5. **Years of reserves improvements** (Part 5) — Added Wealth Peers (purple diamond) and All Peers (blue square) to lollipop chart. Conditional title: "CRE Years of Reserves" when only CRE segment is available.
+
+6. **Centralized color system** (Part 6) — Created `CHART_COLORS` dict and `_build_cert_color_map()` in `report_generator.py`. 5 canonical color keys: subject (gold), wealth_peers (purple), all_peers (blue), peer_cloud (muted blue-gray), guide (slate-gray). Enforced across `create_credit_deterioration_chart_v3`, `create_credit_deterioration_chart_ppt`, `plot_scatter_dynamic`, `plot_growth_vs_deterioration`, `plot_risk_adjusted_return`, `plot_years_of_reserves`, `plot_concentration_vs_capital`.
+
+7. **Chart-specific polish** (Part 7) — Migration ladder already uses ACTIVE_STANDARD_COMPOSITES with solid/dashed/dotted line styles. Concentration-vs-capital uses centralized colors.
+
+8. **Y-axis percent formatting** (Part 8) — Fixed 3 functions: `plot_portfolio_mix`, `plot_reserve_risk_allocation`, `plot_liquidity_overlay`. Changed `f"{v:.1f}%"` → `f"{v:.0%}"` (values are decimal ratios like 0.78, not already-multiplied percentages).
+
+9. **Regression tests** (Part 9) — Added 28 new tests across 6 test classes: `TestChartColorSystem` (11), `TestLabelPlacer` (5), `TestYAxisFormatting` (3), `TestWealthPeersInCharts` (5), `TestNormalizedChartLabelClutter` (1), `TestChartPolish` (3). All use source-text analysis (no matplotlib import required).
+
+**Files changed:** `report_generator.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Segment Performance Series Tracing & MDRM Correction (12-Part Fix)
 
