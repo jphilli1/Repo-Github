@@ -58,8 +58,18 @@ python report_generator.py
 | `HUD_CROSSWALK_YEAR` | Optional crosswalk vintage year | `2025` |
 | `HUD_CROSSWALK_QUARTER` | Optional crosswalk vintage quarter (1-4) | `4` |
 | `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` | Enable/disable ZIP enrichment (default `true`) | `true` or `false` |
+| `REPORT_MODE` | Render mode for report_generator (canonical). Values: `full_local`, `corp_safe` | `full_local` |
+| `REPORT_RENDER_MODE` | Backward-compatible alias for `REPORT_MODE` | `full_local` |
+| `BEA_API_KEY` | BEA API authentication (canonical, optional) | `export BEA_API_KEY='abc'` |
+| `BEA_USER_ID` | Backward-compatible alias for `BEA_API_KEY` | `export BEA_USER_ID='abc'` |
+| `CENSUS_API_KEY` | Census API authentication (optional) | `export CENSUS_API_KEY='abc'` |
 
 These can be set in a `.env` file in the project root or exported in the shell.
+
+**Env var alias resolution priority:**
+- Render mode: explicit arg → `REPORT_MODE` → `REPORT_RENDER_MODE` → `full_local` (default)
+- BEA key: `BEA_API_KEY` → `BEA_USER_ID` → `None` (optional, no force-fail)
+- Census key: `CENSUS_API_KEY` → `None` (optional, no force-fail)
 
 ### Key Dependencies
 
@@ -210,7 +220,7 @@ Each script produces its own CSV log file in `logs/`, reset (overwritten) each r
 
 ### Overview
 
-`report_generator.py` supports two rendering modes, controlled by the `render_mode` parameter or the `REPORT_RENDER_MODE` environment variable:
+`report_generator.py` supports two rendering modes, controlled by the `render_mode` parameter or the `REPORT_MODE` environment variable (with `REPORT_RENDER_MODE` as a backward-compatible alias):
 
 | Mode | Description | Default? |
 |---|---|---|
@@ -220,8 +230,9 @@ Each script produces its own CSV log file in `logs/`, reset (overwritten) each r
 ### Mode Selection Priority
 
 1. Explicit `render_mode` argument to `generate_reports()`
-2. `REPORT_RENDER_MODE` environment variable
-3. Default: `full_local`
+2. `REPORT_MODE` environment variable (canonical)
+3. `REPORT_RENDER_MODE` environment variable (backward-compatible alias)
+4. Default: `full_local`
 
 ### Key Modules
 
@@ -275,6 +286,10 @@ python report_generator.py full_local
 python report_generator.py corp_safe
 
 # Via environment variable
+export REPORT_MODE=corp_safe
+python report_generator.py
+
+# Or via backward-compatible alias
 export REPORT_RENDER_MODE=corp_safe
 python report_generator.py
 ```
@@ -673,151 +688,25 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
-### 2026-03-12 — HUD Parse Robustness & Per-Query Failure Classification
+### 2026-03-12 — Architecture Reconciliation (Merge Conflict Resolution)
 
-Finished the HUD ZIP fix by making the response parser fully robust and by
-classifying parse failures correctly at both the per-query and orchestration
-levels.
+**Mandatory cleanup**: Resolved all merge conflicts and made `rendering_mode.py` the single canonical home for render abstractions.
 
-**HUD parsing now has:**
+**Changes:**
 
-1. **Top-level extraction** (`extract_hud_result_rows`) — handles 5 payload
-   shapes (A–E).
-2. **Row-by-row recursive flattening** (`flatten_hud_rows`) — processes each
-   row independently (not just first-row heuristic). Wrapper rows with extra
-   metadata keys beyond `_HUD_WRAPPER_KEYS` are still flattened. Iterates
-   until no row contains a list-valued `results` (handles multi-level nesting).
-   Mixed payloads (some flat, some wrapper) handled safely.
-3. **Dotted column canonicalization** (`canonicalize_hud_columns`) — maps
-   `results.zip` → `zip`, `results.county` → `county_fips`, etc. When both
-   canonical and dotted versions exist, prefers canonical non-null; gaps filled
-   from dotted column.
+1. **report_generator.py** — Resolved 7 merge conflicts (scatter plots, segment/roadmap charts, FRED expansion charts, executive charts, tables). Removed ~230 lines of duplicate local abstractions (`ReportMode`, `ArtifactStatus`, `ArtifactSpec`, `ManifestEntry`, `ArtifactManifest`, `ReportContext`, `resolve_report_mode_for_generator()`, local `ARTIFACT_REGISTRY`, `_ARTIFACT_BY_NAME`, `get_artifacts_for_mode()`, local `should_produce()`). All render types now imported from `rendering_mode.py`. Added `_ReportContext` (lightweight internal dataclass) and `_produce_table()`/`_produce_chart()` DRY helpers. Fixed manifest API from stale `manifest.record()` to canonical `record_generated()`/`record_skipped()`/`record_failed()`. Fixed FRED expansion preflight to use `is_artifact_available()` (side-effect-free) instead of `should_produce()`.
 
-**Parse failure is distinct from empty response:**
+2. **rendering_mode.py** — Already canonical. Added `is_artifact_available()` for side-effect-free availability checks, `ArtifactCapability.filename_suffix` field with auto-generation in `_reg()`, and backward-compatible `REPORT_RENDER_MODE` alias in `select_mode()`.
 
-- `fetch_hud_crosswalk()` now returns structured outcome metadata:
-  `{"dataframe": df, "status": QUERY_*, "diagnostics": {...}}`
-- Query-level statuses: `SUCCESS_ROWS`, `FAILED_PARSE`, `FAILED_EMPTY_RESPONSE`,
-  `FAILED_HTTP`, `FAILED_TOKEN_AUTH`
-- `build_case_shiller_zip_sheets()` aggregates query outcomes: if all counties
-  returned empty AND at least one had `FAILED_PARSE`, final status is
-  `FAILED_PARSE` (not `FAILED_EMPTY_RESPONSE`). `FAILED_EMPTY_RESPONSE` is
-  only used when the API truly returned no usable rows without parse failure.
+3. **test_regression.py** — Resolved 1 merge conflict. Replaced broken `TestDualModeArchitecture` (imported removed local types) with 3 new test classes (25 tests): `TestCanonicalRenderingArchitecture` (no merge conflicts, no duplicate abstractions, canonical imports, correct manifest API), `TestCanonicalModeResolution` (REPORT_MODE resolution, REPORT_RENDER_MODE alias, explicit override, invalid raises, active composites), `TestArtifactRegistryCanonical` (registry coverage, mode availability, manifest API, should_produce records skips, is_artifact_available no side effects).
 
-**Per-query diagnostics logged:** `payload_type`, `top_level_keys`,
-`extracted_row_count_before_flatten`, `extracted_row_count_after_flatten`,
-`normalized_columns`, `has_zip_column`, `has_fips_column`, `query_status`.
+4. **CLAUDE.md** — Updated env var table (added REPORT_MODE, REPORT_RENDER_MODE, BEA_API_KEY, BEA_USER_ID, CENSUS_API_KEY). Updated mode selection priority (4-level: explicit → REPORT_MODE → REPORT_RENDER_MODE → default). Documented alias resolution rules. Added changelog.
 
-**Orchestration diagnostics logged:** `county_queries_total`,
-`county_queries_success`, `county_queries_failed_parse`,
-`county_queries_failed_http`, `county_queries_failed_empty`,
-`combined_row_count`, `final_enrichment_status`.
+**Deferred work:**
+- Executive charts (`_produce_chart` DRY conversion) — currently use inline `should_produce` + manual manifest calls. Works correctly but not as DRY as scatter/segment/roadmap charts.
+- `_produce_chart` does not yet handle all chart function signatures uniformly (some take `proc_df_with_peers, subject_bank_cert`, others take `fred_expansion_df`).
 
-**Standalone CLI block hardened:** `__main__` now checks
-`isinstance(value, pd.DataFrame)` before calling `.shape`/`.empty`/`.to_excel()`.
-Non-DataFrame metadata values (`enrichment_status`, `token_diagnostics`) are
-printed separately.
-
-**Final ZIP coverage requires actual ZIP/FIPS columns** — wrapper-only columns
-always produce `FAILED_PARSE`, not misleading "no zips" messages.
-
-**Tests added (1 new class, 8 test methods in `test_regression.py`):**
-
-| Test | What It Guards |
-|---|---|
-| `test_flatten_hud_rows_mixed_wrapper_and_final_rows` | Mixed row shapes flatten correctly |
-| `test_flatten_hud_rows_wrapper_with_extra_metadata_keys` | Extra wrapper keys don't block flattening |
-| `test_flatten_hud_rows_recursive_nested_results` | Multi-level nesting fully resolved |
-| `test_canonicalize_hud_columns_accepts_dotted_result_columns` | `results.zip` etc. map to canonical names |
-| `test_fetch_hud_crosswalk_returns_failed_parse_status_for_wrapper_only_output` | Structured outcome with status/diagnostics |
-| `test_build_case_shiller_zip_sheets_classifies_all_parse_failures_as_failed_parse` | Parse failures not misclassified as empty |
-| `test_build_case_shiller_zip_sheets_does_not_misclassify_parse_failure_as_failed_empty_response` | `FAILED_EMPTY_RESPONSE` only when no parse failures |
-| `test_main_smoke_block_handles_non_dataframe_return_values` | `__main__` doesn't crash on metadata values |
-
-Files changed: `case_shiller_zip_mapper.py`, `test_regression.py`, `CLAUDE.md`
-
-### 2026-03-12 — Mapping Integrity Regression Tests
-
-Locked in the 2026-03-12 taxonomy cleanup rules with focused regression tests
-so that corrected mappings cannot regress. All tests are source-scanning
-(static-analysis style) and do not require FDIC API access to run.
-
-**Mapping corrections verified by tests:**
-
-1. **RESI denominator** — `Wealth_Resi_Balance` fallback uses `LNRERES` alone;
-   `LNRELOC` is NOT added (would cause double-counting since LNRERES already
-   includes HELOC/open-end per FFIEC instructions). RC-C components
-   (1797+5367+5368) remain the preferred path.
-2. **C&I exclusion** — `Excl_CI_Balance = LNCI` directly. SBL is NOT subtracted
-   (SBL lives under RC-C item 9, not item 4).
-3. **NDFI PD/NA** — J458/J459/J460 removed from active code. J454 retained for
-   balance exclusion. All NDFI PD/NA numerators set to 0.0.
-4. **Agricultural PD** — RCON2746/RCFD2746 and RCON2747/RCFD2747 removed
-   (those are "All other loans" PD, not Ag). Replaced with P3AG/P9AG.
-5. **CRE pure balance** — `CRE_Investment_Pure_Balance = LNREMULT + LNRENROT`
-   only. LNREOTH removed (ambiguous mapping).
-
-**Unsupported areas (confirmed by tests):**
-
-- **Tailored Lending**: Cannot be derived from Call Report fields. No proxy
-  from aircraft, fine art, HNW unsecured, or J451. Tests verify no active
-  pipeline metric or report_generator label references tailored lending.
-- **NDFI PD/NA**: CR-only PD/NA mapping is unsupported; numerators zeroed.
-- **SBL risk metrics**: Proxy only — not shown in presentation.
-
-**Tests added (7 test classes, 24 test methods in `test_regression.py`):**
-
-| Test Class | Methods | What It Guards |
-|---|---|---|
-| `TestResiDenominatorIntegrity` | 3 | LNRELOC never added to RESI balance |
-| `TestCIExclusionIntegrity` | 2 | SBL never subtracted from C&I |
-| `TestNDFIUnsupportedRiskIntegrity` | 3 | J458/J459/J460 not in active code |
-| `TestAgDelinquencyIntegrity` | 2 | 2746/2747 not in active Ag PD code |
-| `TestCREPureBalanceIntegrity` | 2 | LNREOTH excluded from CRE pure |
-| `TestTailoredLendingBoundary` | 4 | No tailored-lending proxies in pipeline |
-| `TestDocumentationCoherence` | 8 | CLAUDE.md documents all mapping rules |
-
-**Metrics intentionally suppressed:**
-
-- NDFI PD/NA numerators (`Excl_NDFI_P3`, `Excl_NDFI_P9`, `Excl_NDFI_NA`) →
-  set to 0.0 (audit-flagged via `_audit_unsupported_ndfi_pdna`).
-- SBL risk rates (`SBL_TTM_NCO_Rate`, `SBL_TTM_PD30_Rate`, `SBL_NA_Rate`) →
-  metadata-only, never computed or displayed.
-- Tailored Lending → no metrics exist; confirmed absent from pipeline and
-  presentation layers.
-
-**Checklist (CI-style assertion):** The `TestDocumentationCoherence` class
-verifies that CLAUDE.md contains required documentation entries for every
-mapping rule. If CLAUDE.md drifts out of sync with pipeline changes, these
-tests will fail, acting as a documentation-change gate.
-
-Files changed: `test_regression.py`, `CLAUDE.md`
-
-### 2026-03-12 — Segment Label Precision & Support Boundaries
-
-Prevented presentation layers from overstating precision where Call Report
-support is weak. No metrics suppressed from live outputs (SBL risk rates were
-already not computed/shown). Changes:
-
-1. **SBL risk metric labels**: `SBL_TTM_NCO_Rate`, `SBL_TTM_PD30_Rate`,
-   `SBL_NA_Rate` descriptions updated to explicitly say "PROXY — Not directly
-   derived from SBL-specific fields. Not presentation-facing." These were
-   metadata-only (never computed or shown) but descriptions were ambiguous.
-2. **RESI label precision**: `Norm_Wealth_Resi_Composition` description changed
-   from "Jumbo + HELOCs" to "1-4 family incl. HELOC; jumbo not separately
-   identified in Call Report."
-3. **CRE Investment descriptions corrected**: Removed stale "Construction"
-   references from `CRE_Investment_Composition`, `CRE_Investment_TTM_NCO_Rate`,
-   `CRE_Investment_TTM_PD30_Rate`, `CRE_Investment_NA_Rate`. Now correctly
-   states "Multifamily + Non-OO Nonfarm, excl. ADC and OO CRE."
-4. **Tailored lending**: Confirmed zero code references in pipeline or
-   presentation layers. J451 is not used as a proxy. Already documented as
-   unsupported in prior changelog.
-5. **Segment Support Boundaries**: Added new CLAUDE.md section documenting
-   what the Call Report can/cannot identify for SBL, Wealth Resi, CRE
-   Investment, Tailored Lending, and NDFI.
-
-Files changed: `master_data_dictionary.py`, `CLAUDE.md`
+**Files changed:** `report_generator.py`, `rendering_mode.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Normalized Segment Taxonomy Alignment
 

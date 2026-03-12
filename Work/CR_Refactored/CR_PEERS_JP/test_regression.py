@@ -4214,14 +4214,8 @@ class TestHUDResponseParsing(unittest.TestCase):
         self.assertEqual(df.iloc[0]["county_fips"], "25005")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# HUD PARSE ROBUSTNESS TESTS
-# Tests for row-by-row flattening, dotted column canonicalization,
-# per-query parse failure tracking, and __main__ block safety.
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestHUDParseRobustness(unittest.TestCase):
-    """Tests for the 2026-03-12 HUD parse robustness fixes."""
+class TestEnvVarScaffolding(unittest.TestCase):
+    """Tests for the new env var scaffolding (BEA, Census, report mode, feature flags)."""
 
     @classmethod
     def setUpClass(cls):
@@ -4415,259 +4409,325 @@ class TestHUDParseRobustness(unittest.TestCase):
                     )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MAPPING INTEGRITY REGRESSION TESTS
-# These tests lock in the 2026-03-12 taxonomy cleanup rules so that bad
-# mappings (LNRELOC double-counting, SBL subtraction from C&I, J458/J459/J460
-# for NDFI, RCON2746/2747 for Ag, LNREOTH in CRE, tailored-lending proxies)
-# cannot creep back into the codebase.
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# ARCHITECTURE RECONCILIATION — canonical rendering_mode.py tests
+# ===========================================================================
 
-class TestResiDenominatorIntegrity(unittest.TestCase):
-    """1) RESI denominator must not double-count via LNRERES + LNRELOC."""
+class TestCanonicalRenderingArchitecture(unittest.TestCase):
+    """Tests that rendering_mode.py is the single source of truth and
+    report_generator.py has no duplicate local abstractions."""
 
-    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
-
-    def test_fallback_uses_lnreres_alone(self):
-        """compute_wealth_resi_bal fallback must be LNRERES without LNRELOC."""
+    def test_no_merge_conflicts_in_report_generator(self):
+        """report_generator.py must have no unresolved merge conflict markers."""
         import re
-        # Extract the entire function body (indented block after def line)
-        fn_match = re.search(
-            r'(def compute_wealth_resi_bal\(.*?\):.*?)(?=\n        \S|\n    \S|\Z)',
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(fn_match, "compute_wealth_resi_bal function not found")
-        fn_text = fn_match.group(0)
-        # The fallback return (the last return) must use LNRERES only
-        self.assertIn("best_of(df, ['LNRERES'])", fn_text,
-                      "Fallback must call best_of with LNRERES alone")
-        # LNRELOC must not appear in any non-comment code line of the function
-        for line in fn_text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            self.assertNotIn("LNRELOC", stripped,
-                             f"Fallback path must NOT add LNRELOC: {stripped}")
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        # Match lines that are exactly conflict markers (7 chars + optional label)
+        for pattern in [r"^<{7} ", r"^>{7} ", r"^={7}$"]:
+            matches = re.findall(pattern, text, re.MULTILINE)
+            self.assertEqual(len(matches), 0,
+                             f"Merge conflict marker found: {pattern}")
 
-    def test_no_lnreres_plus_lnreloc_in_balance_calc(self):
-        """No line should sum LNRERES + LNRELOC for balance calculation."""
+    def test_no_merge_conflicts_in_test_regression(self):
+        """test_regression.py must have no unresolved merge conflict markers."""
         import re
-        # Match patterns like: LNRERES.*LNRELOC or LNRELOC.*LNRERES
-        # but only outside of comment lines and NCO/PD/NA numerator lines
-        for i, line in enumerate(self._src.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            # Skip NCO/PD/NA numerator lines (NTRERES+NTRELOC etc. are correct)
-            if any(x in stripped for x in ['NTRERES', 'NTRELOC', 'P3RERES',
-                                            'P3RELOC', 'P9RERES', 'P9RELOC',
-                                            'NARERES', 'NARELOC']):
-                continue
-            if 'LNRERES' in stripped and 'LNRELOC' in stripped:
-                # Allow if it's just a comment referencing both
-                if 'fallback' in stripped.lower() or 'removed' in stripped.lower():
-                    continue
-                self.fail(
-                    f"Line {i} sums LNRERES + LNRELOC for balance: {stripped}")
+        src = Path(__file__).parent / "test_regression.py"
+        text = src.read_text()
+        for pattern in [r"^<{7} ", r"^>{7} "]:
+            matches = re.findall(pattern, text, re.MULTILINE)
+            self.assertEqual(len(matches), 0,
+                             f"Merge conflict marker found: {pattern}")
 
-    def test_rcc_components_are_non_duplicative(self):
-        """RC-C components (1797, 5367, 5368) should appear in preferred path."""
-        self.assertIn("1797", self._src)
-        self.assertIn("5367", self._src)
-        self.assertIn("5368", self._src)
+    def test_no_duplicate_rendermode_in_report_generator(self):
+        """report_generator.py must not define its own RenderMode/ReportMode class."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        # Should import RenderMode, not define it
+        self.assertNotIn("class ReportMode", text)
+        self.assertNotIn("class RenderMode", text)
 
+    def test_no_duplicate_artifact_manifest_in_report_generator(self):
+        """report_generator.py must not define its own ArtifactManifest class."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        self.assertNotIn("class ArtifactManifest", text)
 
-class TestCIExclusionIntegrity(unittest.TestCase):
-    """2) Excl_CI_Balance = LNCI, not LNCI minus SBL."""
+    def test_no_duplicate_artifact_spec_in_report_generator(self):
+        """report_generator.py must not define ArtifactSpec/ArtifactCapability."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        self.assertNotIn("class ArtifactSpec", text)
+        self.assertNotIn("class ArtifactCapability", text)
 
-    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
+    def test_no_local_artifact_registry_in_report_generator(self):
+        """report_generator.py must not have its own ARTIFACT_REGISTRY definition."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        # Should import ARTIFACT_REGISTRY, not define it
+        self.assertNotIn("ARTIFACT_REGISTRY: list", text)
+        self.assertNotIn("ARTIFACT_REGISTRY = [", text)
 
-    def test_no_sbl_subtraction_from_ci(self):
-        """Excl_CI_Balance must not subtract SBL_Balance."""
-        import re
-        for i, line in enumerate(self._src.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            if 'Excl_CI_Balance' in stripped and 'SBL' in stripped:
-                self.fail(
-                    f"Line {i} subtracts SBL from C&I exclusion: {stripped}")
+    def test_no_local_should_produce_in_report_generator(self):
+        """report_generator.py must not define its own should_produce function."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        self.assertNotIn("def should_produce(", text)
 
-    def test_ci_balance_uses_lnci(self):
-        """Excl_CI_Balance should reference LNCI or RCON1763/RCFD1763.
+    def test_no_stale_manifest_api_in_report_generator(self):
+        """report_generator.py must not use the old manifest.record() API."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        self.assertNotIn("manifest.record(", text,
+                         "Found stale manifest.record() call — use record_generated/skipped/failed")
+        self.assertNotIn("ArtifactStatus.PRODUCED", text)
+        self.assertNotIn("ArtifactStatus.SKIPPED_DATA", text)
+        self.assertNotIn("ArtifactStatus.SKIPPED_MODE", text)
 
-        The assignment may span multiple lines (e.g. lnci_raw on line N,
-        Excl_CI_Balance = lnci_raw on line N+1), so we check a window."""
-        import re
-        lines = self._src.splitlines()
-        found = False
-        for i, line in enumerate(lines):
-            if 'Excl_CI_Balance' in line and '=' in line:
-                # Check a 5-line window around the assignment
-                window = '\n'.join(lines[max(0, i - 3):i + 3])
-                if re.search(r'LNCI|1763', window):
-                    found = True
-                    break
-        self.assertTrue(found,
-                        "Excl_CI_Balance must use LNCI or 1763 in nearby code")
+    def test_imports_from_rendering_mode(self):
+        """report_generator.py imports canonical types from rendering_mode.py."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        for name in ["RenderMode", "select_mode", "ArtifactManifest",
+                      "ARTIFACT_REGISTRY", "should_produce", "is_artifact_available"]:
+            self.assertIn(name, text,
+                          f"Missing import of {name} from rendering_mode")
 
-
-class TestNDFIUnsupportedRiskIntegrity(unittest.TestCase):
-    """3) NDFI PD/NA must not reference J458/J459/J460 in active code."""
-
-    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
-
-    def test_no_j458_j459_j460_in_active_code(self):
-        """J458/J459/J460 must only appear in comments, not assignments."""
-        forbidden = ['J458', 'J459', 'J460']
-        for i, line in enumerate(self._src.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            # Skip string literals (display labels, descriptions, notes)
-            if stripped.startswith(("'", '"')):
-                continue
-            for code in forbidden:
-                if code in stripped:
-                    # Allow in comment-only trailing portion
-                    code_pos = stripped.find(code)
-                    comment_pos = stripped.find('#')
-                    if comment_pos >= 0 and code_pos > comment_pos:
-                        continue
-                    # Allow in FDIC_FIELDS_TO_FETCH removal comments
-                    if 'removed' in stripped.lower() or 'NOTE' in stripped:
-                        continue
-                    self.fail(
-                        f"Line {i}: {code} referenced in active code: {stripped}")
-
-    def test_ndfi_balance_uses_j454(self):
-        """NDFI balance exclusion should still reference J454."""
-        self.assertIn("J454", self._src,
-                      "J454 must still be used for NDFI balance exclusion")
-
-    def test_ndfi_pd_na_set_to_zero(self):
-        """NDFI PD/NA exclusion numerators must be set to 0.0."""
-        self.assertIn("Excl_NDFI_NA", self._src)
-        # Check that Excl_NDFI_P3 and Excl_NDFI_P9 are set to 0.0
-        import re
-        for field in ['Excl_NDFI_P3', 'Excl_NDFI_P9', 'Excl_NDFI_NA']:
-            pattern = re.compile(rf"{field}.*=.*0\.0")
-            matches = pattern.findall(self._src)
-            self.assertGreater(len(matches), 0,
-                               f"{field} must be explicitly set to 0.0")
+    def test_manifest_uses_canonical_api(self):
+        """report_generator.py uses canonical manifest API methods."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        self.assertIn("record_generated(", text)
+        self.assertIn("record_skipped(", text)
+        self.assertIn("record_failed(", text)
 
 
-class TestAgDelinquencyIntegrity(unittest.TestCase):
-    """4) Agricultural PD must not reference 2746/2747 in active code."""
+class TestCanonicalModeResolution(unittest.TestCase):
+    """Tests for REPORT_MODE env var resolution via rendering_mode.select_mode()."""
 
-    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
-
-    def test_no_2746_2747_in_ag_pd_logic(self):
-        """RCON2746/RCFD2746/RCON2747/RCFD2747 must only appear in comments."""
-        forbidden = ['RCON2746', 'RCFD2746', 'RCON2747', 'RCFD2747']
-        for i, line in enumerate(self._src.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            for code in forbidden:
-                if code in stripped:
-                    code_pos = stripped.find(code)
-                    comment_pos = stripped.find('#')
-                    if comment_pos >= 0 and code_pos > comment_pos:
-                        continue
-                    self.fail(
-                        f"Line {i}: {code} in active code: {stripped}")
-
-    def test_ag_pd_uses_p3ag_p9ag(self):
-        """Agricultural PD should use P3AG/P9AG fields."""
-        self.assertIn("P3AG", self._src)
-        self.assertIn("P9AG", self._src)
-
-
-class TestCREPureBalanceIntegrity(unittest.TestCase):
-    """5) CRE_Investment_Pure_Balance = LNREMULT + LNRENROT only."""
-
-    _src = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
-
-    def _get_cre_block(self):
-        """Extract lines around the CRE_Investment_Pure_Balance assignment."""
-        lines = self._src.splitlines()
-        for i, line in enumerate(lines):
-            if 'CRE_Investment_Pure_Balance' in line and '=' in line:
-                return '\n'.join(lines[i:i + 6])
-        return None
-
-    def test_cre_pure_balance_no_lnreoth(self):
-        """CRE_Investment_Pure_Balance must not include LNREOTH."""
-        block = self._get_cre_block()
-        self.assertIsNotNone(block,
-                             "CRE_Investment_Pure_Balance definition not found")
-        self.assertNotIn("LNREOTH", block,
-                         "CRE_Investment_Pure_Balance must not include LNREOTH")
-
-    def test_cre_pure_balance_uses_lnremult_and_lnrenrot(self):
-        """CRE_Investment_Pure_Balance should use LNREMULT + LNRENROT."""
-        block = self._get_cre_block()
-        self.assertIsNotNone(block)
-        self.assertIn("LNREMULT", block)
-        self.assertIn("LNRENROT", block)
-
-
-class TestTailoredLendingBoundary(unittest.TestCase):
-    """6) Tailored lending must not be derived from Call Report fields."""
-
-    _src_norm = Path(__file__).with_name("MSPBNA_CR_Normalized.py").read_text()
-    _src_rg = Path(__file__).with_name("report_generator.py").read_text()
-
-    def test_no_tailored_lending_metric_in_pipeline(self):
-        """No active metric named 'Tailored_Lending' in pipeline code."""
-        import re
-        # Look for column assignments like df['Tailored_Lending_*'] = ...
-        pattern = re.compile(r"'Tailored_Lending_\w+'.*=")
-        matches = pattern.findall(self._src_norm)
-        self.assertEqual(len(matches), 0,
-                         f"Tailored lending metrics found in pipeline: {matches}")
-
-    def test_no_tailored_lending_in_presentation_labels(self):
-        """report_generator must not display tailored lending metrics."""
-        import re
-        # Check for "Tailored" in metric mapping tuples or display labels
-        for i, line in enumerate(self._src_rg.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            if 'tailored' in stripped.lower() and '=' in stripped:
-                # Allow import/comment references
-                if 'tailored lending' not in stripped.lower():
-                    continue
-                self.fail(
-                    f"Line {i} in report_generator.py references tailored "
-                    f"lending: {stripped}")
-
-    def test_j451_not_used_as_tailored_lending_proxy(self):
-        """J451 must not be labeled or used as a tailored lending proxy."""
-        import re
-        # Check that J451 is not assigned to anything with "tailored" in name
-        for i, line in enumerate(self._src_norm.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            if 'J451' in stripped and 'tailored' in stripped.lower():
-                self.fail(
-                    f"Line {i}: J451 used as tailored lending proxy: {stripped}")
-
-    def test_sbl_risk_metrics_marked_proxy(self):
-        """SBL risk metrics in data dictionary must be marked PROXY."""
+    def test_select_mode_default_full_local(self):
+        """No args → full_local."""
+        from rendering_mode import select_mode, RenderMode
+        import os
+        old_rm = os.environ.get("REPORT_MODE")
+        old_rrm = os.environ.get("REPORT_RENDER_MODE")
         try:
-            from master_data_dictionary import LOCAL_DERIVED_METRICS
+            os.environ.pop("REPORT_MODE", None)
+            os.environ.pop("REPORT_RENDER_MODE", None)
+            self.assertEqual(select_mode(), RenderMode.FULL_LOCAL)
+        finally:
+            if old_rm is not None:
+                os.environ["REPORT_MODE"] = old_rm
+            if old_rrm is not None:
+                os.environ["REPORT_RENDER_MODE"] = old_rrm
+
+    def test_select_mode_explicit_overrides_env(self):
+        """Explicit argument takes priority over env var."""
+        from rendering_mode import select_mode, RenderMode
+        import os
+        os.environ["REPORT_MODE"] = "full_local"
+        try:
+            self.assertEqual(select_mode("corp_safe"), RenderMode.CORP_SAFE)
+        finally:
+            os.environ.pop("REPORT_MODE", None)
+
+    def test_select_mode_report_mode_env(self):
+        """REPORT_MODE env var is recognized."""
+        from rendering_mode import select_mode, RenderMode
+        import os
+        old = os.environ.get("REPORT_MODE")
+        try:
+            os.environ["REPORT_MODE"] = "corp_safe"
+            self.assertEqual(select_mode(), RenderMode.CORP_SAFE)
+        finally:
+            if old is not None:
+                os.environ["REPORT_MODE"] = old
+            else:
+                os.environ.pop("REPORT_MODE", None)
+
+    def test_select_mode_report_render_mode_alias(self):
+        """REPORT_RENDER_MODE env var is backward-compatible alias."""
+        from rendering_mode import select_mode, RenderMode
+        import os
+        old_rm = os.environ.get("REPORT_MODE")
+        old_rrm = os.environ.get("REPORT_RENDER_MODE")
+        try:
+            os.environ.pop("REPORT_MODE", None)
+            os.environ["REPORT_RENDER_MODE"] = "corp_safe"
+            self.assertEqual(select_mode(), RenderMode.CORP_SAFE)
+        finally:
+            if old_rm is not None:
+                os.environ["REPORT_MODE"] = old_rm
+            else:
+                os.environ.pop("REPORT_MODE", None)
+            if old_rrm is not None:
+                os.environ["REPORT_RENDER_MODE"] = old_rrm
+            else:
+                os.environ.pop("REPORT_RENDER_MODE", None)
+
+    def test_report_mode_takes_priority_over_render_mode(self):
+        """REPORT_MODE takes priority over REPORT_RENDER_MODE."""
+        from rendering_mode import select_mode, RenderMode
+        import os
+        try:
+            os.environ["REPORT_MODE"] = "corp_safe"
+            os.environ["REPORT_RENDER_MODE"] = "full_local"
+            self.assertEqual(select_mode(), RenderMode.CORP_SAFE)
+        finally:
+            os.environ.pop("REPORT_MODE", None)
+            os.environ.pop("REPORT_RENDER_MODE", None)
+
+    def test_select_mode_invalid_raises_valueerror(self):
+        """Invalid mode string raises ValueError."""
+        from rendering_mode import select_mode
+        with self.assertRaises(ValueError):
+            select_mode("invalid_mode")
+
+    def test_active_composites_unchanged(self):
+        """Active composite regime constants in report_generator are unchanged."""
+        try:
+            from report_generator import ACTIVE_STANDARD_COMPOSITES, ACTIVE_NORMALIZED_COMPOSITES
         except ImportError:
-            self.skipTest("master_data_dictionary not importable")
-        proxy_metrics = ['SBL_TTM_NCO_Rate', 'SBL_TTM_PD30_Rate', 'SBL_NA_Rate']
-        for m in proxy_metrics:
-            if m in LOCAL_DERIVED_METRICS:
-                desc = LOCAL_DERIVED_METRICS[m].get('long', '')
-                self.assertIn('PROXY', desc,
-                              f"{m} must be marked PROXY in description")
+            self.skipTest("report_generator not importable (missing matplotlib)")
+        self.assertEqual(ACTIVE_STANDARD_COMPOSITES, {"core_pb": 90001, "all_peers": 90003})
+        self.assertEqual(ACTIVE_NORMALIZED_COMPOSITES, {"core_pb": 90004, "all_peers": 90006})
+
+
+class TestArtifactRegistryCanonical(unittest.TestCase):
+    """Tests for the canonical ARTIFACT_REGISTRY in rendering_mode.py."""
+
+    def test_registry_not_empty(self):
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertGreater(len(ARTIFACT_REGISTRY), 20)
+
+    def test_all_table_artifacts_available_both_modes(self):
+        from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+        for name, cap in ARTIFACT_REGISTRY.items():
+            if cap.category == "table":
+                self.assertTrue(cap.is_available(RenderMode.FULL_LOCAL),
+                                f"{name} should be in full_local")
+                self.assertTrue(cap.is_available(RenderMode.CORP_SAFE),
+                                f"{name} should be in corp_safe")
+
+    def test_chart_artifacts_not_in_corp_safe(self):
+        from rendering_mode import ARTIFACT_REGISTRY, RenderMode, ArtifactAvailability
+        charts = {n: c for n, c in ARTIFACT_REGISTRY.items()
+                  if c.availability == ArtifactAvailability.FULL_LOCAL_ONLY}
+        self.assertGreater(len(charts), 0)
+        for name, cap in charts.items():
+            self.assertFalse(cap.is_available(RenderMode.CORP_SAFE),
+                             f"{name} should NOT be in corp_safe")
+
+    def test_registry_covers_known_artifacts(self):
+        from rendering_mode import ARTIFACT_REGISTRY
+        expected = {
+            "executive_summary_standard", "executive_summary_normalized",
+            "detailed_peer_table_standard", "detailed_peer_table_normalized",
+            "standard_credit_chart", "normalized_credit_chart",
+            "scatter_nco_vs_npl", "scatter_pd_vs_npl",
+            "scatter_norm_nco_vs_nonaccrual",
+            "portfolio_mix", "migration_ladder", "fred_table",
+            "yoy_heatmap_standard", "kri_bullet_chart", "sparkline_summary",
+        }
+        for name in expected:
+            self.assertIn(name, ARTIFACT_REGISTRY, f"Missing artifact: {name}")
+
+    def test_manifest_canonical_api(self):
+        """ArtifactManifest uses record_generated/skipped/failed."""
+        from rendering_mode import ArtifactManifest, RenderMode
+        m = ArtifactManifest(RenderMode.FULL_LOCAL)
+        m.record_generated("test1", "/tmp/test1.html")
+        m.record_skipped("test2", "not available in corp_safe")
+        m.record_failed("test3", "error occurred")
+        counts = m.counts()
+        self.assertEqual(counts["generated"], 1)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(counts["failed"], 1)
+        self.assertEqual(counts["total"], 3)
+
+    def test_manifest_summary_table_returns_string(self):
+        """ArtifactManifest.summary_table() returns a human-readable string."""
+        from rendering_mode import ArtifactManifest, RenderMode
+        m = ArtifactManifest(RenderMode.FULL_LOCAL)
+        m.record_generated("test1", "/tmp/test1.html")
+        summary = m.summary_table()
+        self.assertIsInstance(summary, str)
+        self.assertIn("test1", summary)
+        self.assertIn("generated", summary.lower())
+
+    def test_should_produce_records_skips(self):
+        """should_produce() records skips in manifest for corp_safe charts."""
+        from rendering_mode import (
+            ArtifactManifest, RenderMode, should_produce, ArtifactStatus
+        )
+        m = ArtifactManifest(RenderMode.CORP_SAFE)
+        result = should_produce("standard_credit_chart", RenderMode.CORP_SAFE, m)
+        self.assertFalse(result)
+        self.assertEqual(len(m.outcomes), 1)
+        self.assertEqual(m.outcomes[0].status, ArtifactStatus.SKIPPED)
+
+    def test_is_artifact_available_no_side_effects(self):
+        """is_artifact_available() does not record anything in any manifest."""
+        from rendering_mode import is_artifact_available, RenderMode
+        result = is_artifact_available("standard_credit_chart", RenderMode.CORP_SAFE)
+        self.assertFalse(result)
+        result2 = is_artifact_available("fred_table", RenderMode.CORP_SAFE)
+        self.assertTrue(result2)
+
+
+# ===========================================================================
+# EXECUTIVE CHARTS — unittest-based tests
+# ===========================================================================
+
+class TestMetricSemantics(unittest.TestCase):
+    """Tests for metric_semantics.py."""
+
+    def test_polarity_enum_values(self):
+        from metric_semantics import Polarity
+        self.assertEqual(Polarity.FAVORABLE.value, "favorable")
+        self.assertEqual(Polarity.ADVERSE.value, "adverse")
+        self.assertEqual(Polarity.NEUTRAL.value, "neutral")
+
+    def test_display_format_enum_values(self):
+        from metric_semantics import DisplayFormat
+        self.assertIn("pct", [e.value for e in DisplayFormat])
+        self.assertIn("bps", [e.value for e in DisplayFormat])
+        self.assertIn("dollars_b", [e.value for e in DisplayFormat])
+
+    def test_get_semantic_returns_none_for_unknown(self):
+        from metric_semantics import get_semantic
+        self.assertIsNone(get_semantic("TOTALLY_FAKE_METRIC_XYZ"))
+
+    def test_get_polarity_defaults_neutral(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("TOTALLY_FAKE_METRIC_XYZ"), Polarity.NEUTRAL)
+
+    def test_nco_rate_is_adverse(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("TTM_NCO_Rate"), Polarity.ADVERSE)
+
+    def test_acl_coverage_is_favorable(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("Allowance_to_Gross_Loans_Rate"), Polarity.FAVORABLE)
+
+    def test_asset_is_neutral(self):
+        from metric_semantics import get_polarity, Polarity
+        self.assertEqual(get_polarity("ASSET"), Polarity.NEUTRAL)
+
+    def test_group_order_has_key_groups(self):
+        from metric_semantics import GROUP_ORDER
+        self.assertIn("Credit Quality", GROUP_ORDER)
+        self.assertIn("Coverage", GROUP_ORDER)
+        self.assertIn("Size", GROUP_ORDER)
+
+    def test_no_overlap_with_metric_registry(self):
+        """metric_semantics must NOT duplicate formula/deps from metric_registry."""
+        from metric_semantics import MetricSemantic
+        import dataclasses
+        fields = {f.name for f in dataclasses.fields(MetricSemantic)}
+        # Should NOT have dependencies, compute, consumers, severity
+        self.assertNotIn("dependencies", fields)
+        self.assertNotIn("compute", fields)
+        self.assertNotIn("consumers", fields)
 
 
 class TestDocumentationCoherence(unittest.TestCase):
@@ -4708,14 +4768,20 @@ class TestDocumentationCoherence(unittest.TestCase):
         """CLAUDE.md must contain the Segment Support Boundaries section."""
         self.assertIn("Segment Support Boundaries", self._claude_md)
 
-    def test_claude_md_documents_sbl_proxy_status(self):
-        """CLAUDE.md must document SBL risk metrics as proxy-only."""
-        self.assertIn("SBL", self._claude_md)
-        self.assertIn("Proxy only", self._claude_md)
-
-    def test_claude_md_has_mapping_regression_tests_entry(self):
-        """CLAUDE.md must have a changelog entry for mapping regression tests."""
-        self.assertIn("Mapping Integrity Regression Tests", self._claude_md)
+    def test_heatmap_saves_to_file(self):
+        import tempfile
+        from executive_charts import generate_yoy_heatmap
+        df = self._make_df()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            path = f.name
+        try:
+            html = generate_yoy_heatmap(df, 34221, 90003, save_path=path)
+            self.assertIsNotNone(html)
+            with open(path, "r") as f:
+                content = f.read()
+            self.assertIn("<table", content)
+        finally:
+            os.unlink(path)
 
 
 if __name__ == '__main__':

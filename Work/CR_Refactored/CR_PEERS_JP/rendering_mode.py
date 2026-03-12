@@ -45,12 +45,16 @@ def select_mode(explicit: Optional[str] = None) -> RenderMode:
 
     Priority:
       1. ``explicit`` argument (from CLI or caller).
-      2. ``REPORT_RENDER_MODE`` environment variable.
-      3. Default → ``full_local`` (preserves today's behaviour).
+      2. ``REPORT_MODE`` environment variable (canonical).
+      3. ``REPORT_RENDER_MODE`` environment variable (backward-compatible alias).
+      4. Default → ``full_local`` (preserves today's behaviour).
 
     Raises ``ValueError`` for unrecognised mode strings.
     """
-    raw = explicit or os.getenv("REPORT_RENDER_MODE", "")
+    raw = (explicit
+           or os.getenv("REPORT_MODE")
+           or os.getenv("REPORT_RENDER_MODE")
+           or "")
     raw = raw.strip().lower()
     if not raw or raw == "full_local":
         return RenderMode.FULL_LOCAL
@@ -79,6 +83,7 @@ class ArtifactCapability:
     availability: ArtifactAvailability
     category: str              # "chart", "scatter", "table", "fred_chart"
     description: str = ""
+    filename_suffix: str = ""  # e.g. "_scatter_nco_vs_npl.png"
 
     def is_available(self, mode: RenderMode) -> bool:
         """Return True if this artifact can be produced in *mode*."""
@@ -107,9 +112,13 @@ ARTIFACT_REGISTRY: dict[str, ArtifactCapability] = {}
 
 
 def _reg(name: str, avail: ArtifactAvailability, category: str,
-         description: str = "") -> ArtifactCapability:
+         description: str = "", suffix: str = "") -> ArtifactCapability:
+    if not suffix:
+        ext = ".html" if category == "table" else ".png"
+        suffix = f"_{name}{ext}"
     cap = ArtifactCapability(name=name, availability=avail,
-                             category=category, description=description)
+                             category=category, description=description,
+                             filename_suffix=suffix)
     ARTIFACT_REGISTRY[name] = cap
     return cap
 
@@ -285,6 +294,23 @@ class ArtifactManifest:
 # =====================================================================
 # Convenience: check-and-skip helper for generate_reports()
 # =====================================================================
+
+def is_artifact_available(artifact_name: str, mode: RenderMode,
+                          suppressed_charts: Optional[set] = None) -> bool:
+    """Side-effect-free check: can this artifact be produced?
+
+    Unlike ``should_produce``, this does NOT record anything in the manifest.
+    Use it for preflight availability sweeps (e.g. "should I load FRED data?").
+    """
+    cap = ARTIFACT_REGISTRY.get(artifact_name)
+    if cap is None:
+        return True
+    if not cap.is_available(mode):
+        return False
+    if suppressed_charts and artifact_name in suppressed_charts:
+        return False
+    return True
+
 
 def should_produce(artifact_name: str, mode: RenderMode,
                    manifest: ArtifactManifest,
