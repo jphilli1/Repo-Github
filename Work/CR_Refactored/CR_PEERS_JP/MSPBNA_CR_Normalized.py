@@ -373,7 +373,7 @@ FDIC_FIELDS_TO_FETCH = [
     "LNAG",       # Ag Loans
 
     # --- LEGACY BALANCES (Mapped via Fallback) ---
-    "LNREOTH",    # Will map to LNRENROT
+    "LNREOTH",    # Legacy alias -> LNRENROT (no longer used in CRE Pure Balance calc)
     # NOTE: LNOTHPCS, LNOTHNONDEP, LNCONAUTO, LNCONCC, LNCONOTHX are synthetic
     # variables that do not exist in the FDIC API. They are calculated locally
     # in pandas AFTER the API fetch completes (see FDIC_FALLBACK_MAP resolution).
@@ -422,10 +422,7 @@ FDIC_FIELDS_TO_FETCH = [
     # --- 2. Nondepository Financial Institutions (NDFI) - Fund Finance/Shadow Banking ---
     "RCONJ454", "RCFDJ454",    # Balance: Loans to nondepository financial institutions
     # NCO: Note - NDFI NCOs not separately reported (buried in "All Other")
-    # NDFI (Past Due / Nonaccrual)
-    'RCONJ458', 'RCFDJ458',    # PD30: NDFI Past Due 30-89
-    'RCONJ459', 'RCFDJ459',    # PD90: NDFI Past Due 90+
-    'RCONJ460', 'RCFDJ460',    # NA: NDFI Nonaccrual
+    # NOTE: J458/J459/J460 removed — not Call Report-consistent for NDFI PD/NA.
 
     "RCFDF162",
 
@@ -448,8 +445,8 @@ FDIC_FIELDS_TO_FETCH = [
     "RIAD4635",    # NCO: Agricultural Charge-offs
     "RIAD4645",    # NCO: Agricultural Recoveries
     "RCFD5341",    # NA: Agricultural Nonaccrual
-    "RCON2746",    # PD30: Agricultural Past Due 30-89
-    "RCON2747",    # PD90: Agricultural Past Due 90+
+    # NOTE: RCON2746/RCON2747 removed — mis-mapped (those are "All other loans" PD,
+    # not agricultural). Ag PD now uses P3AG/P9AG (already in fetch list above).
 
     # --- 5. Foreign Government & Banks (Exclude from Domestic Peer View) ---
     "RCFD2081",    # Balance: Loans to Foreign Governments
@@ -624,10 +621,10 @@ LOAN_CATEGORIES = {
         "balance": ["SBL_Balance"], # Resolved in Processor
         "nco": [], "pd30": [], "pd90": [], "na": []
     },
-    # 2. FUND FINANCE
+    # 2. FUND FINANCE — J458/J459/J460 removed; CR-only PD/NA unsupported for NDFI
     "Fund_Finance": {
-        "balance": ["Fund_Finance_Balance"], # Resolved in Processor
-        "nco": [], "pd30": ["P3NDFI"], "pd90": ["P9NDFI"], "na": ["NANDFI"]
+        "balance": ["Fund_Finance_Balance"], # Resolved in Processor (J454 retained)
+        "nco": [], "pd30": [], "pd90": [], "na": []
     },
     # 3. WEALTH RESIDENTIAL
     "Wealth_Resi": {
@@ -851,10 +848,7 @@ class FFIECBulkLoader:
             # --- 2. Nondepository Financial Institutions (NDFI) - Fund Finance/Shadow Banking ---
             'RCONJ454', 'RCFDJ454',    # Balance: Loans to nondepository financial institutions
             # NCO: Note - NDFI NCOs not separately reported (buried in "All Other")
-            #      We'll assume 0 NCOs for NDFI given near-zero historical loss rates
-            'RCONJ458', 'RCFDJ458',    # PD30: NDFI Past Due 30-89
-            'RCONJ459', 'RCFDJ459',    # PD90: NDFI Past Due 90+
-            'RCONJ460', 'RCFDJ460',    # NA: NDFI Nonaccrual
+            # NOTE: J458/J459/J460 removed — not Call Report-consistent for NDFI PD/NA.
 
             # --- 2b. Other segment (explicitly visible bucket) ---
             'RCONJ451', 'RCFDJ451',    # All other loans (exclude consumer)
@@ -900,15 +894,11 @@ class FFIECBulkLoader:
 
             # 5. Agriculture
             'RCFD1590', 'RCON1590', # Balance
-            'RCON2746', 'RCFD2746', # P3
-            'RCON2747', 'RCFD2747', # P9
+            # NOTE: 2746/2747 removed (mis-mapped). Ag PD uses P3AG/P9AG from FDIC text aliases.
             'RCFD5341', 'RCON5341', # NA
             'RIAD4635', 'RIAD4645', # NCO
 
-            # 6. NDFI Risk
-            'RCONJ458', 'RCFDJ458', # P3
-            'RCONJ459', 'RCFDJ459', # P9
-            'RCONJ460', 'RCFDJ460', # NA
+            # 6. NDFI Risk — J458/J459/J460 removed (not Call Report-consistent)
         ]
 
         # Aliases for key columns (handles variations in FFIEC files)
@@ -2326,8 +2316,7 @@ class BankMetricsProcessor:
         # --- SPARSE NICHE SEGMENTS: Fill NaN with 0 for legitimately sparse series ---
         # Fund Finance and NDFI series are sparse because few banks use them.
         # Fill NaN to prevent downstream math errors.
-        sparse_niche_cols = ['RCONJ454', 'RCONJ458', 'RCONJ459', 'RCONJ460',
-                             'RCFDJ454', 'RCFDJ458', 'RCFDJ459', 'RCFDJ460']
+        sparse_niche_cols = ['RCONJ454', 'RCFDJ454']
         for col in sparse_niche_cols:
             if col in df_processed.columns:
                 df_processed[col] = df_processed[col].fillna(0)
@@ -2477,8 +2466,8 @@ class BankMetricsProcessor:
         resi_sum = resi_first + resi_jr + heloc
 
         # Calculate broad fallback (Summary Line Item)
-        # Matches the logic used later for 'Wealth_Resi_Balance'
-        resi_fallback = best_of(df_processed, ['LNRERES']).fillna(0) + best_of(df_processed, ['LNRELOC']).fillna(0)
+        # LNRERES alone — already includes HELOC/open-end; no LNRELOC add.
+        resi_fallback = best_of(df_processed, ['LNRERES']).fillna(0)
 
         # USE FALLBACK IF GRANULAR DATA IS ZERO
         df_processed['RIC_Resi_Cost'] = np.where(resi_sum > 0, resi_sum, resi_fallback)
@@ -2634,10 +2623,12 @@ class BankMetricsProcessor:
         # ---------------------------------------------------------
         df_processed['SBL_Balance'] = best_of(df_processed, ['RCFD1545', 'RCON1545'])
         df_processed['Fund_Finance_Balance'] = best_of(df_processed, ['RCFDJ454', 'RCONJ454'])
-        # Fund Finance / NDFI performance (Standard view only)
-        df_processed['RIC_Fund_Finance_PD30'] = best_of(df_processed, ['RCONJ458', 'RCFDJ458']).fillna(0)
-        df_processed['RIC_Fund_Finance_PD90'] = best_of(df_processed, ['RCONJ459', 'RCFDJ459']).fillna(0)
-        df_processed['RIC_Fund_Finance_Nonaccrual'] = best_of(df_processed, ['RCONJ460', 'RCFDJ460']).fillna(0)
+        # Fund Finance / NDFI credit-quality: J458/J459/J460 removed — not
+        # Call Report-consistent for delinquency/nonaccrual mapping.
+        # Set to 0; Call Report-only PD/NA mapping is unsupported for NDFI.
+        df_processed['RIC_Fund_Finance_PD30'] = 0.0
+        df_processed['RIC_Fund_Finance_PD90'] = 0.0
+        df_processed['RIC_Fund_Finance_Nonaccrual'] = 0.0
 
         # NCO for Fund Finance: explicitly assumed 0 in this framework
         df_processed['RIC_Fund_Finance_NCO_TTM'] = 0.0
@@ -2659,9 +2650,10 @@ class BankMetricsProcessor:
 
 
         # 2. Pure Investment CRE (Multifamily + Non-Owner Occ Nonfarm) -> KEPT in WM View
+        # Tightened: LNREMULT + LNRENROT only. LNREOTH removed (ambiguous mapping).
         df_processed['CRE_Investment_Pure_Balance'] = (
             best_of(df_processed, ['LNREMULT']).fillna(0) +
-            best_of(df_processed, ['LNRENROT', 'LNREOTH']).fillna(0)
+            best_of(df_processed, ['LNRENROT']).fillna(0)
         )
 
         # 3. Owner-Occupied CRE (Business dependent) -> KEPT in WM View
@@ -2739,11 +2731,10 @@ class BankMetricsProcessor:
         norm_cols = {}
 
         # --- A. Map Raw Exclusion Balances ---
-        # C&I: Exclude traditional C&I but KEEP SBL (which is often classified within LNCI)
-        # Formula: Excl_CI = max(0, LNCI - SBL_Balance)
+        # C&I: Use LNCI (RC-C item 4) directly.  SBL lives under RC-C item 9
+        # (not item 4), so subtracting SBL from LNCI was incorrect.
         lnci_raw = best_of(df_processed, ['LNCI', 'RCON1763', 'RCFD1763']).fillna(0)
-        sbl_bal = df_processed.get('SBL_Balance', pd.Series(0, index=df_processed.index)).fillna(0)
-        norm_cols['Excl_CI_Balance'] = (lnci_raw - sbl_bal).clip(lower=0)
+        norm_cols['Excl_CI_Balance'] = lnci_raw.clip(lower=0)
 
         norm_cols['Excl_NDFI_Balance'] = best_of(df_processed, ['RCONJ454', 'RCFDJ454']).fillna(0)
         norm_cols['Excl_ADC_Balance'] = best_of(df_processed, ['ADC_Balance', 'RCON1420', 'RCFD1420']).fillna(0)
@@ -2804,7 +2795,9 @@ class BankMetricsProcessor:
 
         # --- C. Calculate Exclusion Nonaccruals ---
         norm_cols['Excl_CI_NA'] = best_of(df_processed, ['NACI', 'RCON1608', 'RCFD1608']).fillna(0)
-        norm_cols['Excl_NDFI_NA'] = best_of(df_processed, ['RCONJ460', 'RCFDJ460']).fillna(0)
+        # NDFI NA: J460 removed (not Call Report-consistent). Set 0.0.
+        # LIMITATION: Call Report-only NA mapping unsupported for NDFI.
+        norm_cols['Excl_NDFI_NA'] = 0.0
         norm_cols['Excl_ADC_NA'] = best_of(df_processed, ['NARECONS', 'RCON3492', 'RCFD3492']).fillna(0)
         norm_cols['Excl_CC_NA'] = best_of(df_processed, ['RCFDB575', 'RCONB575']).fillna(0)
         norm_cols['Excl_Auto_NA'] = best_of(df_processed, ['RCFDK213', 'RCONK213']).fillna(0)
@@ -2829,9 +2822,10 @@ class BankMetricsProcessor:
         # 1. Domestic C&I
         norm_cols['Excl_CI_P3'] = best_of(df_processed, ['P3CI', 'RCON1606', 'RCFD1606']).fillna(0)
         norm_cols['Excl_CI_P9'] = best_of(df_processed, ['P9CI', 'RCON1607', 'RCFD1607']).fillna(0)
-        # 2. NDFI
-        norm_cols['Excl_NDFI_P3'] = best_of(df_processed, ['RCONJ458', 'RCFDJ458']).fillna(0)
-        norm_cols['Excl_NDFI_P9'] = best_of(df_processed, ['RCONJ459', 'RCFDJ459']).fillna(0)
+        # 2. NDFI — J458/J459 removed (not Call Report-consistent). Set 0.0.
+        # LIMITATION: Call Report-only PD mapping unsupported for NDFI.
+        norm_cols['Excl_NDFI_P3'] = 0.0
+        norm_cols['Excl_NDFI_P9'] = 0.0
         # 3. ADC
         norm_cols['Excl_ADC_P3'] = best_of(df_processed, ['P3RECONS', 'RCON2759', 'RCFD2759']).fillna(0)
         norm_cols['Excl_ADC_P9'] = best_of(df_processed, ['P9RECONS', 'RCON2769', 'RCFD2769']).fillna(0)
@@ -2841,9 +2835,11 @@ class BankMetricsProcessor:
         # 5. Auto
         norm_cols['Excl_Auto_P3'] = best_of(df_processed, ['P3AUTO', 'RCFDK214']).fillna(0)
         norm_cols['Excl_Auto_P9'] = best_of(df_processed, ['P9AUTO', 'RCFDK215']).fillna(0)
-        # 6. Ag
-        norm_cols['Excl_Ag_P3'] = best_of(df_processed, ['RCON2746', 'RCFD2746']).fillna(0)
-        norm_cols['Excl_Ag_P9'] = best_of(df_processed, ['RCON2747', 'RCFD2747']).fillna(0)
+        # 6. Ag — Use actual ag past-due fields (P3AG/P9AG).
+        # RCON2746/RCFD2746 and RCON2747/RCFD2747 were mis-mapped (those are
+        # "All other loans" PD, not agricultural).
+        norm_cols['Excl_Ag_P3'] = best_of(df_processed, ['P3AG', 'P3AGR']).fillna(0)
+        norm_cols['Excl_Ag_P9'] = best_of(df_processed, ['P9AG', 'P9AGR']).fillna(0)
         # --- E. Sum Total Exclusions ---
         #Added Excl_OO_CRE_Balance to ensure Norm_Gross_Loans is pure Wealth/Inv. CRE
         norm_cols['Excluded_Balance'] = (
@@ -2998,9 +2994,9 @@ class BankMetricsProcessor:
         # segment tables / rates). NOT used to override master totals.
         # =========================================================
         if 'Wealth_Resi_Balance' not in df_processed.columns:
+            # LNRERES alone — already includes HELOC/open-end; no LNRELOC add.
             df_processed['Wealth_Resi_Balance'] = (
-                best_of(df_processed, ['LNRERES']).fillna(0) +
-                best_of(df_processed, ['LNRELOC']).fillna(0)
+                best_of(df_processed, ['LNRERES']).fillna(0)
             )
         wealth_resi_bal = df_processed['Wealth_Resi_Balance']
 
@@ -3177,15 +3173,13 @@ class BankMetricsProcessor:
                 if (rcc.abs().sum() > 0):
                     return rcc.clip(lower=0)
 
-            # Fallback: FDIC balance proxies (your “known good” definition)
-            return (
-                best_of(df, ['LNRERES']).fillna(0) +
-                best_of(df, ['LNRELOC']).fillna(0)
-            ).clip(lower=0)
+            # Fallback: LNRERES alone (already includes HELOC/open-end per
+            # FFIEC instructions; adding LNRELOC would double-count).
+            return best_of(df, ['LNRERES']).fillna(0).clip(lower=0)
 
 
         # If RC-C components exist, use them (they already include open-end).
-        # Else fall back to LNRERES + LNRELOC (your prior logic).
+        # Else fall back to LNRERES alone (includes HELOC/open-end).
         wealth_resi_bal = compute_wealth_resi_bal(df_processed)
         df_processed['Wealth_Resi_Balance'] = wealth_resi_bal
 
