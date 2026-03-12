@@ -317,6 +317,60 @@ python report_generator.py
        manifest.record_generated("my_new_chart", str(path))
    ```
 
+### Canonical Rendering Abstraction Rule
+
+**`rendering_mode.py` is the single canonical source** for all rendering abstractions. `report_generator.py` must NOT define its own copies of:
+- `RenderMode` / `ReportMode`
+- `ArtifactStatus`, `ArtifactSpec`, `ArtifactCapability`
+- `ManifestEntry`, `ArtifactManifest`
+- `ARTIFACT_REGISTRY`
+- `should_produce()`
+- `resolve_report_mode_for_generator()`
+
+All of these must be imported from `rendering_mode.py`. The `_ReportContext` dataclass in `report_generator.py` is a lightweight internal carrier and is NOT a duplicate of any rendering-mode type.
+
+### Executive Chart Artifacts (5 Artifacts)
+
+Implemented in `executive_charts.py`, integrated into `report_generator.py` Phase 8.
+
+| Artifact | File | Mode | Type |
+|---|---|---|---|
+| `yoy_heatmap_standard` | `{stem}_yoy_heatmap_standard.html` | BOTH | HTML |
+| `yoy_heatmap_normalized` | `{stem}_yoy_heatmap_normalized.html` | BOTH | HTML |
+| `kri_bullet_standard` | `{stem}_kri_bullet_standard.png` | FULL_LOCAL_ONLY | PNG |
+| `kri_bullet_normalized` | `{stem}_kri_bullet_normalized.png` | FULL_LOCAL_ONLY | PNG |
+| `sparkline_summary` | `{stem}_sparkline_summary.html` | BOTH | HTML |
+
+**Integration pattern:**
+- Heatmaps and bullet charts loop over `[False, True]` for standard/normalized variants
+- Bullet charts use correct composite CERTs per variant: standard → 90001/90003, normalized → 90004/90006
+- Sparkline passes `norm_peer_cert=90006` for Norm_ metric rows, `peer_cert=90003` for standard rows
+- The obsolete single artifact name `kri_bullet_chart` is removed from both the registry and report_generator.py
+
+### Deterministic Macro Chart Artifacts (3 Artifacts)
+
+Implemented directly in `report_generator.py` (functions: `generate_macro_corr_heatmap`, `plot_macro_overlay_credit_stress`, `plot_macro_overlay_rates_housing`).
+
+| Artifact | File | Mode | Type |
+|---|---|---|---|
+| `macro_corr_heatmap_lag1` | `{stem}_macro_corr_heatmap_lag1.html` | BOTH | HTML |
+| `macro_overlay_credit_stress` | `{stem}_macro_overlay_credit_stress.png` | FULL_LOCAL_ONLY | PNG |
+| `macro_overlay_rates_housing` | `{stem}_macro_overlay_rates_housing.png` | FULL_LOCAL_ONLY | PNG |
+
+**Series selection is deterministic — no heuristic fallback:**
+- `macro_corr_heatmap_lag1`: 8 internal metrics × 13 FRED series, Pearson correlation, +1Q lag
+- `macro_overlay_credit_stress`: Left = Norm_NCO_Rate, Right = BAMLH0A0HYM2 + NFCI (z-scored)
+- `macro_overlay_rates_housing`: Left = RIC_Resi_Nonaccrual_Rate (or Norm_Nonaccrual_Rate fallback), Right = FEDFUNDS + MORTGAGE30US + CSUSHPISA YoY%
+
+The old heuristic `plot_macro_overlay()` that picked "Fed Funds", "Unemployment", "All Loans Delinquency Rate" with fallback to first available series has been deleted. The obsolete artifact name `macro_overlay` is removed from both the registry and report_generator.py. If required FRED series are not present in the workbook, the artifact skips gracefully with manifest logging.
+
+### Remaining Risks
+
+1. **Executive charts import guard**: `_HAS_EXECUTIVE_CHARTS` flag means if `executive_charts.py` fails to import (e.g., `metric_semantics.py` missing), all 5 executive artifacts silently skip. No manifest entry is recorded for the skip.
+2. **FRED data dependency**: Macro chart artifacts depend on FRED_Data sheet being present in the workbook. If `MSPBNA_CR_Normalized.py` was run without FRED_API_KEY, macro charts silently return None.
+3. **matplotlib tight_layout warning**: The `warnings.filterwarnings` suppression in `report_generator.py` masks a real twinx() incompatibility in macro overlay charts. The charts render correctly but may have suboptimal spacing.
+4. **Normalized metric coverage**: Macro correlation heatmap rows use normalized metrics that may be NaN for some banks due to over-exclusion. N/A cells are shown correctly but reduce information density.
+
 ---
 
 ## 4. Strict Coding Conventions & Rules
@@ -696,6 +750,26 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-12 — Rendering Architecture Reconciliation (Final Verification)
+
+**Objective**: Verify that `report_generator.py` is fully aligned with the canonical rendering architecture in `rendering_mode.py`, and that executive/macro chart integration matches the documented target state.
+
+**Verification results** (all items confirmed clean — no code changes needed in report_generator.py, rendering_mode.py, or executive_charts.py):
+
+1. **No merge conflict markers** in `report_generator.py` — confirmed zero instances.
+2. **No duplicate local rendering abstractions** — `ReportMode`, `ArtifactStatus`, `ArtifactSpec`, `ManifestEntry`, `ArtifactManifest`, local `ARTIFACT_REGISTRY`, local `should_produce()`, `resolve_report_mode_for_generator()` are all absent. All imported from `rendering_mode.py`.
+3. **Executive chart integration correct** — 5 artifacts produced with correct loop patterns, composite CERTs (90001/90003 standard, 90004/90006 normalized), sparkline norm_peer_cert=90006. Obsolete `kri_bullet_chart` artifact name absent.
+4. **Macro chart integration correct** — 3 deterministic artifacts with exact FRED series IDs. No heuristic fallback. `plot_macro_overlay()` deleted. Obsolete `macro_overlay` artifact name absent.
+5. **`rendering_mode.py` registry** contains all 5 executive + 3 macro artifacts with correct mode declarations.
+
+**Changes:**
+
+1. **CLAUDE.md** — Added "Canonical Rendering Abstraction Rule" to Section 3a. Added "Executive Chart Artifacts" subsection documenting all 5 artifacts. Added "Deterministic Macro Chart Artifacts" subsection documenting all 3 artifacts. Added "Remaining Risks" subsection. Updated changelog.
+
+2. **test_regression.py** — Added `TestRenderingReconciliation` class (22 tests): no merge conflicts, no duplicate abstractions (8 checks), no obsolete artifact names (2), canonical executive artifacts present, deterministic macro artifacts present, no heuristic fallback, rendering_mode.py is canonical source (7 checks), report_generator imports from rendering_mode.
+
+**Files changed:** `CLAUDE.md`, `test_regression.py`
 
 ### 2026-03-12 — HUD HTTP Failure Diagnostics & Request Hardening
 
