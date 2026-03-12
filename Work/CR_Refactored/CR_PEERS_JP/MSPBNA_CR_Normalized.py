@@ -2743,13 +2743,21 @@ class BankMetricsProcessor:
         norm_cols['Excl_Ag_Balance'] = best_of(df_processed, ['LNAG', 'RCFD1590', 'RCON1590']).fillna(0)
         norm_cols['Excl_OO_CRE_Balance'] = best_of(df_processed, ['LNRENROW']).fillna(0)
 
+        # --- Structured Audit Flags (unsupported / fallback mappings) ---
+        # These flags are persisted into Exclusion_Component_Audit for transparency.
+        norm_cols['_audit_unsupported_ndfi_pdna'] = True   # NDFI PD/NA always unsupported in CR-only mode
+        norm_cols['_audit_ndfi_nco_unsupported'] = True     # NDFI NCO always unsupported in CR-only mode
 
         # --- B. Calculate Exclusion NCOs (YTD) ---
+        # C&I NCO: BALANCE-GATED like other categories.
         ci_nco_direct = best_of(df_processed, ['NTCI', 'RIAD4638']).fillna(0)
         ci_chargeoffs = best_of(df_processed, ['RIAD4608']).fillna(0)
         ci_recoveries = best_of(df_processed, ['RIAD4609']).fillna(0)
         ci_nco_calc = ci_chargeoffs - ci_recoveries
-        norm_cols['Excl_CI_NCO_YTD'] = np.where(ci_nco_direct != 0, ci_nco_direct, ci_nco_calc)
+        ci_nco_raw = np.where(ci_nco_direct != 0, ci_nco_direct, ci_nco_calc)
+        ci_bal = norm_cols['Excl_CI_Balance']
+        norm_cols['Excl_CI_NCO_YTD'] = np.where(ci_bal > 0, ci_nco_raw, 0.0)
+        norm_cols['_CI_NCO_Gated'] = np.where((ci_bal == 0) & (ci_nco_raw != 0), True, False)
 
         # ADC NCO: NTLS/RIAD4658 (charge-offs) - RIAD4659 (recoveries)
         # BALANCE-GATED: If Excl_ADC_Balance is zero, force NCO to zero.
@@ -2760,9 +2768,13 @@ class BankMetricsProcessor:
         norm_cols['Excl_ADC_NCO_YTD'] = np.where(adc_bal > 0, adc_nco_raw, 0.0)
         norm_cols['_ADC_NCO_Gated'] = np.where((adc_bal == 0) & (adc_nco_raw != 0), True, False)
 
+        # Credit Card NCO: BALANCE-GATED.
         cc_chargeoffs = best_of(df_processed, ['RIADB514']).fillna(0)
         cc_recoveries = best_of(df_processed, ['RIADB515']).fillna(0)
-        norm_cols['Excl_CC_NCO_YTD'] = cc_chargeoffs - cc_recoveries
+        cc_nco_raw = cc_chargeoffs - cc_recoveries
+        cc_bal = norm_cols['Excl_CreditCard_Balance']
+        norm_cols['Excl_CC_NCO_YTD'] = np.where(cc_bal > 0, cc_nco_raw, 0.0)
+        norm_cols['_CC_NCO_Gated'] = np.where((cc_bal == 0) & (cc_nco_raw != 0), True, False)
 
         # Auto NCO: RIADK205 (charge-offs) - RIADK206 (recoveries)
         # BALANCE-GATED: If Excl_Auto_Balance is zero, force NCO to zero.
@@ -2775,6 +2787,8 @@ class BankMetricsProcessor:
         norm_cols['Excl_Auto_NCO_YTD'] = np.where(auto_bal > 0, auto_nco_raw, 0.0)
         norm_cols['_Auto_NCO_Gated'] = np.where((auto_bal == 0) & (auto_nco_raw != 0), True, False)
 
+        # NDFI NCO: No valid direct CR field exists. Set 0.0.
+        # LIMITATION: CR-only NCO mapping unsupported for NDFI.
         norm_cols['Excl_NDFI_NCO_YTD'] = 0.0
 
         # Ag NCO: RIAD4635 (charge-offs) - RIAD4645 (recoveries), fallback NTAG
@@ -2838,8 +2852,12 @@ class BankMetricsProcessor:
         # 6. Ag — Use actual ag past-due fields (P3AG/P9AG).
         # RCON2746/RCFD2746 and RCON2747/RCFD2747 were mis-mapped (those are
         # "All other loans" PD, not agricultural).
-        norm_cols['Excl_Ag_P3'] = best_of(df_processed, ['P3AG', 'P3AGR']).fillna(0)
-        norm_cols['Excl_Ag_P9'] = best_of(df_processed, ['P9AG', 'P9AGR']).fillna(0)
+        ag_p3_raw = best_of(df_processed, ['P3AG', 'P3AGR']).fillna(0)
+        ag_p9_raw = best_of(df_processed, ['P9AG', 'P9AGR']).fillna(0)
+        norm_cols['Excl_Ag_P3'] = ag_p3_raw
+        norm_cols['Excl_Ag_P9'] = ag_p9_raw
+        # Audit flag: if both P3AG/P9AG are zero, the ag PD fell back to 0.
+        norm_cols['_audit_ag_pd_fallback_to_zero'] = (ag_p3_raw == 0) & (ag_p9_raw == 0)
         # --- E. Sum Total Exclusions ---
         #Added Excl_OO_CRE_Balance to ensure Norm_Gross_Loans is pure Wealth/Inv. CRE
         norm_cols['Excluded_Balance'] = (
@@ -3182,6 +3200,10 @@ class BankMetricsProcessor:
         # Else fall back to LNRERES alone (includes HELOC/open-end).
         wealth_resi_bal = compute_wealth_resi_bal(df_processed)
         df_processed['Wealth_Resi_Balance'] = wealth_resi_bal
+        # Audit flag: True when RC-C components were zero/absent and LNRERES fallback was used.
+        rcc_cols_check = ['RCFD1797','RCON1797','RCFD5367','RCON5367','RCFD5368','RCON5368']
+        rcc_sum = df_processed.reindex(columns=rcc_cols_check, fill_value=0).fillna(0).sum(axis=1)
+        df_processed['_audit_resi_balance_fallback_used'] = (rcc_sum == 0)
 
         new_cols['Norm_Wealth_Resi_Composition'] = safe_div(wealth_resi_bal, norm_loans)
         new_cols['Wealth_Resi_Composition']      = safe_div(wealth_resi_bal, df_processed['Gross_Loans'])
@@ -6142,18 +6164,22 @@ class BankPerformanceDashboard:
         excl_audit_cols = [
             'CERT', 'NAME', 'REPDTE',
             'Excl_CI_Balance', 'Excl_CI_NCO_YTD',
+            'Excl_NDFI_Balance', 'Excl_NDFI_NCO_YTD',
             'Excl_ADC_Balance', 'Excl_ADC_NCO_YTD',
             'Excl_CreditCard_Balance', 'Excl_CC_NCO_YTD',
             'Excl_Auto_Balance', 'Excl_Auto_NCO_YTD',
             'Excl_Ag_Balance', 'Excl_Ag_NCO_YTD',
             'Excl_OO_CRE_Balance', 'Excl_OO_CRE_NCO_YTD',
+            '_CI_NCO_Gated', '_CC_NCO_Gated',
             '_Auto_NCO_Gated', '_Ag_NCO_Gated', '_ADC_NCO_Gated', '_OO_CRE_NCO_Gated',
+            '_audit_unsupported_ndfi_pdna', '_audit_ndfi_nco_unsupported',
+            '_audit_ag_pd_fallback_to_zero', '_audit_resi_balance_fallback_used',
         ]
         avail_excl = [c for c in excl_audit_cols if c in proc_df_with_peers.columns]
         excl_audit_df = proc_df_with_peers[avail_excl].copy() if avail_excl else pd.DataFrame()
         if not excl_audit_df.empty:
             # Flag: any category has zero balance but nonzero NCO (before gating)
-            gate_cols = [c for c in ['_Auto_NCO_Gated', '_Ag_NCO_Gated', '_ADC_NCO_Gated', '_OO_CRE_NCO_Gated'] if c in excl_audit_df.columns]
+            gate_cols = [c for c in ['_CI_NCO_Gated', '_CC_NCO_Gated', '_Auto_NCO_Gated', '_Ag_NCO_Gated', '_ADC_NCO_Gated', '_OO_CRE_NCO_Gated'] if c in excl_audit_df.columns]
             if gate_cols:
                 excl_audit_df['category_balance_zero_but_nco_nonzero_flag'] = excl_audit_df[gate_cols].any(axis=1)
             else:

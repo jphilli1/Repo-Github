@@ -551,16 +551,47 @@ Normalized metrics use `calc_normalized_residual(total, excluded, label, toleran
 - **Risk-adjusted denominator**: `Norm_Risk_Adj_Gross_Loans` (= `Norm_Gross_Loans - SBL_Balance`)
 - **Resi ACL Coverage**: `RIC_Resi_ACL / Wealth_Resi_Balance`
 
+### Supported Exclusion Stack (Normalized Universe)
+
+The normalized exclusion engine removes 7 categories from gross totals. Each
+category must have internally consistent balance, NCO, nonaccrual, and past-due
+exclusion mappings. NDFI credit-quality numerators are **not** directly isolated
+in Call Report-only mode and are set to zero rather than approximated.
+
+| Category | Balance | NCO (YTD) | Nonaccrual | PD30 | PD90 | Notes |
+|---|---|---|---|---|---|---|
+| **C&I** | LNCI | NTCI/RIAD4638 (net) | NACI | P3CI | P9CI | Balance-gated NCO |
+| **NDFI** | J454 | **0.0** | **0.0** | **0.0** | **0.0** | Balance only; all risk numerators unsupported |
+| **ADC** | LNRECONS | NTLS/RIAD4658-4659 (net) | NARECONS | P3RECONS | P9RECONS | Balance-gated NCO |
+| **Credit Card** | RCFDB538 | RIADB514-B515 (net) | RCFDB575 | P3CRCD | P9CRCD | Balance-gated NCO |
+| **Auto** | LNAUTO | RIADK205-K206 (net) | RCFDK213 | P3AUTO | P9AUTO | Balance-gated NCO |
+| **Ag** | LNAG | RIAD4635-4645 (net) | RCFD5341 | P3AG | P9AG | Balance-gated NCO; PD audit-flagged if absent |
+| **OO CRE** | LNRENROW | NTRENROW (net) | NARENROW | P3RENROW | P9RENROW | Balance-gated NCO |
+
 ### Balance-Gating for Excluded NCO Categories
 
-Four excluded NCO categories (Auto, Ag, ADC, OO CRE) are balance-gated: if the excluded balance for a category is zero, the excluded NCO is forced to zero regardless of MDRM field values. This prevents misclassification propagation (e.g., MSPBNA showing $27K Auto NCO with zero Auto balance). Each gating decision produces a `_*_NCO_Gated` flag column. The `Exclusion_Component_Audit` sheet documents per-bank/quarter gating decisions, dominant exclusion categories, and flags where balance is zero but NCO was nonzero.
+Six excluded NCO categories (C&I, Credit Card, Auto, Ag, ADC, OO CRE) are balance-gated: if the excluded balance for a category is zero, the excluded NCO is forced to zero regardless of MDRM field values. This prevents misclassification propagation (e.g., MSPBNA showing $27K Auto NCO with zero Auto balance). Each gating decision produces a `_*_NCO_Gated` flag column. The `Exclusion_Component_Audit` sheet documents per-bank/quarter gating decisions, dominant exclusion categories, and flags where balance is zero but NCO was nonzero.
 
 | Category | Balance Column | NCO Column | Flag Column |
 |---|---|---|---|
+| C&I | `Excl_CI_Balance` | `Excl_CI_NCO_YTD` | `_CI_NCO_Gated` |
+| Credit Card | `Excl_CreditCard_Balance` | `Excl_CC_NCO_YTD` | `_CC_NCO_Gated` |
 | Auto | `Excl_Auto_Balance` | `Excl_Auto_NCO_YTD` | `_Auto_NCO_Gated` |
 | Ag | `Excl_Ag_Balance` | `Excl_Ag_NCO_YTD` | `_Ag_NCO_Gated` |
 | ADC | `Excl_ADC_Balance` | `Excl_ADC_NCO_YTD` | `_ADC_NCO_Gated` |
 | OO CRE | `Excl_OO_CRE_Balance` | `Excl_OO_CRE_NCO_YTD` | `_OO_CRE_NCO_Gated` |
+
+### Structured Audit Flags
+
+The following audit flags are persisted per row in the `Exclusion_Component_Audit` sheet:
+
+| Flag | Meaning |
+|---|---|
+| `_audit_unsupported_ndfi_pdna` | Always True — NDFI PD/NA numerators set to 0.0 (no CR-only mapping) |
+| `_audit_ndfi_nco_unsupported` | Always True — NDFI NCO set to 0.0 (no valid direct CR field) |
+| `_audit_ag_pd_fallback_to_zero` | True when both P3AG and P9AG are zero (fields absent for this bank) |
+| `_audit_resi_balance_fallback_used` | True when RC-C components were zero and LNRERES fallback was used |
+| `category_balance_zero_but_nco_nonzero_flag` | True when any category had zero balance but nonzero raw NCO (gated to 0) |
 
 ### Normalized Composite Minimum Coverage
 
@@ -649,6 +680,32 @@ non-CR-consistent mappings. Changes:
    math added.
 
 Files changed: `MSPBNA_CR_Normalized.py`, `CLAUDE.md`
+
+### 2026-03-12 — Hardened Normalized Exclusion Engine
+
+Hardened the exclusion engine so balances, NCO, nonaccrual, PD30, and PD90 all
+use internally consistent exclusion math with no unsupported numerator leakage.
+
+1. **C&I NCO balance-gating**: `Excl_CI_NCO_YTD` now gated to 0.0 when
+   `Excl_CI_Balance == 0`. Audit flag `_CI_NCO_Gated` added.
+2. **Credit Card NCO balance-gating**: `Excl_CC_NCO_YTD` now gated to 0.0 when
+   `Excl_CreditCard_Balance == 0`. Audit flag `_CC_NCO_Gated` added.
+3. **NDFI NCO set to 0.0**: `Excl_NDFI_NCO_YTD` forced to 0.0 (no CR-only
+   mapping exists). Audit flag `_audit_ndfi_nco_unsupported` added.
+4. **Structured audit flags**: Added 4 boolean audit columns:
+   - `_audit_unsupported_ndfi_pdna` — NDFI PD/NA unsupported in CR-only mode
+   - `_audit_ndfi_nco_unsupported` — NDFI NCO unsupported in CR-only mode
+   - `_audit_ag_pd_fallback_to_zero` — P3AG/P9AG both absent, Ag PD fell back to 0
+   - `_audit_resi_balance_fallback_used` — RC-C components absent, LNRERES fallback used
+5. **Metric registry**: Added `Norm_Delinquency_Rate` MetricSpec
+   (`(Norm_PD30 + Norm_PD90) / Norm_Gross_Loans`). Added Rule F
+   (`_check_unsupported_mappings`) to semantic validation.
+6. **Exclusion audit sheet**: `excl_audit_cols` extended with NDFI balance/NCO,
+   all gating flags, and all audit flags. `gate_cols` updated.
+7. **CLAUDE.md**: Added Supported Exclusion Stack table, updated balance-gating
+   documentation (6 categories), added Structured Audit Flags section.
+
+Files changed: `MSPBNA_CR_Normalized.py`, `metric_registry.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Dual-Mode Rendering Architecture (Preflight Refactor)
 

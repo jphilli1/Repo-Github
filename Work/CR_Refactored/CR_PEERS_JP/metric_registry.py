@@ -144,6 +144,23 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
         consumers=["normalized_table", "ratio_components_normalized"],
     ),
 
+    "Norm_Delinquency_Rate": MetricSpec(
+        code="Norm_Delinquency_Rate",
+        dependencies=["Norm_PD30", "Norm_PD90", "Norm_Gross_Loans"],
+        compute=lambda df: pd.Series(
+            _safe_div(
+                pd.to_numeric(df.get("Norm_PD30", 0), errors="coerce").fillna(0)
+                + pd.to_numeric(df.get("Norm_PD90", 0), errors="coerce").fillna(0),
+                df["Norm_Gross_Loans"]
+            ),
+            index=df.index
+        ),
+        unit="fraction",
+        min_value=0.0,
+        max_value=1.0,
+        consumers=["normalized_table", "ratio_components_normalized", "detailed_peer_table"],
+    ),
+
     "Norm_Risk_Adj_Allowance_Coverage": MetricSpec(
         code="Norm_Risk_Adj_Allowance_Coverage",
         dependencies=["Norm_ACL_Balance", "Norm_Gross_Loans", "SBL_Balance"],
@@ -635,12 +652,39 @@ def _check_consumer_linkage(
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
+def _check_unsupported_mappings(df: pd.DataFrame) -> pd.DataFrame:
+    """Rule F: Flag rows with unsupported mapping audit flags set to True."""
+    rows = []
+    audit_flags = {
+        "_audit_unsupported_ndfi_pdna": "NDFI PD/NA unsupported in CR-only mode",
+        "_audit_ndfi_nco_unsupported": "NDFI NCO unsupported in CR-only mode",
+        "_audit_ag_pd_fallback_to_zero": "Ag PD fell back to 0 (P3AG/P9AG absent)",
+        "_audit_resi_balance_fallback_used": "Resi balance used LNRERES fallback (RC-C components absent)",
+    }
+    if "REPDTE" not in df.columns:
+        return pd.DataFrame()
+    latest_q = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_q]
+    for flag_col, desc in audit_flags.items():
+        if flag_col not in latest.columns:
+            continue
+        flagged = latest[latest[flag_col] == True]
+        if not flagged.empty:
+            for idx in flagged.index:
+                row = {"Rule": f"UnsupportedMapping_{flag_col}",
+                       "Detail": f"{desc} (CERT {latest.loc[idx, 'CERT']})" if "CERT" in latest.columns else desc,
+                       "Severity": "low", "REPDTE": latest_q}
+                rows.append(row)
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
 SEMANTIC_VALIDATION_RULES = [
     ValidationRule("A_OverExclusion", "Excluded values exceed totals", _check_over_exclusion, "high"),
     ValidationRule("B_FlatlineAnomaly", "Metric flatlines across all entities", _check_flatline_anomaly, "medium"),
     ValidationRule("C_DuplicateComposite", "Standard/Normalized composites produce identical values", _check_duplicate_composites, "medium"),
     ValidationRule("D_OutputContamination", "Composite CERTs have metric values they shouldn't", _check_output_contamination, "high"),
     ValidationRule("E_ConsumerLinkage", "Metrics with no downstream consumers", lambda df: _check_consumer_linkage(), "low"),
+    ValidationRule("F_UnsupportedMappings", "Audit flags for unsupported CR-only mappings", _check_unsupported_mappings, "low"),
 ]
 
 
