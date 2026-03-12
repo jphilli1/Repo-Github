@@ -416,7 +416,7 @@ FDIC_FIELDS_TO_FETCH = [
     "RIAD4115",   # Interest Expense on Deposits (raw — no alias)
     "NTCI",       # C&I Net Charge-Offs (replaces RIAD4638 + RIAD4608)
     "RIAD4609",   # Total Recoveries (raw — no alias)
-    "NTLS",       # Total Loan & Lease NCOs (replaces RIAD4658 + RIAD4659)
+    "NTLS",       # Total Loan & Lease NCOs (RI-B Item 9). Used ONLY for Total_NCO_TTM, NOT for exclusions.
 
     # --- INCOME & PROFITABILITY (Corrected Series) ---
     # Note: ILNDOM and ILNFOR now fetched via text aliases above
@@ -456,6 +456,7 @@ FDIC_FIELDS_TO_FETCH = [
     "NTLNLS", "NCLNLS",
     "NTCI",
     "NTRECONS", "NTREMULT", "NTRENROT", "NTRENROW", "NTREAG", "NTRENRES", # <--- Added NTRENROW
+    "NTAG",       # Ag Production NCOs (RI-B Item 3 / Memo 3) — matches Excl_Ag_Balance (RCFD1590)
     "NTRERES", "NTRELOC", # Other Consumer NCO
 
     # --- PAST DUE 30-89 ---
@@ -516,8 +517,8 @@ FDIC_FIELDS_TO_FETCH = [
     "RIADK206",    # NCO: Auto Recoveries
     "RCFDK213",    # NA: Auto Nonaccrual
     "RCFD1590",    # Balance: Agricultural Loans
-    "RIAD4635",    # NCO: Agricultural Charge-offs
-    "RIAD4645",    # NCO: Agricultural Recoveries
+    # RIAD4635/RIAD4645 REMOVED (2026-03-12): These are Total Gross Charge-offs/Recoveries
+    # on ALL Loans (RI-B Item 9), NOT agricultural. See Ag NCO fix in normalization section.
     "RCFD5341",    # NA: Agricultural Nonaccrual
     # NOTE: RCON2746/RCON2747 removed — mis-mapped (those are "All other loans" PD,
     # not agricultural). Ag PD now uses P3AG/P9AG (already in fetch list above).
@@ -936,7 +937,7 @@ class FFIECBulkLoader:
             'RCON1607', 'RCFD1607', # P9
             'RCON1608', 'RCFD1608', # NA
             'RIAD4638',             # NCO (Direct)
-            'RIAD4608', 'RIAD4609', # Charge-offs/Recoveries
+            # RIAD4608/RIAD4609 REMOVED (2026-03-12): Unverified MDRMs, may map to consumer categories
             # Other segment fields (add these)
             'RCONJ451', 'RCFDJ451',     # Other (J451)
             # Other segment fields (add these)
@@ -952,7 +953,7 @@ class FFIECBulkLoader:
             'RCON2759', 'RCFD2759', # P3
             'RCON2769', 'RCFD2769', # P9
             'RCON3492', 'RCFD3492', # NA
-            'RIAD4658', 'RIAD4659', # NCO
+            # RIAD4658/RIAD4659 REMOVED (2026-03-12): Total charge-offs/recoveries, NOT ADC-specific
 
             # 3. Credit Cards
             'RCFDB538', 'RCONB538', # Balance
@@ -972,7 +973,7 @@ class FFIECBulkLoader:
             'RCFD1590', 'RCON1590', # Balance
             # NOTE: 2746/2747 removed (mis-mapped). Ag PD uses P3AG/P9AG from FDIC text aliases.
             'RCFD5341', 'RCON5341', # NA
-            'RIAD4635', 'RIAD4645', # NCO
+            # RIAD4635/RIAD4645 REMOVED (2026-03-12): Total gross charge-offs/recoveries, NOT ag-specific
 
             # 6. NDFI Risk — J458/J459/J460 removed (not Call Report-consistent)
         ]
@@ -2821,17 +2822,25 @@ class BankMetricsProcessor:
 
 
         # --- B. Calculate Exclusion NCOs (YTD) ---
-        ci_nco_direct = best_of(df_processed, ['NTCI', 'RIAD4638']).fillna(0)
-        ci_chargeoffs = best_of(df_processed, ['RIAD4608']).fillna(0)
-        ci_recoveries = best_of(df_processed, ['RIAD4609']).fillna(0)
-        ci_nco_calc = ci_chargeoffs - ci_recoveries
-        norm_cols['Excl_CI_NCO_YTD'] = np.where(ci_nco_direct != 0, ci_nco_direct, ci_nco_calc)
+        # C&I NCO: NTCI (FDIC text alias, RI-B Item 4) or RIAD4638 (domestic C&I NCOs)
+        # BALANCE-GATED: If Excl_CI_Balance is zero, force NCO to zero.
+        #
+        # FIX (2026-03-12): Removed RIAD4608/RIAD4609 fallback — these MDRMs are
+        # unverified against current MDRM dictionary and may map to consumer categories.
+        # NTCI alone is authoritative and sufficient.
+        ci_nco_raw = best_of(df_processed, ['NTCI', 'RIAD4638']).fillna(0)
+        ci_bal = norm_cols['Excl_CI_Balance']
+        norm_cols['Excl_CI_NCO_YTD'] = np.where(ci_bal > 0, ci_nco_raw, 0.0)
+        norm_cols['_CI_NCO_Gated'] = np.where((ci_bal == 0) & (ci_nco_raw != 0), True, False)
 
-        # ADC NCO: NTLS/RIAD4658 (charge-offs) - RIAD4659 (recoveries)
+        # ADC NCO: Use NTRECONS (FDIC text alias for construction NCOs, RI-B Item 1.a)
         # BALANCE-GATED: If Excl_ADC_Balance is zero, force NCO to zero.
-        adc_chargeoffs = best_of(df_processed, ['NTLS', 'RIAD4658']).fillna(0)
-        adc_recoveries = best_of(df_processed, ['RIAD4659']).fillna(0)
-        adc_nco_raw = adc_chargeoffs - adc_recoveries
+        #
+        # CRITICAL FIX (2026-03-12): NTLS was previously used here but it is
+        # Total Net Loan & Lease NCOs (entire portfolio, RI-B Item 9). RIAD4658 is
+        # also total charge-offs. Both are wrong for construction-only. NTRECONS is
+        # already fetched (fetch list line ~458) and used in RIC calcs (line ~2641).
+        adc_nco_raw = best_of(df_processed, ['NTRECONS']).fillna(0)
         adc_bal = norm_cols['Excl_ADC_Balance']
         norm_cols['Excl_ADC_NCO_YTD'] = np.where(adc_bal > 0, adc_nco_raw, 0.0)
         norm_cols['_ADC_NCO_Gated'] = np.where((adc_bal == 0) & (adc_nco_raw != 0), True, False)
@@ -2853,18 +2862,16 @@ class BankMetricsProcessor:
 
         norm_cols['Excl_NDFI_NCO_YTD'] = 0.0
 
-        # Ag NCO: RIAD4635 (charge-offs) - RIAD4645 (recoveries), fallback NTAG
+        # Ag NCO: Use NTAG (FDIC text alias for ag production NCOs, RI-B Item 3)
+        # or NTREAG (farmland-secured NCOs, RI-B Item 1.b) as fallback.
         # BALANCE-GATED: If Excl_Ag_Balance is zero, force NCO to zero.
-        # RIAD4635/4645 are "Loans to finance agricultural production" charge-offs/recoveries.
-        # NTAG is the FDIC text alias for total ag net charge-offs. Both map to
-        # Schedule RI-B Part I/II items 7 which can capture reclassified charge-offs
-        # from unrelated categories. When a bank has zero ag loan balance, any nonzero
-        # ag NCO from these fields is almost certainly a misclassification signal.
-        ag_chargeoffs = best_of(df_processed, ['RIAD4635']).fillna(0)
-        ag_recoveries = best_of(df_processed, ['RIAD4645']).fillna(0)
-        ag_nco_calc = ag_chargeoffs - ag_recoveries
-        ag_nco_fallback = best_of(df_processed, ['NTAG']).fillna(0)
-        ag_nco_raw = np.where(ag_nco_calc != 0, ag_nco_calc, ag_nco_fallback)
+        #
+        # CRITICAL FIX (2026-03-12): RIAD4635 was previously used here but it is
+        # actually Total Gross Charge-offs on ALL Loans (RI-B Item 9, Col A),
+        # confirmed by FRED series documentation. This caused every bank's entire
+        # charge-off base to be attributed to "Ag", making Excluded_NCO > Total_NCO
+        # for all major peers. RIAD4645 (total recoveries counterpart) also removed.
+        ag_nco_raw = best_of(df_processed, ['NTAG', 'NTREAG']).fillna(0)
         ag_bal = norm_cols['Excl_Ag_Balance']
         norm_cols['Excl_Ag_NCO_YTD'] = np.where(ag_bal > 0, ag_nco_raw, 0.0)
         norm_cols['_Ag_NCO_Gated'] = np.where((ag_bal == 0) & (ag_nco_raw != 0), True, False)
@@ -2968,6 +2975,34 @@ class BankMetricsProcessor:
             df_processed = pd.concat(temp_norm_frames)
         else:
             df_processed['Excluded_NCO_TTM'] = 0.0
+
+        # CEILING CONSTRAINT (2026-03-12): Excluded NCO cannot exceed Total NCO.
+        # If it does, cap at Total NCO. This is a structural safeguard against
+        # any remaining or future mapping errors.
+        if 'Total_NCO_TTM' in df_processed.columns and 'Excluded_NCO_TTM' in df_processed.columns:
+            over_mask = df_processed['Excluded_NCO_TTM'] > df_processed['Total_NCO_TTM']
+            over_count = over_mask.sum()
+            if over_count > 0:
+                logging.warning(
+                    f"[NORM] Ceiling applied: {over_count} rows had Excluded_NCO_TTM > Total_NCO_TTM. "
+                    f"Capped to Total_NCO_TTM."
+                )
+            df_processed['Excluded_NCO_TTM'] = df_processed[['Excluded_NCO_TTM', 'Total_NCO_TTM']].min(axis=1)
+
+        # Same ceiling for nonaccrual
+        if 'Excluded_Nonaccrual' in df_processed.columns:
+            total_na_col = None
+            for cand in ['Total_Nonaccrual', 'NALL']:
+                if cand in df_processed.columns:
+                    total_na_col = cand
+                    break
+            if total_na_col:
+                over_na = df_processed['Excluded_Nonaccrual'] > df_processed[total_na_col]
+                if over_na.sum() > 0:
+                    logging.warning(
+                        f"[NORM] Ceiling applied: {over_na.sum()} rows had Excluded_Nonaccrual > {total_na_col}."
+                    )
+                df_processed['Excluded_Nonaccrual'] = df_processed[['Excluded_Nonaccrual', total_na_col]].min(axis=1)
 
         # --- G. Calculate Normalized Master Metrics (COMPONENTS ONLY) ---
         # --- Total NCO TTM must be YTD->Q->TTM (never use raw NTLNLS YTD as "TTM") ---
