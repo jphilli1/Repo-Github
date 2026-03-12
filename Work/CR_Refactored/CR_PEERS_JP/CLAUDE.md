@@ -58,12 +58,6 @@ python report_generator.py
 | `HUD_CROSSWALK_YEAR` | Optional crosswalk vintage year | `2025` |
 | `HUD_CROSSWALK_QUARTER` | Optional crosswalk vintage quarter (1-4) | `4` |
 | `ENABLE_CASE_SHILLER_ZIP_ENRICHMENT` | Enable/disable ZIP enrichment (default `true`) | `true` or `false` |
-| `BEA_API_KEY` | BEA API authentication (optional, for future BEA enrichment) | `export BEA_API_KEY='...'` |
-| `BEA_USER_ID` | Alias for `BEA_API_KEY` (fallback if `BEA_API_KEY` not set) | `export BEA_USER_ID='...'` |
-| `CENSUS_API_KEY` | Census API authentication (optional, for future Census enrichment) | `export CENSUS_API_KEY='...'` |
-| `REPORT_MODE` | Reporting mode: `full_local` (default) or `corp_safe` | `full_local` |
-| `ENABLE_BEA_ENRICHMENT` | Feature flag for future BEA enrichment (default disabled) | `true` or `false` |
-| `ENABLE_CENSUS_ENRICHMENT` | Feature flag for future Census enrichment (default disabled) | `true` or `false` |
 
 These can be set in a `.env` file in the project root or exported in the shell.
 
@@ -98,48 +92,6 @@ report_generator.py
         ├──► output/Peers/scatter/  (Standard + Normalized scatter plot PNGs)
         └──► output/Peers/tables/   (Standard + Normalized HTML tables, FRED macro table)
 ```
-
-### Dual-Mode Report Architecture
-
-`report_generator.py` supports two rendering modes controlled by `REPORT_MODE` env var:
-
-| Mode | Default | Outputs | Library Requirements |
-|---|---|---|---|
-| `full_local` | Yes | All charts (PNG) + HTML tables + scatters (PNG) | matplotlib, seaborn |
-| `corp_safe` | No | HTML tables only | pandas, numpy (no matplotlib needed) |
-
-**Architecture components:**
-
-| Component | Purpose |
-|---|---|
-| `ReportMode` enum | `FULL_LOCAL` / `CORP_SAFE` |
-| `ArtifactSpec` dataclass | Declares each artifact's name, category, mode availability, renderer |
-| `ARTIFACT_REGISTRY` list | Central registry of all 31 artifacts with mode declarations |
-| `ArtifactManifest` class | Tracks produced/skipped/failed status for each artifact per run |
-| `ReportContext` dataclass | Encapsulates loaded data, config, mode, and manifest for helpers |
-| `_produce_table()` / `_produce_chart()` | Reusable helpers with mode-check + manifest recording |
-| `should_produce()` | Checks mode + suppression before producing an artifact |
-| `get_artifacts_for_mode()` | Returns artifacts available in a given mode |
-
-**Artifact availability:**
-- **HTML tables** (13 artifacts): available in **both** modes
-- **Matplotlib charts** (12 artifacts): `full_local` only
-- **Scatter plots** (3 artifacts): `full_local` only
-- **FRED expansion charts** (5 artifacts): `full_local` only
-
-**Skip semantics:** When an artifact is unavailable in the current mode, it is logged with `SKIPPED_MODE` status in the manifest — never errors, never silently omitted. The manifest summary prints at the end of every run showing all artifacts and their outcomes.
-
-**Default behavior:** With no `REPORT_MODE` set, the default is `full_local` which produces all artifacts — identical to the pre-refactor behavior. The refactoring is purely additive and does not change any output names, chart semantics, or composite regime.
-
-**`generate_reports()` phases:**
-1. Workbook ingestion (load FDIC_Data, 8Q averages, metric descriptions)
-2. Preflight validation (composites, severity checks)
-3. HTML tables (both modes)
-4. Credit deterioration charts (full_local only)
-5. Scatter plots (full_local only)
-6. Segment & roadmap charts (full_local only)
-7. FRED expansion charts (full_local only)
-8. Manifest summary
 
 ### Excel Sheet Layout
 
@@ -343,78 +295,6 @@ python report_generator.py
 
 ---
 
-## 3b. Executive Charts & Metric Semantic Layer
-
-### Overview
-
-Three high-value executive visuals added to the report pipeline, consuming the existing `FDIC_Data` sheet. No new API dependencies.
-
-| Chart | Module | Mode Support | Output Dir |
-|---|---|---|---|
-| YoY Directional Heatmap (std + norm) | `executive_charts.py` | **BOTH** | `Peers/tables/` |
-| KRI Bullet / Football-Field Chart | `executive_charts.py` | **FULL_LOCAL_ONLY** | `Peers/charts/` |
-| Sparkline Summary Table | `executive_charts.py` | **BOTH** | `Peers/tables/` |
-
-### Metric Semantic Layer (`metric_semantics.py`)
-
-A thin presentation-layer extension on top of `metric_registry.py`. Does **not** duplicate formula, dependencies, bounds, or consumer logic.
-
-| Concept | Description |
-|---|---|
-| **Polarity** | `FAVORABLE` (higher is better), `ADVERSE` (higher is worse), `NEUTRAL` |
-| **DisplayFormat** | `PERCENT`, `BASIS_POINTS`, `DOLLARS_B`, `MULTIPLE`, `RATIO` |
-| **MetricSemantic** | Frozen dataclass: code, display_name, polarity, display_format, delta_format, group, threshold_bands |
-| **METRIC_SEMANTICS** | Registry dict (~35 entries) keyed by metric code |
-| **GROUP_ORDER** | Heatmap row ordering: Credit Quality → Coverage → Segments → Composition → Size |
-
-Helper functions: `get_semantic()`, `get_polarity()`, `get_direction()`, `get_css_class()`, `ordered_metrics()`.
-
-### Artifact Details
-
-**YoY Heatmap** (`yoy_heatmap_standard`, `yoy_heatmap_normalized`):
-- HTML table with polarity-aware conditional formatting
-- Shows latest-quarter values for subject bank and peer composite
-- YoY delta column with directional color coding (green = favorable, red = adverse)
-- Rows grouped and ordered by `GROUP_ORDER`
-- Works in both `full_local` and `corp_safe` modes
-
-**KRI Bullet Chart** (`kri_bullet_chart`):
-- Horizontal football-field style chart (matplotlib)
-- Gray band = range between Wealth Peers and All Peers composites
-- Gold marker = MSPBNA value
-- Optional threshold bands from `MetricSemantic.threshold_bands`
-- Full_local only — skipped gracefully in corp_safe mode
-
-**Sparkline Summary Table** (`sparkline_summary`):
-- HTML table with inline SVG sparklines (no matplotlib dependency)
-- Each row: metric name | sparkline (trailing 8Q) | current value | YoY change | vs peers
-- SVG sparklines are pure inline `<svg>` elements — compatible with email/PowerPoint embedding
-- Works in both modes
-
-### Output File Naming
-
-- `{stem}_yoy_heatmap_standard.html`
-- `{stem}_yoy_heatmap_normalized.html`
-- `{stem}_kri_bullet_chart.png`
-- `{stem}_sparkline_summary.html`
-
-### Key Modules
-
-| Module | Role |
-|---|---|
-| `metric_semantics.py` | Polarity, DisplayFormat, MetricSemantic, METRIC_SEMANTICS registry, GROUP_ORDER |
-| `executive_charts.py` | `generate_yoy_heatmap()`, `generate_kri_bullet_chart()`, `generate_sparkline_table()` |
-| `rendering_mode.py` | Artifact registration (4 new entries) |
-| `report_generator.py` | Integration via `should_produce()` guards |
-
-### Deferred / Not Implemented
-
-- Executive scatter enhancement (item 4 from original prompt) — deferred to a future tranche
-- KRI bullet chart normalized variant — could be added as a separate artifact if needed
-- Sparkline table normalized variant — same metrics, different peer composite
-
----
-
 ## 4. Strict Coding Conventions & Rules
 
 These are **non-negotiable** for any agent editing this codebase:
@@ -507,34 +387,6 @@ Every ratio-component row label **must** match its denominator type:
 - **Resolve**: Single call to `resolve_hud_token()` in `_validate_runtime_env()` — no competing resolution paths
 
 Dict-style access (`config["key"]`, `config.get("key")`) will raise `TypeError` on `DashboardConfig` and is forbidden.
-
-### ENV VAR SCAFFOLDING — BEA, CENSUS, REPORT MODE
-
-Three resolver functions in `MSPBNA_CR_Normalized.py` provide import-safe env var access:
-
-| Function | Env Vars | Behavior |
-|---|---|---|
-| `resolve_bea_api_key()` | `BEA_API_KEY`, `BEA_USER_ID` | Returns key or None; `BEA_API_KEY` takes priority over `BEA_USER_ID` alias |
-| `resolve_census_api_key()` | `CENSUS_API_KEY` | Returns key or None |
-| `resolve_report_mode()` | `REPORT_MODE` | Returns `"full_local"` (default) or `"corp_safe"`; raises `ValueError` on invalid |
-
-**DashboardConfig fields** added:
-- `bea_api_key: Optional[str] = None` — populated by `resolve_bea_api_key()` in `load_config()`
-- `census_api_key: Optional[str] = None` — populated by `resolve_census_api_key()` in `load_config()`
-- `report_mode: str = "full_local"` — populated by `resolve_report_mode()` in `load_config()`
-
-**These are scaffolding only.** No business logic consumes them yet. They exist so future enrichment features can access API keys via `config.bea_api_key` (attribute access, never dict-style).
-
-### FEATURE FLAGS
-
-`is_feature_enabled(flag_name)` checks env vars for opt-in feature toggles. Registered flags live in `_FEATURE_FLAG_DEFAULTS`:
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `ENABLE_BEA_ENRICHMENT` | `False` | Future BEA GDP/income enrichment |
-| `ENABLE_CENSUS_ENRICHMENT` | `False` | Future Census demographic enrichment |
-
-Truthy values: `1`, `true`, `yes`, `y` (case-insensitive). Unknown flags return `False` with a warning. New features **must** register their flag in `_FEATURE_FLAG_DEFAULTS` before using `is_feature_enabled()`.
 
 ### CHARTING STYLES
 
@@ -747,60 +599,57 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 ---
 
+### Normalized Segment Taxonomy (Loan-Segmentation Alignment)
+
+The following rules govern the normalized segment definitions. They were aligned
+to Call Report schedule RC-C in the 2026-03-12 taxonomy cleanup.
+
+| Segment | Balance Definition | Notes |
+|---|---|---|
+| **Wealth Resi** | RC-C components (1797+5367+5368) preferred; fallback: **LNRERES alone** (includes HELOC/open-end). LNRELOC is NOT added to avoid double-counting. | Numerators (NCO, PD, NA) still use split fields (NTRERES+NTRELOC, etc.) |
+| **C&I Exclusion** | `Excl_CI_Balance = LNCI` (or best_of RCON1763/RCFD1763) directly. SBL is NOT subtracted — SBL lives under RC-C item 9, not item 4. | |
+| **NDFI / Fund Finance** | J454 retained for balance exclusion. **J458/J459/J460 removed** — not Call Report-consistent for PD/NA. All NDFI PD/NA numerators set to 0.0. | LIMITATION: CR-only PD/NA mapping is unsupported for NDFI. |
+| **Agricultural PD** | **RCON2746/RCFD2746 and RCON2747/RCFD2747 removed** (mis-mapped — those are "All other loans" PD). Replaced with P3AG/P9AG. | |
+| **CRE Investment Pure** | `LNREMULT + LNRENROT` only. **LNREOTH removed** from the calculation path. | Owner-occupied CRE excluded separately. |
+| **Tailored Lending** | **Unsupported** in Call Report-only mode. No proxy from fine art, aircraft, bespoke HNW unsecured, J451, or other CR proxies. Internal product tags would be required. | |
+
+### Known Limitations (Segment Taxonomy)
+
+- **NDFI credit quality**: Call Report does not publish NDFI-specific delinquency/nonaccrual.
+  J458/J459/J460 were removed; PD/NA exclusion numerators are 0.0 until an internal data
+  source is integrated.
+- **Tailored Lending**: Cannot be inferred from Call Report data. Requires internal product tags.
+  No proxy math is present in this codebase.
+- **Ag PD fallback**: If P3AG/P9AG are absent from the FDIC dataset for a given bank, the
+  exclusion PD defaults to 0.0 via `best_of(...).fillna(0)`. This is preferred over mis-mapping
+  RCON2746/2747.
+
+---
+
 ## 7. Changelog / Recent Fixes
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-### 2026-03-12 — Dual-Mode Report Architecture Refactor
+### 2026-03-12 — Normalized Segment Taxonomy Alignment
 
-**Purpose**: Refactor `report_generator.py` into a clean dual-mode architecture (`full_local` / `corp_safe`) with explicit artifact capability matrix, manifest tracking, and reusable renderer helpers.
+Aligned the normalized segment taxonomy to Call Report research and removed
+non-CR-consistent mappings. Changes:
 
-**Changes:**
-1. **report_generator.py** — Added `ReportMode` enum, `ArtifactSpec` dataclass, `ArtifactManifest` class, `ReportContext` dataclass, `ARTIFACT_REGISTRY` (31 artifacts), `_produce_table()` / `_produce_chart()` helpers, `should_produce()`, `get_artifacts_for_mode()`, `resolve_report_mode_for_generator()`. Refactored `generate_reports()` into 8 phases with mode-gated artifact production and manifest tracking. `generate_reports()` now returns `Optional[ArtifactManifest]`.
-2. **test_regression.py** — Added `TestDualModeArchitecture` class with 19 tests covering mode resolution, registry integrity, mode filtering, should_produce logic, manifest operations, composite preservation, and registry coverage.
-3. **CLAUDE.md** — Added "Dual-Mode Report Architecture" section in Section 3, changelog entry.
+1. **RESI denominator correction**: Removed `LNRERES + LNRELOC` fallback;
+   denominator now uses `LNRERES` alone (already includes HELOC/open-end).
+   Split numerators (NTRERES+NTRELOC, etc.) preserved.
+2. **C&I exclusion**: Changed `Excl_CI_Balance` from `max(0, LNCI - SBL_Balance)`
+   to `LNCI` directly. SBL is RC-C item 9, not item 4.
+3. **NDFI (Fund Finance)**: Removed J458/J459/J460 from all credit-quality
+   mappings (PD30, PD90, NA). J454 retained for balance. NDFI PD/NA set to 0.0
+   with limitation flags.
+4. **Ag past due**: Replaced RCON2746/RCFD2746 and RCON2747/RCFD2747 with
+   P3AG/P9AG (actual agricultural past-due fields).
+5. **CRE pure balance**: Tightened to `LNREMULT + LNRENROT` only; removed
+   LNREOTH.
+6. **Tailored lending**: Documented as unsupported in CR-only mode. No proxy
+   math added.
 
-**No behavioral changes**: Default mode is `full_local` which produces all existing artifacts unchanged. No output names, chart semantics, composite regime, or peer groupings were altered.
+Files changed: `MSPBNA_CR_Normalized.py`, `CLAUDE.md`
 
-**Test baseline**: 283 tests (previous 264 + 19 new). 10 pre-existing errors (missing matplotlib/aiohttp), 39 skipped (20 pre-existing + 19 new due to missing matplotlib in CI).
-
-### 2026-03-12 — Architectural Preflight Scaffolding
-
-**Purpose**: Create shared scaffolding for future BEA/Census enrichment, two-mode reporting, and feature flags without changing existing business logic.
-
-**Changes**:
-1. **MSPBNA_CR_Normalized.py** — Added `resolve_bea_api_key()`, `resolve_census_api_key()`, `resolve_report_mode()`, `is_feature_enabled()`, `VALID_REPORT_MODES`, `_FEATURE_FLAG_DEFAULTS`. Extended `DashboardConfig` with `bea_api_key`, `census_api_key`, `report_mode` fields. Updated `load_config()` to populate new fields. Updated `_validate_runtime_env()` to log scaffolding status.
-2. **test_regression.py** — Added `TestEnvVarScaffolding` class with 18 tests covering BEA key resolution (primary, fallback, priority, unset), Census key resolution, report mode (default, valid, invalid), feature flags (default, enabled, unknown), and DashboardConfig field validation.
-3. **CLAUDE.md** — Added env var table entries, new convention sections for ENV VAR SCAFFOLDING and FEATURE FLAGS, changelog entry.
-
-**No behavioral changes**: All existing composites, metrics, charts, and peer groups are unchanged.
-
-**Test baseline**: 264 tests (previous 246 + 18 new). 10 pre-existing errors (missing matplotlib/aiohttp), 20 skipped (2 pre-existing + 18 new due to missing aiohttp in CI).
-=======
-=======
-### 2026-03-12 — Executive Charts & Metric Semantic Layer (Prompt 2, Tranche 1)
-
-1. **New module `metric_semantics.py`**: Presentation-layer semantic metadata for ~35 metrics. `Polarity` enum (FAVORABLE/ADVERSE/NEUTRAL), `DisplayFormat` enum (PERCENT/BPS/DOLLARS_B/MULTIPLE/RATIO), `MetricSemantic` frozen dataclass, `GROUP_ORDER` for heatmap row ordering. Helper functions: `get_semantic()`, `get_polarity()`, `get_direction()`, `get_css_class()`, `ordered_metrics()`. Non-overlapping with `metric_registry.py` (which owns formula/deps/bounds/consumers).
-
-2. **New module `executive_charts.py`**: Three executive chart generators:
-   - `generate_yoy_heatmap()` — Directionally-dynamic HTML heatmap with polarity-aware color coding (BOTH modes)
-   - `generate_kri_bullet_chart()` — Horizontal football-field chart comparing MSPBNA vs peer range (FULL_LOCAL_ONLY)
-   - `generate_sparkline_table()` — HTML table with inline SVG sparklines for trailing 8Q trends (BOTH modes)
-
-3. **4 new artifacts registered in `rendering_mode.py`**: `yoy_heatmap_standard` (BOTH), `yoy_heatmap_normalized` (BOTH), `kri_bullet_chart` (FULL_LOCAL_ONLY), `sparkline_summary` (BOTH).
-
-4. **Integration in `report_generator.py`**: New "EXECUTIVE CHARTS" section with `should_produce()` guards for all 4 artifacts. Uses `ACTIVE_STANDARD_COMPOSITES` / `ACTIVE_NORMALIZED_COMPOSITES` for peer CERTs. Graceful fallback if `executive_charts` module not importable.
-
-5. **9 new function-based regression tests** in `test_regression.py` (section 13): polarity direction (favorable/adverse), metric semantics registry, artifact registration, report generator integration, corp_safe skip/allow behavior, ordered_metrics grouping, CSS class for deltas.
-
-6. **2 new unittest classes** (21 test methods): `TestMetricSemantics` (9 tests: enum values, get_semantic, polarity lookups, group order, no overlap with metric_registry), `TestExecutiveChartGenerators` (12 tests: heatmap HTML generation, empty data handling, sparkline SVG, bullet chart figure, save-to-file).
-
-7. **CLAUDE.md**: Added Section 3b documenting executive charts architecture, metric semantic layer, artifact details, output naming, and deferred items.
-
-**New files**: `metric_semantics.py`, `executive_charts.py`
-**Changed files**: `rendering_mode.py`, `report_generator.py`, `test_regression.py`, `CLAUDE.md`
-
->>>>>>> origin/claude/refactor-report-generator-EewiV
 ### 2026-03-12 — Dual-Mode Rendering Architecture (Preflight Refactor)
 
 1. **New module `rendering_mode.py`**: Implements dual-mode architecture with `RenderMode` enum (`full_local`, `corp_safe`), `ArtifactCapability` declarations, `ArtifactManifest` outcome tracking, `ARTIFACT_REGISTRY` (31 artifacts), and `should_produce()` guard helper.
@@ -817,7 +666,6 @@ Metrics are classified as **evaluative** (risk/return/coverage — receives perf
 
 **New files**: `rendering_mode.py`
 **Changed files**: `report_generator.py`, `test_regression.py`, `CLAUDE.md`
->>>>>>> origin/claude/refactor-report-generator-EewiV
 
 ### 2026-03-12 — HUD Response Two-Pass Flattening Fix
 
