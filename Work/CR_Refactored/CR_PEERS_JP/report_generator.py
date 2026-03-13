@@ -2811,6 +2811,47 @@ def generate_reports(
                        plot_macro_overlay_rates_housing, charts_dir,
                        proc_df_with_peers, subject_bank_cert, excel_file)
 
+        # MSA macro panel — geographic macro context (full_local only)
+        art_name = "msa_macro_panel"
+        if should_produce(art_name, mode, manifest, suppressed_charts):
+            try:
+                from corp_overlay import select_top_msas, build_msa_macro_panel
+                # Build synthetic placeholder data for top MSAs
+                # In production, these would come from BEA/Census/Case-Shiller APIs
+                top_msas = ["New York", "Los Angeles", "San Francisco", "Miami", "Chicago"]
+                _synth_dates = pd.date_range("2020-01-01", periods=20, freq="QS")
+                _rng = np.random.RandomState(42)
+                _synth_rows = []
+                for msa in top_msas:
+                    for d in _synth_dates:
+                        _synth_rows.append({
+                            "msa": msa, "date": d,
+                            "hpi_yoy_pct": _rng.normal(5.0, 3.0),
+                            "gdp_yoy_pct": _rng.normal(2.5, 1.5),
+                            "unemp_rate_chg_pp": _rng.normal(0.0, 0.3),
+                        })
+                synth_df = pd.DataFrame(_synth_rows)
+                save = str(charts_dir / f"{base}_{art_name}.png")
+                fig = build_msa_macro_panel(
+                    msas=top_msas,
+                    case_shiller_df=synth_df[["msa", "date", "hpi_yoy_pct"]],
+                    bea_gdp_df=synth_df[["msa", "date", "gdp_yoy_pct"]],
+                    unemployment_df=synth_df[["msa", "date", "unemp_rate_chg_pp"]],
+                    save_path=save,
+                )
+                if fig is not None:
+                    manifest.record_generated(art_name, save)
+                    csv_log.log_file_written(save, phase="chart", component=art_name)
+                    print(f"  {art_name} saved: {save}")
+                else:
+                    manifest.record_failed(art_name, "generator returned None")
+            except ImportError:
+                manifest.record_failed(art_name, "corp_overlay module not available")
+                print(f"  [{art_name}] SKIPPED: corp_overlay not importable")
+            except Exception as exc:
+                manifest.record_failed(art_name, str(exc)[:200])
+                print(f"  [{art_name}] FAILED: {exc}")
+
         # ------------------------------------------------------------------
         # PHASE 7: FRED EXPANSION CHARTS (full_local only)
         # ------------------------------------------------------------------
@@ -3890,18 +3931,22 @@ def plot_growth_vs_deterioration_bookwide(
     subject_bank_cert: int,
     save_path: Optional[str] = None,
 ) -> Optional[plt.Figure]:
-    """Bookwide growth vs deterioration: total gross loan growth TTM (x) vs TTM NCO Rate (y).
+    """Bookwide growth vs deterioration: total loan growth TTM (x) vs TTM NCO Rate (y).
 
-    Unlike the CRE variant, this uses bookwide loan growth computed as trailing-4Q
-    growth on Gross_Loans.  Falls back to NPL_to_Gross_Loans_Rate for y-axis if
-    TTM_NCO_Rate is unavailable.
+    Uses the pre-computed Total_Loans_Growth_TTM column from the data engine
+    (trailing-4Q growth on LNLS).  Falls back to NPL_to_Gross_Loans_Rate for
+    y-axis if TTM_NCO_Rate is unavailable.
     """
-    # Compute trailing-4Q gross loan growth for each CERT
-    if "Gross_Loans" not in df.columns and "LNLSNET" not in df.columns:
-        print("  Skipped growth-vs-deterioration-bookwide: no gross loan column")
+    # X-axis: bookwide loan growth (pre-computed by MSPBNA_CR_Normalized.py)
+    growth_col = None
+    for cand in ["Total_Loans_Growth_TTM", "Total_Loan_Growth_TTM", "Loan_Growth_TTM"]:
+        if cand in df.columns:
+            growth_col = cand
+            break
+    if growth_col is None:
+        print("  Skipped growth-vs-deterioration-bookwide: no Total_Loans_Growth_TTM column")
         return None
 
-    loan_col = "Gross_Loans" if "Gross_Loans" in df.columns else "LNLSNET"
     # Y-axis: prefer TTM_NCO_Rate, fall back to NPL_to_Gross_Loans_Rate
     y_col = None
     for cand in ["TTM_NCO_Rate", "NPL_to_Gross_Loans_Rate"]:
@@ -3912,36 +3957,14 @@ def plot_growth_vs_deterioration_bookwide(
         print("  Skipped growth-vs-deterioration-bookwide: no deterioration column")
         return None
 
-    work = df[["CERT", "REPDTE", loan_col, y_col]].copy()
-    work[loan_col] = pd.to_numeric(work[loan_col], errors="coerce")
-    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
-    work = work.sort_values(["CERT", "REPDTE"])
-
-    # Compute trailing-4Q loan growth per CERT
-    growth_records = []
-    for cert, grp in work.groupby("CERT"):
-        grp = grp.sort_values("REPDTE")
-        if len(grp) >= 5:
-            curr = grp[loan_col].iloc[-1]
-            prev = grp[loan_col].iloc[-5]
-            if pd.notna(curr) and pd.notna(prev) and prev != 0:
-                growth = (curr - prev) / abs(prev)
-                growth_records.append({"CERT": cert, "_bookwide_growth": growth})
-    if not growth_records:
-        print("  Skipped growth-vs-deterioration-bookwide: insufficient history for growth calc")
-        return None
-
-    growth_df = pd.DataFrame(growth_records)
     latest_date = df["REPDTE"].max()
     latest = df[df["REPDTE"] == latest_date].copy()
+    latest[growth_col] = pd.to_numeric(latest[growth_col], errors="coerce")
     latest[y_col] = pd.to_numeric(latest[y_col], errors="coerce")
-    latest = latest.merge(growth_df, on="CERT", how="inner")
-    latest = latest.dropna(subset=["_bookwide_growth", y_col])
+    latest = latest.dropna(subset=[growth_col, y_col])
     if latest.empty:
         print("  Skipped growth-vs-deterioration-bookwide: no valid data")
         return None
-
-    growth_col = "_bookwide_growth"
     composite = ALL_COMPOSITE_CERTS
     peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
     subj = latest[latest["CERT"] == subject_bank_cert]

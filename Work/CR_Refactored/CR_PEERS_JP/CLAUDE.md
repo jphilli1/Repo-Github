@@ -368,10 +368,11 @@ Implemented in `executive_charts.py`, integrated into `report_generator.py` Phas
 - `kri_bullet_standard` — 5 % rate metrics: TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Past_Due_Rate, Allowance_to_Gross_Loans_Rate, RIC_CRE_ACL_Coverage
 - `kri_bullet_standard_coverage` — 2 x-multiple metrics: Risk_Adj_Allowance_Coverage, RIC_CRE_Risk_Adj_Coverage
 - `kri_bullet_normalized_rates` — 5 rate metrics: Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage
-- `kri_bullet_normalized_composition` — 5 composition metrics: Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share
+- `kri_bullet_normalized_composition` — 4 composition metrics: Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share (Norm_Resi_ACL_Share removed — the data engine does not calculate segment-level ACL outside of CRE; the numerator `RIC_Resi_ACL` depends on `RCFDJJ14`/`RCONJJ14` which are frequently absent for non-residential-focused banks, producing systematic NaN)
 
 **Bookwide growth vs deterioration:**
-- `growth_vs_deterioration_bookwide` — X-axis: trailing-4Q total gross loan growth. Y-axis: TTM NCO Rate (fallback: NPL to Gross Loans Rate).
+- `growth_vs_deterioration_bookwide` — X-axis: `Total_Loans_Growth_TTM` (pre-computed by MSPBNA_CR_Normalized.py as trailing-4Q growth on LNLS). Y-axis: TTM NCO Rate (fallback: NPL to Gross Loans Rate).
+- Uses the pre-computed growth column directly — does NOT compute growth inline. The data engine creates `Total_Loans_Growth_TTM` via the `growth_targets` dict (key `'Total_Loans'` → column `'LNLS'`) and exports it automatically via the `*_Growth_TTM` wildcard capture at snapshot construction.
 - Complementary to the existing CRE-focused `growth_vs_deterioration` chart.
 - Same visual style: quadrant scatter with median crosshair lines, MSPBNA diamond, Wealth Peers triangle, All Peers square.
 
@@ -2453,6 +2454,8 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 - `case_shiller_df`: columns `[msa, date, hpi_yoy_pct]`
 - `bea_gdp_df`: columns `[msa, date, gdp_yoy_pct]`
 - `unemployment_df`: columns `[msa, date, unemp_rate_chg_pp]`
+
+**Current wiring in `report_generator.py`:** The MSA macro panel is wired with synthetic placeholder data (5 MSAs × 20 quarters, seeded random). This produces a valid chart for the board deck template while real BEA/Census/Case-Shiller API integrations are pending. Replace the synthetic data block with real `select_top_msas()` + API data when available.
 
 ### Known Limitations
 

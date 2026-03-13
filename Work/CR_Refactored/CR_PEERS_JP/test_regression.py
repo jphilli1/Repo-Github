@@ -4989,7 +4989,7 @@ class TestExecutiveChartTranche(unittest.TestCase):
             "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
             "Norm_SBL_Composition", "Norm_Wealth_Resi_Composition",
             "Norm_CRE_Investment_Composition",
-            "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+            "Norm_CRE_ACL_Share",
         ]
         self.assertEqual(HEATMAP_METRICS_STANDARD, std_expected)
         self.assertEqual(HEATMAP_METRICS_NORMALIZED, norm_expected)
@@ -5005,7 +5005,7 @@ class TestExecutiveChartTranche(unittest.TestCase):
         norm_expected = [
             "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
             "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
-            "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+            "Norm_CRE_ACL_Share",
         ]
         self.assertEqual(BULLET_METRICS_STANDARD, std_expected)
         self.assertEqual(BULLET_METRICS_NORMALIZED, norm_expected)
@@ -5163,12 +5163,12 @@ class TestExecutiveChartTranche(unittest.TestCase):
         self.assertEqual(BULLET_METRICS_NORMALIZED_RATES, expected)
 
     def test_normalized_composition_metric_list(self):
-        """BULLET_METRICS_NORMALIZED_COMPOSITION must contain exactly the 5 composition metrics."""
+        """BULLET_METRICS_NORMALIZED_COMPOSITION must contain exactly the 4 composition metrics."""
         from executive_charts import BULLET_METRICS_NORMALIZED_COMPOSITION
         expected = [
             "Norm_SBL_Composition", "Norm_Wealth_Resi_Composition",
             "Norm_CRE_Investment_Composition",
-            "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+            "Norm_CRE_ACL_Share",
         ]
         self.assertEqual(BULLET_METRICS_NORMALIZED_COMPOSITION, expected)
 
