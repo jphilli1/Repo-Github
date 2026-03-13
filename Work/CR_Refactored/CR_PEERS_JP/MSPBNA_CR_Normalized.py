@@ -5877,6 +5877,25 @@ class BankPerformanceDashboard:
             group_avg["NAME"] = f"AVG: {group_info['name']}"
             group_avg["HQ_STATE"] = "AVG"
 
+            # Cross-regime NaN-out: prevent standard composites from carrying Norm_* values
+            # and normalized composites from carrying standard rate values
+            use_normalized = group_info.get('use_normalized', False)
+            if not use_normalized:
+                # Standard composite: NaN out all Norm_* columns
+                norm_cols = [c for c in group_avg.columns if c.startswith('Norm_')]
+                if norm_cols:
+                    group_avg[norm_cols] = np.nan
+            else:
+                # Normalized composite: NaN out standard rate columns
+                standard_rate_cols = [
+                    'TTM_NCO_Rate', 'NPL_to_Gross_Loans_Rate',
+                    'Nonaccrual_to_Gross_Loans_Rate', 'Past_Due_Rate',
+                    'Allowance_to_Gross_Loans_Rate', 'Risk_Adj_Allowance_Coverage',
+                ]
+                existing = [c for c in standard_rate_cols if c in group_avg.columns]
+                if existing:
+                    group_avg[existing] = np.nan
+
             composites.append(group_avg)
             logging.info(f"Created composite for {group_info['name']} (CERT {dummy_cert})")
 

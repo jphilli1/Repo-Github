@@ -856,6 +856,17 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-13 — Cross-Regime NaN-Out for Peer Composites
+
+**Problem**: Standard composites (90001, 90003) carried non-null `Norm_*` values and normalized composites (90004, 90006) carried non-null standard rate values, triggering 5 OutputContamination preflight warnings in `report_generator.py`.
+
+**Fix**: Added cross-regime NaN-out in `_create_peer_composite()` (after setting `HQ_STATE`, before appending to composites list):
+- Standard composites (`use_normalized=False`): all `Norm_*` columns set to NaN
+- Normalized composites (`use_normalized=True`): 6 standard rate columns (`TTM_NCO_Rate`, `NPL_to_Gross_Loans_Rate`, `Nonaccrual_to_Gross_Loans_Rate`, `Past_Due_Rate`, `Allowance_to_Gross_Loans_Rate`, `Risk_Adj_Allowance_Coverage`) set to NaN
+- `RIC_*` segment metrics and size/balance columns are preserved for both regimes
+
+**Files changed:** `MSPBNA_CR_Normalized.py`, `CLAUDE.md`
+
 ### 2026-03-13 — Cumulative Growth Chart Family (Target Loans vs CRE ACL)
 
 **Objective**: Add a new chart family tracking cumulative growth of CRE+RESI balances against CRE ACL growth, indexed to zero at Q4 2015, with endpoint CAGR annotations.
