@@ -6444,5 +6444,88 @@ class TestMSAMacroPanel(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestCumulativeGrowthChart(unittest.TestCase):
+    """Tests for the cumulative growth chart family (Request 5)."""
+
+    def test_cumul_growth_artifacts_registered(self):
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertIn("cumul_growth_loans_vs_acl_wealth", ARTIFACT_REGISTRY)
+        self.assertIn("cumul_growth_loans_vs_acl_allpeers", ARTIFACT_REGISTRY)
+
+    def test_cumul_growth_artifacts_full_local_only(self):
+        from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+        for name in ["cumul_growth_loans_vs_acl_wealth",
+                      "cumul_growth_loans_vs_acl_allpeers"]:
+            cap = ARTIFACT_REGISTRY[name]
+            self.assertTrue(cap.is_available(RenderMode.FULL_LOCAL))
+            self.assertFalse(cap.is_available(RenderMode.CORP_SAFE))
+
+    def test_plot_function_exists(self):
+        from executive_charts import plot_cumulative_growth_loans_vs_acl
+        self.assertTrue(callable(plot_cumulative_growth_loans_vs_acl))
+
+    def test_prepare_function_exists(self):
+        from executive_charts import prepare_cumulative_growth_data
+        self.assertTrue(callable(prepare_cumulative_growth_data))
+
+    def test_nudge_cagr_labels_exists(self):
+        from executive_charts import _nudge_cagr_labels
+        self.assertTrue(callable(_nudge_cagr_labels))
+
+    def test_prepare_returns_none_on_missing_cert(self):
+        import pandas as pd
+        from executive_charts import prepare_cumulative_growth_data
+        df = pd.DataFrame({"CERT": [1], "REPDTE": ["2020-01-01"],
+                           "RIC_CRE_Cost": [100]})
+        result = prepare_cumulative_growth_data(df, cert=99999)
+        self.assertIsNone(result)
+
+    def test_prepare_returns_zero_growth_at_start(self):
+        import pandas as pd
+        import numpy as np
+        from executive_charts import prepare_cumulative_growth_data
+        dates = pd.date_range("2015-12-31", periods=5, freq="QE")
+        df = pd.DataFrame({
+            "CERT": [100] * 5,
+            "REPDTE": dates,
+            "RIC_CRE_Cost": [500, 510, 520, 530, 540],
+            "Wealth_Resi_Balance": [300, 310, 320, 330, 340],
+            "RIC_CRE_ACL": [50, 52, 54, 56, 58],
+        })
+        result = prepare_cumulative_growth_data(df, cert=100)
+        self.assertIsNotNone(result)
+        # First row should be 0% growth
+        self.assertAlmostEqual(result.iloc[0]["target_loans_growth"], 0.0, places=5)
+        self.assertAlmostEqual(result.iloc[0]["target_acl_growth"], 0.0, places=5)
+
+    def test_nudge_cagr_labels_prevents_overlap(self):
+        from executive_charts import _nudge_cagr_labels
+        items = [(0.10, "A", "red"), (0.11, "B", "blue"), (0.12, "C", "green")]
+        result = _nudge_cagr_labels(items, min_gap=0.03)
+        for i in range(1, len(result)):
+            self.assertGreaterEqual(result[i][0] - result[i - 1][0], 0.03)
+
+    def test_cumul_growth_in_report_generator_imports(self):
+        src = open("report_generator.py").read()
+        self.assertIn("plot_cumulative_growth_loans_vs_acl", src)
+        self.assertIn("prepare_cumulative_growth_data", src)
+
+    def test_cumul_growth_wired_in_phase8(self):
+        src = open("report_generator.py").read()
+        self.assertIn("cumul_growth_loans_vs_acl_wealth", src)
+        self.assertIn("cumul_growth_loans_vs_acl_allpeers", src)
+
+    def test_color_constants_match_palette(self):
+        from executive_charts import _COLOR_MSPBNA, _COLOR_WEALTH, _COLOR_ALL_PEERS
+        self.assertEqual(_COLOR_MSPBNA, "#F7A81B")
+        self.assertEqual(_COLOR_WEALTH, "#7B2D8E")
+        self.assertEqual(_COLOR_ALL_PEERS, "#5B9BD5")
+
+    def test_growth_start_date_is_q4_2015(self):
+        import pandas as pd
+        from executive_charts import _GROWTH_START_DATE
+        self.assertEqual(_GROWTH_START_DATE, pd.Timestamp("2015-12-31"))
+
+
 if __name__ == '__main__':
     unittest.main()

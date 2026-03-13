@@ -72,6 +72,8 @@ try:
         generate_yoy_heatmap,
         generate_kri_bullet_chart,
         generate_sparkline_table,
+        plot_cumulative_growth_loans_vs_acl,
+        prepare_cumulative_growth_data,
         BULLET_METRICS_NORMALIZED_RATES,
         BULLET_METRICS_NORMALIZED_COMPOSITION,
         BULLET_METRICS_STANDARD_RATES,
@@ -2950,6 +2952,35 @@ def generate_reports(
                             peer_label=p_label,
                         )
                         if html:
+                            manifest.record_generated(art_name, save)
+                            print(f"  Generated: {art_name}")
+                            csv_log.log_file_written(save, phase="executive_charts",
+                                                     component=art_name)
+                        else:
+                            manifest.record_failed(art_name, "insufficient data")
+                    except Exception as exc:
+                        manifest.record_failed(art_name, str(exc))
+                        print(f"  Failed {art_name}: {exc}")
+
+            # Cumulative Growth: Target Loans vs CRE ACL — 2 variants
+            _cumul_specs = [
+                ("cumul_growth_loans_vs_acl_wealth",
+                 ACTIVE_STANDARD_COMPOSITES["core_pb"], "Wealth Peers"),
+                ("cumul_growth_loans_vs_acl_allpeers",
+                 ACTIVE_STANDARD_COMPOSITES["all_peers"], "All Peers"),
+            ]
+            for art_name, peer_cert, p_label in _cumul_specs:
+                if should_produce(art_name, mode, manifest, suppressed_charts):
+                    try:
+                        save = str(charts_dir / f"{base}_{art_name}.png")
+                        result = plot_cumulative_growth_loans_vs_acl(
+                            proc_df_with_peers,
+                            subject_cert=subject_bank_cert,
+                            peer_cert=peer_cert,
+                            peer_label=p_label,
+                            save_path=save,
+                        )
+                        if result:
                             manifest.record_generated(art_name, save)
                             print(f"  Generated: {art_name}")
                             csv_log.log_file_written(save, phase="executive_charts",
