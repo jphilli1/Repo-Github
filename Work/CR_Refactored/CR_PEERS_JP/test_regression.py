@@ -4936,7 +4936,14 @@ class TestDocumentationCoherence(unittest.TestCase):
     def test_heatmap_saves_to_file(self):
         import tempfile
         from executive_charts import generate_yoy_heatmap
-        df = self._make_df()
+        # Build minimal DataFrame with two quarters for YoY comparison
+        rows = []
+        for cert in [34221, 90003]:
+            for q in ["2024-06-30", "2025-06-30"]:
+                rows.append({"CERT": cert, "REPDTE": q,
+                             "TTM_NCO_Rate": 0.01, "Nonaccrual_to_Gross_Loans_Rate": 0.02})
+        df = pd.DataFrame(rows)
+        df["REPDTE"] = pd.to_datetime(df["REPDTE"])
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             path = f.name
         try:
@@ -6112,681 +6119,165 @@ class TestRenderingReconciliation(unittest.TestCase):
         self.assertIn("from rendering_mode import", self._rg_src)
 
 
-class TestNCOMDRMMapping(unittest.TestCase):
-    """Regression tests for the MDRM mapping fix (2026-03-12).
-
-    Validates that:
-    - RIAD4635/4645 (total charge-offs/recoveries) are NOT used for Ag NCOs
-    - NTLS/RIAD4658 (total NCOs) are NOT used for ADC NCOs
-    - RIAD4608/4609 (unverified) are NOT used as C&I fallback
-    - NTAG is in the FDIC fetch list
-    - Ceiling constraint exists for Excluded_NCO_TTM
-    """
+class TestNormalizedBulletSplitReconciliation(unittest.TestCase):
+    """Focused reconciliation tests ensuring the normalized-bullet split
+    and canonical rendering architecture are consistent across
+    report_generator.py, rendering_mode.py, and CLAUDE.md."""
 
     @classmethod
     def setUpClass(cls):
-        src_path = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
-        cls._src = src_path.read_text(encoding="utf-8")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(script_dir, "report_generator.py"), "r") as f:
+            cls._rg_src = f.read()
+        with open(os.path.join(script_dir, "rendering_mode.py"), "r") as f:
+            cls._rm_src = f.read()
+        with open(os.path.join(script_dir, "CLAUDE.md"), "r") as f:
+            cls._claude_md = f.read()
 
-    # --- Edit 1: Ag NCO mapping ---
+    # --- A. Stale local rendering abstractions removed ---
 
-    def test_ag_nco_does_not_use_riad4635(self):
-        """RIAD4635 must NOT appear in the Ag NCO calculation block."""
-        # Find the Ag NCO block (between "Ag NCO:" comment and "_Ag_NCO_Gated")
+    def test_no_stale_ReportMode_class(self):
+        """report_generator.py must not define its own ReportMode class."""
+        self.assertNotIn("class ReportMode", self._rg_src)
+
+    def test_no_stale_ArtifactSpec_class(self):
+        """report_generator.py must not define its own ArtifactSpec class."""
+        self.assertNotIn("class ArtifactSpec", self._rg_src)
+
+    def test_no_stale_ManifestEntry_class(self):
+        """report_generator.py must not define its own ManifestEntry class."""
+        self.assertNotIn("class ManifestEntry", self._rg_src)
+
+    def test_no_stale_ReportContext_class(self):
+        """report_generator.py must not define a public ReportContext class
+        (the internal _ReportContext is acceptable)."""
         import re
-        ag_block = re.search(
-            r"# Ag NCO:.*?_Ag_NCO_Gated", self._src, re.DOTALL
-        )
-        self.assertIsNotNone(ag_block, "Ag NCO block not found")
-        block_text = ag_block.group(0)
-        # RIAD4635 should only appear in the CRITICAL FIX comment, not in best_of() calls
-        self.assertNotIn("best_of(df_processed, ['RIAD4635'])", block_text)
+        # Match 'class ReportContext' but NOT 'class _ReportContext'
+        matches = re.findall(r'class\s+ReportContext\b', self._rg_src)
+        self.assertEqual(len(matches), 0,
+                         "Stale public ReportContext class found in report_generator.py")
 
-    def test_ag_nco_uses_riad4655_4665(self):
-        """Ag NCO should use RIAD4655 (charge-offs) and RIAD4665 (recoveries) as primary."""
+    def test_no_stale_resolve_report_mode_for_generator(self):
+        """report_generator.py must not define resolve_report_mode_for_generator."""
+        self.assertNotIn("def resolve_report_mode_for_generator", self._rg_src)
+
+    def test_no_local_ARTIFACT_REGISTRY_assignment(self):
+        """report_generator.py must not define its own ARTIFACT_REGISTRY."""
         import re
-        ag_block = re.search(
-            r"# Ag NCO:.*?_Ag_NCO_Gated", self._src, re.DOTALL
-        )
-        block_text = ag_block.group(0)
-        self.assertIn("RIAD4655", block_text)
-        self.assertIn("RIAD4665", block_text)
-        # NTAG kept as fallback
-        self.assertIn("NTAG", block_text)
+        matches = re.findall(r'^ARTIFACT_REGISTRY\s*[=:]', self._rg_src, re.MULTILINE)
+        self.assertEqual(len(matches), 0,
+                         "Local ARTIFACT_REGISTRY definition found in report_generator.py")
 
-    def test_riad4635_not_in_fdic_fetch_list(self):
-        """RIAD4635 must be removed from FDIC_FIELDS_TO_FETCH."""
+    def test_no_local_ARTIFACT_BY_NAME(self):
+        """report_generator.py must not define _ARTIFACT_BY_NAME."""
+        self.assertNotIn("_ARTIFACT_BY_NAME", self._rg_src)
+
+    def test_no_local_should_produce_definition(self):
+        """report_generator.py must not define its own should_produce function."""
+        self.assertNotIn("def should_produce(", self._rg_src)
+
+    # --- B. Normalized split artifact names present ---
+
+    def test_kri_bullet_standard_in_report_generator(self):
+        """report_generator.py must produce kri_bullet_standard."""
+        self.assertIn("kri_bullet_standard", self._rg_src)
+
+    def test_kri_bullet_normalized_rates_in_report_generator(self):
+        """report_generator.py must produce kri_bullet_normalized_rates."""
+        self.assertIn("kri_bullet_normalized_rates", self._rg_src)
+
+    def test_kri_bullet_normalized_composition_in_report_generator(self):
+        """report_generator.py must produce kri_bullet_normalized_composition."""
+        self.assertIn("kri_bullet_normalized_composition", self._rg_src)
+
+    def test_all_three_bullet_artifacts_in_registry(self):
+        """All 3 bullet artifacts must be registered in ARTIFACT_REGISTRY."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        for name in ["kri_bullet_standard",
+                     "kri_bullet_normalized_rates",
+                     "kri_bullet_normalized_composition"]:
+            self.assertIn(name, ARTIFACT_REGISTRY,
+                          f"Missing from registry: {name}")
+
+    # --- C. Obsolete single normalized bullet names absent ---
+
+    def test_no_obsolete_kri_bullet_chart_artifact(self):
+        """The old 'kri_bullet_chart' artifact name must not be in the registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertNotIn("kri_bullet_chart", ARTIFACT_REGISTRY)
+
+    def test_no_obsolete_kri_bullet_normalized_artifact(self):
+        """The old 'kri_bullet_normalized' artifact (without _rates/_composition suffix)
+        must not be in the registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertNotIn("kri_bullet_normalized", ARTIFACT_REGISTRY)
+
+    def test_no_obsolete_kri_bullet_chart_string_literal(self):
+        """report_generator.py must not contain quoted 'kri_bullet_chart' as an artifact name."""
         import re
-        # Find the FDIC_FIELDS_TO_FETCH list
-        fetch_match = re.search(
-            r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL
-        )
-        self.assertIsNotNone(fetch_match, "FDIC_FIELDS_TO_FETCH not found")
-        fetch_text = fetch_match.group(0)
-        # RIAD4635 should not be a fetched field (may appear in comments)
-        self.assertNotIn('"RIAD4635"', fetch_text)
+        matches = re.findall(r'["\']kri_bullet_chart["\']', self._rg_src)
+        self.assertEqual(len(matches), 0,
+                         "Obsolete 'kri_bullet_chart' artifact name found in report_generator.py")
 
-    def test_riad4645_not_in_fdic_fetch_list(self):
-        """RIAD4645 must be removed from FDIC_FIELDS_TO_FETCH."""
+    # --- D. Sparkline norm_peer_cert path present ---
+
+    def test_sparkline_norm_peer_cert_in_report_generator(self):
+        """report_generator.py must pass norm_peer_cert to sparkline generator."""
+        self.assertIn("norm_peer_cert", self._rg_src)
+
+    def test_sparkline_uses_normalized_all_peers_composite(self):
+        """Sparkline must use ACTIVE_NORMALIZED_COMPOSITES for norm_peer_cert."""
+        self.assertIn('norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"]',
+                      self._rg_src)
+
+    # --- E. CLAUDE.md documents the normalized split accurately ---
+
+    def test_claude_md_documents_kri_bullet_standard(self):
+        """CLAUDE.md must document kri_bullet_standard artifact."""
+        self.assertIn("kri_bullet_standard", self._claude_md)
+
+    def test_claude_md_documents_kri_bullet_normalized_rates(self):
+        """CLAUDE.md must document kri_bullet_normalized_rates artifact."""
+        self.assertIn("kri_bullet_normalized_rates", self._claude_md)
+
+    def test_claude_md_documents_kri_bullet_normalized_composition(self):
+        """CLAUDE.md must document kri_bullet_normalized_composition artifact."""
+        self.assertIn("kri_bullet_normalized_composition", self._claude_md)
+
+    def test_claude_md_documents_rates_title(self):
+        """CLAUDE.md must document the exact rates chart title."""
+        self.assertIn("Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)",
+                      self._claude_md)
+
+    def test_claude_md_documents_composition_title(self):
+        """CLAUDE.md must document the exact composition chart title."""
+        self.assertIn("Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)",
+                      self._claude_md)
+
+    def test_claude_md_does_not_claim_kri_bullet_chart_exists(self):
+        """CLAUDE.md must not reference the obsolete kri_bullet_chart as a live artifact."""
         import re
-        fetch_match = re.search(
-            r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL
-        )
-        fetch_text = fetch_match.group(0)
-        self.assertNotIn('"RIAD4645"', fetch_text)
-
-    # --- Edit 2: ADC NCO mapping ---
-
-    def test_adc_nco_does_not_use_ntls(self):
-        """ADC NCO block must NOT use NTLS (total portfolio NCOs)."""
-        import re
-        adc_block = re.search(
-            r"# ADC NCO:.*?_ADC_NCO_Gated", self._src, re.DOTALL
-        )
-        self.assertIsNotNone(adc_block, "ADC NCO block not found")
-        block_text = adc_block.group(0)
-        self.assertNotIn("'NTLS'", block_text)
-
-    def test_adc_nco_uses_riad3582_3583(self):
-        """ADC NCO should use RIAD3582 (charge-offs) and RIAD3583 (recoveries) as primary."""
-        import re
-        adc_block = re.search(
-            r"# ADC NCO:.*?_ADC_NCO_Gated", self._src, re.DOTALL
-        )
-        block_text = adc_block.group(0)
-        self.assertIn("RIAD3582", block_text)
-        self.assertIn("RIAD3583", block_text)
-        # NTRECONS kept as fallback
-        self.assertIn("NTRECONS", block_text)
-
-    def test_riad4658_not_in_ffiec_fetch(self):
-        """RIAD4658 must be removed from FFIEC fetch list."""
-        import re
-        init_match = re.search(
-            r"def __init__\(self.*?\n(?=    def )", self._src, re.DOTALL
-        )
-        self.assertIsNotNone(init_match, "__init__ method not found")
-        init_text = init_match.group(0)
-        self.assertNotIn("'RIAD4658'", init_text)
-
-    # --- Edit 3: C&I NCO fallback ---
-
-    def test_ci_nco_no_riad4608_fallback(self):
-        """C&I NCO must NOT use RIAD4608/4609 in best_of() calls."""
-        import re
-        ci_block = re.search(
-            r"# C&I NCO:.*?_CI_NCO_Gated", self._src, re.DOTALL
-        )
-        self.assertIsNotNone(ci_block, "C&I NCO block not found")
-        block_text = ci_block.group(0)
-        # Check best_of calls only, not comments
-        best_of_calls = re.findall(r"best_of\(.*?\)", block_text)
-        for call in best_of_calls:
-            self.assertNotIn("RIAD4608", call,
-                             f"RIAD4608 found in C&I best_of call: {call}")
-            self.assertNotIn("RIAD4609", call,
-                             f"RIAD4609 found in C&I best_of call: {call}")
-
-    def test_ci_nco_uses_ntci(self):
-        """C&I NCO should use NTCI as primary source."""
-        import re
-        ci_block = re.search(
-            r"# C&I NCO:.*?_CI_NCO_Gated", self._src, re.DOTALL
-        )
-        block_text = ci_block.group(0)
-        self.assertIn("NTCI", block_text)
-
-    def test_ci_nco_has_balance_gate(self):
-        """C&I NCO should be balance-gated."""
-        import re
-        ci_block = re.search(
-            r"# C&I NCO:.*?_CI_NCO_Gated", self._src, re.DOTALL
-        )
-        block_text = ci_block.group(0)
-        self.assertIn("ci_bal", block_text)
-        self.assertIn("_CI_NCO_Gated", block_text)
-
-    # --- Edit 4: Ceiling constraint ---
-
-    def test_ceiling_constraint_exists_for_nco(self):
-        """Excluded_NCO_TTM ceiling constraint must exist."""
-        self.assertIn("Excluded_NCO_TTM'] > df_processed['Total_NCO_TTM']", self._src)
-
-    def test_ceiling_constraint_uses_min(self):
-        """Ceiling should use min(Excluded, Total) to cap."""
-        self.assertIn("['Excluded_NCO_TTM', 'Total_NCO_TTM']].min(axis=1)", self._src)
-
-    def test_ceiling_constraint_exists_for_nonaccrual(self):
-        """Excluded_Nonaccrual ceiling constraint must exist."""
-        self.assertIn("Excluded_Nonaccrual'] > df_processed[total_na_col]", self._src)
-
-    def test_ceiling_logs_warning(self):
-        """Ceiling constraint should log a warning when applied."""
-        self.assertIn("[NORM] Ceiling applied:", self._src)
-
-    # --- Edit 5: Fetch list ---
-
-    def test_ntag_in_fdic_fetch_list(self):
-        """NTAG must be in FDIC_FIELDS_TO_FETCH for ag production NCOs."""
-        import re
-        fetch_match = re.search(
-            r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL
-        )
-        fetch_text = fetch_match.group(0)
-        self.assertIn('"NTAG"', fetch_text)
-
-    # --- Edit 6: NTLS comment ---
-
-    def test_ntls_comment_warns_not_for_exclusions(self):
-        """NTLS comment must clarify it's for Total_NCO_TTM only."""
-        self.assertIn("NOT for exclusions", self._src)
-
-    # --- Structural ---
-
-    def test_no_riad4635_in_best_of_calls(self):
-        """RIAD4635 must never appear in any best_of() call."""
-        import re
-        best_of_calls = re.findall(r"best_of\(df_processed,\s*\[.*?\]\)", self._src)
-        for call in best_of_calls:
-            self.assertNotIn("RIAD4635", call,
-                             f"RIAD4635 found in best_of call: {call}")
-
-    def test_no_ntls_in_exclusion_best_of_calls(self):
-        """NTLS must not appear in any exclusion NCO best_of() call (only in Total_NCO)."""
-        import re
-        # Find all best_of calls within the exclusion NCO section
-        excl_section = re.search(
-            r"# --- B\. Calculate Exclusion NCOs.*?# --- C\. Calculate Exclusion Nonaccruals",
-            self._src, re.DOTALL
-        )
-        if excl_section:
-            best_of_calls = re.findall(
-                r"best_of\(df_processed,\s*\[.*?\]\)", excl_section.group(0)
-            )
-            for call in best_of_calls:
-                self.assertNotIn("'NTLS'", call,
-                                 f"NTLS found in exclusion best_of call: {call}")
-
-
-class TestSegmentPerformanceTracingFix(unittest.TestCase):
-    """Regression tests for the 12-part segment performance series tracing fix (2026-03-12).
-
-    Validates MDRM mapping corrections, NDFI audit flag, residential itemization,
-    TTM numerator usage, composition renaming, ACL coverage denominator,
-    reconciliation worksheet, and fetch list completeness.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        src_path = Path(__file__).parent / "MSPBNA_CR_Normalized.py"
-        cls._src = src_path.read_text(encoding="utf-8")
-
-    # --- 1. ADC NCO uses RIAD3582/3583 ---
-
-    def test_adc_nco_uses_canonical_mdrm(self):
-        """ADC NCO block must use RIAD3582 for charge-offs and RIAD3583 for recoveries."""
-        import re
-        adc_block = re.search(r"# ADC NCO:.*?_ADC_NCO_Gated", self._src, re.DOTALL)
-        self.assertIsNotNone(adc_block)
-        block = adc_block.group(0)
-        self.assertIn("'RIAD3582'", block)
-        self.assertIn("'RIAD3583'", block)
-
-    # --- 2. Ag NCO uses RIAD4655/4665 ---
-
-    def test_ag_nco_uses_canonical_mdrm(self):
-        """Ag NCO block must use RIAD4655 for charge-offs and RIAD4665 for recoveries."""
-        import re
-        ag_block = re.search(r"# Ag NCO:.*?_Ag_NCO_Gated", self._src, re.DOTALL)
-        self.assertIsNotNone(ag_block)
-        block = ag_block.group(0)
-        self.assertIn("'RIAD4655'", block)
-        self.assertIn("'RIAD4665'", block)
-
-    # --- 3. Ag PD uses RCON1594/1597 ---
-
-    def test_ag_pd_uses_rcon1594(self):
-        """Excl_Ag_P3 must use RCON1594 as primary."""
-        self.assertIn("'RCON1594'", self._src)
-        import re
-        ag_pd_block = re.search(r"Excl_Ag_P3.*?Excl_Ag_P9", self._src, re.DOTALL)
-        self.assertIsNotNone(ag_pd_block)
-        self.assertIn("RCON1594", ag_pd_block.group(0))
-
-    def test_ag_pd_uses_rcon1597(self):
-        """Excl_Ag_P9 must use RCON1597 as primary."""
-        import re
-        # Check that RCON1597 appears in the Ag PD assignment
-        self.assertRegex(self._src, r"Excl_Ag_P9.*RCON1597")
-
-    def test_ag_pd_no_rcon2746(self):
-        """RCON2746 must NOT appear in any best_of() call."""
-        import re
-        best_of_calls = re.findall(r"best_of\(df_processed,\s*\[.*?\]\)", self._src)
-        for call in best_of_calls:
-            self.assertNotIn("RCON2746", call, f"RCON2746 found in best_of: {call}")
-
-    # --- 4. NDFI Fund Finance PD/NA ---
-
-    def test_ndfi_fund_finance_pd_is_nan(self):
-        """RIC_Fund_Finance_PD30/PD90 must be np.nan, not 0.0."""
-        self.assertIn("df_processed['RIC_Fund_Finance_PD30'] = np.nan", self._src)
-        self.assertIn("df_processed['RIC_Fund_Finance_PD90'] = np.nan", self._src)
-
-    def test_ndfi_fund_finance_nonaccrual_is_nan(self):
-        """RIC_Fund_Finance_Nonaccrual must be np.nan, not 0.0."""
-        self.assertIn("df_processed['RIC_Fund_Finance_Nonaccrual'] = np.nan", self._src)
-
-    def test_ndfi_audit_flag_exists(self):
-        """_NDFI_PD_NA_NotIsolatable audit flag must be set to True."""
-        self.assertIn("_NDFI_PD_NA_NotIsolatable", self._src)
-        self.assertIn("_NDFI_PD_NA_NotIsolatable'] = True", self._src)
-
-    # --- 5. Residential itemization uses 5368, not 1799 ---
-
-    def test_resi_itemization_uses_5368(self):
-        """RIC_Resi_Cost must use RCON5368 (junior liens), not RCON1799."""
-        import re
-        resi_block = re.search(
-            r"# C\. Residential.*?RIC_Resi_Cost.*?=.*?resi_sum",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(resi_block, "Residential itemization block not found")
-        block = resi_block.group(0)
-        self.assertIn("RCON5368", block, "RCON5368 (junior liens) missing from resi itemization")
-        self.assertNotIn("RCON1799", block, "RCON1799 should not be used in resi itemization")
-
-    def test_resi_comments_correct_labels(self):
-        """Residential comments must label 1797 as open-end/revolving, not first lien."""
-        import re
-        resi_block = re.search(
-            r"# C\. Residential.*?resi_sum =",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(resi_block)
-        block = resi_block.group(0)
-        # Must mention "open-end" or "revolving" for 1797
-        self.assertTrue(
-            "open-end" in block.lower() or "revolving" in block.lower(),
-            "Comments should describe 1797 as open-end/revolving"
-        )
-
-    # --- 6. Wealth_Resi_TTM_NCO_Rate uses TTM ---
-
-    def test_wealth_resi_ttm_nco_rate_uses_ttm(self):
-        """Wealth_Resi_TTM_NCO_Rate must use RIC_Resi_NCO_TTM, not raw YTD."""
-        import re
-        # Find the Wealth_Resi_TTM_NCO_Rate assignment
-        rate_match = re.search(
-            r"Wealth_Resi_TTM_NCO_Rate.*?=.*?safe_div\((.*?),",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(rate_match)
-        numerator = rate_match.group(1)
-        self.assertIn("wealth_resi_nco_ttm", numerator,
-                       "TTM numerator must be used, not raw YTD")
-
-    def test_wealth_resi_nco_ttm_from_ric(self):
-        """wealth_resi_nco_ttm must reference RIC_Resi_NCO_TTM."""
-        self.assertIn("RIC_Resi_NCO_TTM", self._src)
-        self.assertIn("wealth_resi_nco_ttm", self._src)
-
-    # --- 7. Normalized composition renamed ---
-
-    def test_no_norm_cre_oo_composition(self):
-        """Norm_CRE_OO_Composition must be renamed (excluded category)."""
-        self.assertNotIn("'Norm_CRE_OO_Composition'", self._src)
-        self.assertNotIn('"Norm_CRE_OO_Composition"', self._src)
-
-    def test_no_norm_adc_composition(self):
-        """Norm_ADC_Composition must be renamed (excluded category)."""
-        self.assertNotIn("'Norm_ADC_Composition'", self._src)
-        self.assertNotIn('"Norm_ADC_Composition"', self._src)
-
-    def test_excluded_share_metrics_exist(self):
-        """Excluded_CRE_OO_Share_of_Norm and Excluded_ADC_Share_of_Norm must exist."""
-        self.assertIn("Excluded_CRE_OO_Share_of_Norm", self._src)
-        self.assertIn("Excluded_ADC_Share_of_Norm", self._src)
-
-    # --- 8. Norm_Comm_ACL_Coverage uses LNCI ---
-
-    def test_norm_comm_acl_coverage_uses_lnci(self):
-        """Norm_Comm_ACL_Coverage must use LNCI as denominator, not SBL_Balance."""
-        import re
-        coverage_match = re.search(
-            r"Norm_Comm_ACL_Coverage.*?=.*?safe_div\(.*?,\s*(.*?)\)",
-            self._src
-        )
-        self.assertIsNotNone(coverage_match)
-        denominator_area = coverage_match.group(1)
-        self.assertNotIn("SBL_Balance", denominator_area,
-                          "SBL_Balance must not be the denominator for Norm_Comm_ACL_Coverage")
-
-    def test_ci_bal_for_coverage_uses_lnci(self):
-        """ci_bal_for_coverage should derive from LNCI."""
-        self.assertIn("ci_bal_for_coverage", self._src)
-        import re
-        ci_bal_match = re.search(r"ci_bal_for_coverage\s*=\s*best_of\(.*?\)", self._src)
-        self.assertIsNotNone(ci_bal_match)
-        self.assertIn("LNCI", ci_bal_match.group(0))
-
-    # --- 9. Fetch list completeness ---
-
-    def test_riad3582_in_fetch_list(self):
-        """RIAD3582 (ADC charge-offs) must be in the fetch list."""
-        import re
-        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
-        self.assertIn('"RIAD3582"', fetch_match.group(0))
-
-    def test_riad3583_in_fetch_list(self):
-        """RIAD3583 (ADC recoveries) must be in the fetch list."""
-        import re
-        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
-        self.assertIn('"RIAD3583"', fetch_match.group(0))
-
-    def test_riad4655_in_fetch_list(self):
-        """RIAD4655 (ag charge-offs) must be in the fetch list."""
-        import re
-        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
-        self.assertIn('"RIAD4655"', fetch_match.group(0))
-
-    def test_riad4665_in_fetch_list(self):
-        """RIAD4665 (ag recoveries) must be in the fetch list."""
-        import re
-        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
-        self.assertIn('"RIAD4665"', fetch_match.group(0))
-
-    def test_rcon1594_in_fetch_list(self):
-        """RCON1594 (ag PD 30-89) must be in the fetch list."""
-        import re
-        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
-        self.assertIn('"RCON1594"', fetch_match.group(0))
-
-    def test_rcon1597_in_fetch_list(self):
-        """RCON1597 (ag PD 90+) must be in the fetch list."""
-        import re
-        fetch_match = re.search(r"FDIC_FIELDS_TO_FETCH\s*=\s*\[.*?\]", self._src, re.DOTALL)
-        self.assertIn('"RCON1597"', fetch_match.group(0))
-
-    # --- 10. Reconciliation worksheet ---
-
-    def test_reconciliation_sheet_in_excel_output(self):
-        """Normalization_Reconciliation_Sample must be passed to write_excel_output."""
-        self.assertIn("Normalization_Reconciliation_Sample=recon_df", self._src)
-
-    def test_reconciliation_has_nco_check_column(self):
-        """Reconciliation sheet must have an NCO check column."""
-        self.assertIn("NCO_Check_ExclPlusNormMinusTotal", self._src)
-
-    def test_reconciliation_has_loans_check_column(self):
-        """Reconciliation sheet must have a Loans check column."""
-        self.assertIn("Loans_Check_ExclPlusNormMinusTotal", self._src)
-
-    def test_reconciliation_has_excl_gt_total_flag(self):
-        """Reconciliation must flag where Excluded > Total."""
-        self.assertIn("NCO_Flag_Excl_GT_Total", self._src)
-        self.assertIn("Loans_Flag_Excl_GT_Total", self._src)
-
-    # --- 11. FFIEC fetch list ---
-
-    def test_riad3582_in_ffiec_fetch(self):
-        """RIAD3582 must be in the FFIEC healing list (__init__)."""
-        import re
-        init_match = re.search(r"def __init__\(self.*?\n(?=    def )", self._src, re.DOTALL)
-        self.assertIsNotNone(init_match)
-        self.assertIn("'RIAD3582'", init_match.group(0))
-
-    def test_riad4655_in_ffiec_fetch(self):
-        """RIAD4655 must be in the FFIEC healing list (__init__)."""
-        import re
-        init_match = re.search(r"def __init__\(self.*?\n(?=    def )", self._src, re.DOTALL)
-        self.assertIsNotNone(init_match)
-        self.assertIn("'RIAD4655'", init_match.group(0))
-
-
-# =====================================================================
-# Chart Pipeline Quality Improvements — 9-Part Spec Regression Tests
-# =====================================================================
-
-class TestChartColorSystem(unittest.TestCase):
-    """Part 6: Centralized CHART_COLORS constant and _build_cert_color_map."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
-            cls._src = f.read()
-
-    def test_chart_colors_exists(self):
-        self.assertIn("CHART_COLORS", self._src)
-
-    def test_chart_colors_required_keys(self):
-        for key in ["subject", "wealth_peers", "all_peers", "peer_cloud", "guide"]:
-            self.assertIn(f'"{key}"', self._src, f"CHART_COLORS missing key: {key}")
-
-    def test_chart_colors_subject_is_gold(self):
-        self.assertIn('"subject":       "#F7A81B"', self._src)
-
-    def test_chart_colors_wealth_peers_is_purple(self):
-        self.assertIn('"wealth_peers":  "#9C6FB6"', self._src)
-
-    def test_chart_colors_all_peers_is_blue(self):
-        self.assertIn('"all_peers":     "#5B9BD5"', self._src)
-
-    def test_chart_colors_peer_cloud_is_muted(self):
-        self.assertIn('"peer_cloud":    "#A8B8C8"', self._src)
-
-    def test_chart_colors_guide_is_slate(self):
-        self.assertIn('"guide":         "#6B7B8D"', self._src)
-
-    def test_build_cert_color_map_exists(self):
-        self.assertIn("def _build_cert_color_map", self._src)
-
-    def test_cert_color_map_returns_subject_and_composites(self):
-        # _build_cert_color_map should map 90001 and 90003
-        import re
-        func_match = re.search(
-            r"def _build_cert_color_map.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(func_match)
-        body = func_match.group(0)
-        self.assertIn("90001", body)
-        self.assertIn("90003", body)
-
-    def test_no_hardcoded_4C78A8_in_scatter(self):
-        """Scatter function should use CHART_COLORS, not hardcoded '#4C78A8'."""
-        import re
-        scatter_match = re.search(
-            r"def plot_scatter_dynamic.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(scatter_match)
-        scatter_src = scatter_match.group(0)
-        self.assertNotIn('"#4C78A8"', scatter_src)
-        self.assertNotIn("'#4C78A8'", scatter_src)
-
-    def test_no_hardcoded_7F8C8D_in_scatter(self):
-        """Scatter function should use CHART_COLORS, not hardcoded '#7F8C8D'."""
-        import re
-        scatter_match = re.search(
-            r"def plot_scatter_dynamic.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(scatter_match)
-        scatter_src = scatter_match.group(0)
-        self.assertNotIn('"#7F8C8D"', scatter_src)
-        self.assertNotIn("'#7F8C8D'", scatter_src)
-
-
-class TestLabelPlacer(unittest.TestCase):
-    """Part 2: Shared label-placement helper."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
-            cls._src = f.read()
-
-    def test_label_placer_class_exists(self):
-        self.assertIn("class LabelPlacer", self._src)
-
-    def test_label_placer_has_place_method(self):
-        self.assertIn("def place(self", self._src)
-
-    def test_label_placer_has_reserve_method(self):
-        self.assertIn("def reserve(self", self._src)
-
-    def test_label_placer_has_collision_candidates(self):
-        self.assertIn("_DEFAULT_CANDIDATES", self._src)
-        self.assertIn("_INLINE_CANDIDATES", self._src)
-
-    def test_scatter_uses_label_placer(self):
-        """plot_scatter_dynamic must use LabelPlacer instead of inline pick_offset."""
-        import re
-        scatter_match = re.search(
-            r"def plot_scatter_dynamic.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(scatter_match)
-        scatter_src = scatter_match.group(0)
-        self.assertIn("LabelPlacer", scatter_src)
-        self.assertNotIn("def pick_offset", scatter_src)
-
-
-class TestYAxisFormatting(unittest.TestCase):
-    """Part 8: y-axis percent formatting bugs — must use f'{v:.0%}' not f'{v:.1f}%'."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
-            cls._src = f.read()
-
-    def _get_func_source(self, func_name):
-        import re
-        match = re.search(
-            rf"def {func_name}\(.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        return match.group(0) if match else ""
-
-    def test_portfolio_mix_uses_correct_percent_format(self):
-        src = self._get_func_source("plot_portfolio_mix")
-        self.assertNotIn('f"{v:.1f}%"', src,
-                         "plot_portfolio_mix should use f'{v:.0%}' not f'{v:.1f}%'")
-        self.assertIn("{v:.0%}", src)
-
-    def test_reserve_risk_allocation_uses_correct_percent_format(self):
-        src = self._get_func_source("plot_reserve_risk_allocation")
-        self.assertNotIn('f"{v:.1f}%"', src,
-                         "plot_reserve_risk_allocation should use f'{v:.0%}' not f'{v:.1f}%'")
-        self.assertIn("{v:.0%}", src)
-
-    def test_liquidity_overlay_uses_correct_percent_format(self):
-        src = self._get_func_source("plot_liquidity_overlay")
-        self.assertNotIn('f"{v:.1f}%"', src,
-                         "plot_liquidity_overlay should use f'{v:.0%}' not f'{v:.1f}%'")
-        self.assertIn("{v:.0%}", src)
-
-
-class TestWealthPeersInCharts(unittest.TestCase):
-    """Part 1: Wealth Peers comparator added to charts."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
-            cls._src = f.read()
-
-    def _get_func_source(self, func_name):
-        import re
-        match = re.search(
-            rf"def {func_name}\(.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        return match.group(0) if match else ""
-
-    def test_scatter_dynamic_has_wealth_peers(self):
-        src = self._get_func_source("plot_scatter_dynamic")
-        self.assertIn("Wealth Peers", src)
-        self.assertIn("wealth_avg", src)
-
-    def test_growth_vs_deterioration_has_wealth_peers(self):
-        src = self._get_func_source("plot_growth_vs_deterioration")
-        self.assertIn("Wealth Peers", src)
-
-    def test_risk_adjusted_return_has_wealth_peers(self):
-        src = self._get_func_source("plot_risk_adjusted_return")
-        self.assertIn("Wealth Peers", src)
-
-    def test_years_of_reserves_has_wealth_peers(self):
-        src = self._get_func_source("plot_years_of_reserves")
-        self.assertIn("Wealth Peers", src)
-        self.assertIn("wealth_vals", src)
-
-    def test_years_of_reserves_conditional_title(self):
-        """If only CRE available, title should say 'CRE Years of Reserves'."""
-        src = self._get_func_source("plot_years_of_reserves")
-        self.assertIn("CRE Years of Reserves", src)
-
-
-class TestNormalizedChartLabelClutter(unittest.TestCase):
-    """Part 3: Peer entities get labels only at latest period."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
-            cls._src = f.read()
-
-    def test_peer_labels_latest_only(self):
-        """Peer line labels should only appear at the latest period, not all Q4s."""
-        import re
-        func = re.search(
-            r"def create_credit_deterioration_chart_ppt\(.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        self.assertIsNotNone(func)
-        src = func.group(0)
-        self.assertIn("label_indices", src)
-        # Subject bank gets full idx_to_label, peers get [latest only]
-        self.assertIn("subject_bank_cert", src)
-
-
-class TestChartPolish(unittest.TestCase):
-    """Part 7: Chart-specific polish items."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(cls._script_dir, "report_generator.py"), "r") as f:
-            cls._src = f.read()
-
-    def _get_func_source(self, func_name):
-        import re
-        match = re.search(
-            rf"def {func_name}\(.*?(?=\ndef |\nclass |\Z)",
-            self._src, re.DOTALL
-        )
-        return match.group(0) if match else ""
-
-    def test_migration_ladder_uses_composites(self):
-        src = self._get_func_source("plot_migration_ladder")
-        self.assertIn("ACTIVE_STANDARD_COMPOSITES", src)
-
-    def test_migration_ladder_line_styles(self):
-        """Migration ladder should have solid/dashed/dotted for subject/wealth/all."""
-        src = self._get_func_source("plot_migration_ladder")
-        self.assertIn('"-"', src)   # solid for subject
-        self.assertIn('"--"', src)  # dashed for wealth
-        self.assertIn('":"', src)   # dotted for all peers
-
-    def test_concentration_vs_capital_uses_chart_colors(self):
-        src = self._get_func_source("plot_concentration_vs_capital")
-        self.assertIn('CC["peer_cloud"]', src)
-        self.assertIn('CC["subject"]', src)
-        self.assertIn('CC["guide"]', src)
+        # The changelog may mention it historically; check that the artifact table
+        # and current documentation do not list it as active
+        lines = self._claude_md.split("\n")
+        for line in lines:
+            # Skip changelog lines (lines that describe what was removed)
+            if "obsolete" in line.lower() or "removed" in line.lower() or "replaced" in line.lower():
+                continue
+            if "old single" in line.lower() or "former" in line.lower():
+                continue
+            # Check artifact table rows — "|" delimited lines with kri_bullet_chart
+            if "| `kri_bullet_chart`" in line or "| kri_bullet_chart |" in line:
+                self.fail("CLAUDE.md still lists kri_bullet_chart as an active artifact")
+
+    def test_claude_md_remaining_risks_section_exists(self):
+        """CLAUDE.md must contain a Remaining Risks subsection."""
+        self.assertIn("Remaining Risks", self._claude_md)
+
+    def test_claude_md_canonical_rendering_rule(self):
+        """CLAUDE.md must document the canonical rendering abstraction rule."""
+        self.assertIn("rendering_mode.py", self._claude_md)
+        self.assertIn("single canonical source", self._claude_md.lower())
 
 
 if __name__ == '__main__':

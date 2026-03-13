@@ -379,10 +379,12 @@ The old heuristic `plot_macro_overlay()` that picked "Fed Funds", "Unemployment"
 
 ### Remaining Risks
 
-1. **Executive charts import guard**: `_HAS_EXECUTIVE_CHARTS` flag means if `executive_charts.py` fails to import (e.g., `metric_semantics.py` missing), all 5 executive artifacts silently skip. No manifest entry is recorded for the skip.
+1. **Executive charts import guard**: `_HAS_EXECUTIVE_CHARTS` flag means if `executive_charts.py` fails to import (e.g., `metric_semantics.py` missing), all 6 executive artifacts silently skip. No manifest entry is recorded for the import-level skip.
 2. **FRED data dependency**: Macro chart artifacts depend on FRED_Data sheet being present in the workbook. If `MSPBNA_CR_Normalized.py` was run without FRED_API_KEY, macro charts silently return None.
 3. **matplotlib tight_layout warning**: The `warnings.filterwarnings` suppression in `report_generator.py` masks a real twinx() incompatibility in macro overlay charts. The charts render correctly but may have suboptimal spacing.
 4. **Normalized metric coverage**: Macro correlation heatmap rows use normalized metrics that may be NaN for some banks due to over-exclusion. N/A cells are shown correctly but reduce information density.
+5. **fred_case_shiller_discovery import dependency**: Tests referencing `fred_case_shiller_discovery` module error when `aiohttp` is not installed. These are pre-existing and do not affect report generation.
+6. **HUD crosswalk fetch_hud_crosswalk return contract**: One pre-existing test (`test_fetch_hud_crosswalk_returns_failed_parse_status_for_wrapper_only_output`) asserts a `"dataframe"` key in the source that may use a different return format. This is a test-vs-source contract mismatch in `case_shiller_zip_mapper.py`, not in report_generator or rendering_mode.
 
 ---
 
@@ -777,95 +779,24 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
-### 2026-03-12 — Chart Pipeline Quality Improvements (9-Part Spec)
+### 2026-03-13 — Normalized Bullet Split Follow-Up & Report-Generator Reconciliation
 
-**Objective**: Bring the reporting pipeline to professional, presentation-ready standard with targeted fixes across 9 areas.
+**Objective**: Final verification that the normalized-bullet split and report-generator rendering architecture are fully reconciled. Fix remaining test and documentation gaps.
 
-**9-part implementation:**
+**Verification results:**
 
-1. **Wealth Peers comparator** (Part 1) — Added Wealth Peers (Core PB composite, CERT 90001/90004) as a purple diamond marker to 4 charts: `plot_scatter_dynamic`, `plot_growth_vs_deterioration`, `plot_risk_adjusted_return`, `plot_years_of_reserves`. All Peers shown as blue squares. The 3 standard scatter charts (`scatter_pd_vs_npl`, `scatter_nco_vs_npl`, `scatter_norm_nco_vs_nonaccrual`) gain Wealth Peers automatically through `plot_scatter_dynamic`.
+1. **No stale local rendering abstractions in report_generator.py** — confirmed zero instances of: `ReportMode` class, `ArtifactStatus` class (local), `ArtifactSpec`, `ManifestEntry`, `ArtifactManifest` (local), `ReportContext` (public), `resolve_report_mode_for_generator`, local `ARTIFACT_REGISTRY`, local `_ARTIFACT_BY_NAME`, local `should_produce()`. All abstractions are imported from `rendering_mode.py`.
+2. **Normalized bullet split intact** — report_generator.py produces exactly: `kri_bullet_standard`, `kri_bullet_normalized_rates`, `kri_bullet_normalized_composition`. No obsolete `kri_bullet_chart` or `kri_bullet_normalized` artifact names present.
+3. **Sparkline norm_peer_cert path present** — `norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"]` confirmed in sparkline call.
+4. **Comparator fallback behavior unchanged** — both/single/neither logic intact.
 
-2. **Shared label-placement helper** (Part 2) — Created `LabelPlacer` class with pixel-coordinate collision avoidance. Replaces per-chart `pick_offset()` hacks. 16 default + 8 inline candidate positions. Supports priority-based placement (lower = better position). `plot_scatter_dynamic` now uses `LabelPlacer` instead of inline collision logic.
+**Fixes applied:**
 
-3. **Normalized credit chart label clutter** (Part 3) — Subject bank gets value labels at every Q4 + latest. Peer entities get labels only at the latest period. Reduces label overload from 18+ to ~8 labels.
+1. **test_regression.py** — Fixed `TestDocumentationCoherence.test_heatmap_saves_to_file`: test referenced `self._make_df()` which did not exist on the class, causing `AttributeError`. Replaced with inline DataFrame construction providing two quarters of data for YoY comparison.
+2. **test_regression.py** — Added `TestNormalizedBulletSplitReconciliation` class (25 tests): 8 stale-abstraction-absent checks, 3 artifact-name-present checks, 1 registry coverage check, 3 obsolete-name-absent checks, 2 sparkline norm_peer_cert checks, 7 CLAUDE.md accuracy checks (artifact names, exact titles, no false claims, Remaining Risks section, canonical rendering rule).
+3. **CLAUDE.md** — Fixed abbreviated composition chart title from `"(Normalized Composition)"` to full `"Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)"`. Updated Remaining Risks subsection to reflect actual post-fix state (6 items). Added this changelog entry.
 
-4. **KRI bullet chart split** (Part 4) — Already implemented in prior session. `kri_bullet_normalized_rates` (5 rate metrics) and `kri_bullet_normalized_composition` (5 composition metrics) with separate axes.
-
-5. **Years of reserves improvements** (Part 5) — Added Wealth Peers (purple diamond) and All Peers (blue square) to lollipop chart. Conditional title: "CRE Years of Reserves" when only CRE segment is available.
-
-6. **Centralized color system** (Part 6) — Created `CHART_COLORS` dict and `_build_cert_color_map()` in `report_generator.py`. 5 canonical color keys: subject (gold), wealth_peers (purple), all_peers (blue), peer_cloud (muted blue-gray), guide (slate-gray). Enforced across `create_credit_deterioration_chart_v3`, `create_credit_deterioration_chart_ppt`, `plot_scatter_dynamic`, `plot_growth_vs_deterioration`, `plot_risk_adjusted_return`, `plot_years_of_reserves`, `plot_concentration_vs_capital`.
-
-7. **Chart-specific polish** (Part 7) — Migration ladder already uses ACTIVE_STANDARD_COMPOSITES with solid/dashed/dotted line styles. Concentration-vs-capital uses centralized colors.
-
-8. **Y-axis percent formatting** (Part 8) — Fixed 3 functions: `plot_portfolio_mix`, `plot_reserve_risk_allocation`, `plot_liquidity_overlay`. Changed `f"{v:.1f}%"` → `f"{v:.0%}"` (values are decimal ratios like 0.78, not already-multiplied percentages).
-
-9. **Regression tests** (Part 9) — Added 28 new tests across 6 test classes: `TestChartColorSystem` (11), `TestLabelPlacer` (5), `TestYAxisFormatting` (3), `TestWealthPeersInCharts` (5), `TestNormalizedChartLabelClutter` (1), `TestChartPolish` (3). All use source-text analysis (no matplotlib import required).
-
-**Files changed:** `report_generator.py`, `test_regression.py`, `CLAUDE.md`
-
-### 2026-03-12 — Segment Performance Series Tracing & MDRM Correction (12-Part Fix)
-
-**Problem**: Multiple MDRM mapping defects remained after the initial NCO fix. Ag PD used CRE/CLD items (2746/2747), Ag NCO used FDIC text aliases instead of canonical MDRMs, ADC NCO used FDIC text aliases instead of canonical MDRMs, NDFI PD/NA were set to 0.0 instead of NaN (masking the coverage gap), residential itemization used wrong MDRM (1799 instead of 5368), Wealth_Resi_TTM_NCO_Rate used raw YTD instead of TTM, normalized composition included excluded categories, Norm_Comm_ACL_Coverage used wrong denominator.
-
-**12-part fix**:
-
-1. **ADC NCO** — Changed from `best_of(['NTRECONS'])` to `RIAD3582 - RIAD3583` (construction & land development charge-offs/recoveries, RI-B Item 1.a) with NTRECONS as fallback.
-2. **Ag NCO** — Changed from `best_of(['NTAG', 'NTREAG'])` to `RIAD4655 - RIAD4665` (ag production loan charge-offs/recoveries, RI-B Item 3) with NTAG/NTREAG as fallback.
-3. **Ag PD** — Added `RCON1594/RCFD1594` (30-89 days) and `RCON1597/RCFD1597` (90+ days) as primary items (RC-N Item 3). P3AG/P9AG retained as fallback.
-4. **NDFI Fund Finance PD/NA** — Changed segment-level `RIC_Fund_Finance_PD30/PD90/Nonaccrual` from `0.0` to `np.nan` (coverage gap, not zero exposure). Added `_NDFI_PD_NA_NotIsolatable = True` audit flag.
-5. **Residential itemization** — Changed `RIC_Resi_Cost` from `1797 + 5367 + 1799` to `1797 + 5367 + 5368`. MDRM 1797 = revolving/open-end, 5367 = first liens, 5368 = junior liens. MDRM 1799 was incorrect.
-6. **Wealth_Resi_TTM_NCO_Rate** — Changed numerator from raw `NTRERES + NTRELOC` (YTD) to `RIC_Resi_NCO_TTM` (true TTM from quarterly flows rolling 4 quarters).
-7. **Normalized composition** — Renamed `Norm_CRE_OO_Composition` → `Excluded_CRE_OO_Share_of_Norm` and `Norm_ADC_Composition` → `Excluded_ADC_Share_of_Norm`. These are excluded categories and should not appear as "Norm_*".
-8. **Norm_Comm_ACL_Coverage** — Changed denominator from `SBL_Balance` (RC-C item 9.b.(1)) to `LNCI` (RC-C item 4, matching C&I balance).
-9. **Fetch lists** — Added RIAD3582, RIAD3583, RIAD4655, RIAD4665, RCON1594, RCFD1594, RCON1597, RCFD1597 to both FDIC and FFIEC fetch lists.
-10. **Reconciliation worksheet** — Added `Normalization_Reconciliation_Sample` Excel sheet with latest-period Total vs Excluded vs Normalized for NCO and Loans, plus check columns and flags.
-11. **CLAUDE.md** — Updated segment taxonomy table, residential MDRM descriptions, NDFI limitation documentation.
-12. **Regression tests** — Added tests for all mapping changes, NDFI audit flag, resi itemization, TTM numerator, composition rename, coverage denominator, reconciliation sheet, and fetch list completeness.
-
-**Files changed**: `MSPBNA_CR_Normalized.py`, `test_regression.py`, `CLAUDE.md`
-
-### 2026-03-12 — HUD ZIP Parser Shape F Support (Dict-Wrapped Data)
-
-**Problem**: `extract_hud_result_rows()` did not handle `payload["data"]` when it is a dict containing nested `results` (Shape F: `{"data": {"results": [...]}}`). This caused silent row-count=0 returns for APIs that wrap results in an extra dict layer.
-
-**Fix**:
-1. Added `_extract_rows_from_dict()` recursive helper that searches a dict container for the first usable list of row dicts, checking keys `results` → `rows` → `data` in priority order, then falling back to any remaining key whose value is a non-empty list of dicts.
-2. Rewrote `extract_hud_result_rows()` to delegate dict payloads to the recursive helper, covering Shapes B–F in a single code path.
-3. Added 3 regression tests: `test_extract_hud_rows_shape_f_data_dict_with_results_list`, `test_extract_hud_rows_shape_f_data_dict_with_results_rows`, `test_extract_hud_rows_shape_f_data_dict_with_results_data`.
-4. Updated HUD Response Parsing table in CLAUDE.md with Shape F row.
-
-**Files**: `case_shiller_zip_mapper.py`, `test_regression.py`, `CLAUDE.md`
-
-### 2026-03-12 — Fix Normalized Exclusion NCO MDRM Mapping Errors
-
-**Problem**: Two confirmed MDRM mapping errors caused `Excluded_NCO_TTM` to exceed `Total_NCO_TTM` for every major peer bank (JPM, BAC, WFC, Citi, GS). The balance-gate only masked the issue for banks with zero excluded balance. Banks with ANY Ag or ADC balance got their entire portfolio NCOs misattributed.
-
-**Root causes**:
-1. `RIAD4635` was used for Ag charge-offs but is actually **Total Gross Charge-offs on ALL Loans** (RI-B Item 9, Col A). This attributed every bank's entire charge-off base to "Ag".
-2. `NTLS` was used for ADC charge-offs but is actually **Total Net Loan & Lease NCOs** (entire portfolio). Combined with `RIAD4659` recoveries, this double-subtracted recoveries.
-3. `RIAD4608/RIAD4609` C&I fallback was unverified against the current MDRM dictionary.
-
-**6-part fix**:
-
-1. **Ag NCO mapping** — Replaced `RIAD4635 - RIAD4645` with `best_of(['NTAG', 'NTREAG'])`. NTAG = ag production NCOs (RI-B Item 3), NTREAG = farmland-secured NCOs (RI-B Item 1.b) as fallback.
-2. **ADC NCO mapping** — Replaced `NTLS/RIAD4658 - RIAD4659` with `best_of(['NTRECONS'])`. NTRECONS = construction NCOs (RI-B Item 1.a).
-3. **C&I NCO fallback** — Removed `RIAD4608/RIAD4609` fallback. NTCI + RIAD4638 alone are authoritative. Added balance-gating for C&I (was missing).
-4. **Ceiling constraint** — After `Excluded_NCO_TTM` rolling sum, cap at `Total_NCO_TTM` via `min(axis=1)`. Same ceiling for `Excluded_Nonaccrual` vs `Total_Nonaccrual`/`NALL`. Logs warning when applied.
-5. **Fetch list cleanup** — Removed `RIAD4635`, `RIAD4645` from FDIC fetch; removed `RIAD4658`, `RIAD4659`, `RIAD4608`, `RIAD4609` from FFIEC fetch. Added `NTAG` to FDIC fetch list.
-6. **NTLS comment** — Updated to clarify: "Used ONLY for Total_NCO_TTM, NOT for exclusions."
-
-**Expected impact**:
-- `Excl_Ag_NCO_YTD` drops from ~$9.6B to <$50M for major banks (actual ag NCOs are tiny)
-- `Excluded_NCO_TTM` will never exceed `Total_NCO_TTM` (ceiling enforced)
-- `Norm_NCO_Rate` will no longer be N/A for peer banks
-- `dominant_exclusion_category` shifts from "Ag" to "CI" or "CreditCard" for large banks
-
-**Remaining risks**:
-- NTAG may not be populated for all banks in the FDIC API. Fallback to NTREAG (farmland-secured) is conservative but maps to a different balance category (RC-C Item 1.b vs RCFD1590).
-- NTRECONS availability for smaller banks is untested. If absent, ADC NCO defaults to 0 via `fillna(0)`.
-- The ceiling constraint is a safeguard, not a fix. If triggered in production, it indicates a remaining upstream mapping error that should be investigated.
-
-**Files changed**: `MSPBNA_CR_Normalized.py`, `test_regression.py`, `CLAUDE.md`
+**Files changed:** `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Normalized KRI Bullet Chart Split (Rates vs Composition)
 
@@ -877,7 +808,7 @@ the precision available.
    - `kri_bullet_normalized_rates` — 5 rate metrics (Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage)
    - `kri_bullet_normalized_composition` — 5 composition metrics (Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share)
    - Each gets its own axes, avoiding the mixed-scale problem
-   - Exact titles: "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)" and "(Normalized Composition)"
+   - Exact titles: "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)" and "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)"
 
 2. **Comparator fallback fix** in `generate_kri_bullet_chart()`:
    - Both comparators available → gray band between min and max (unchanged)
