@@ -186,8 +186,20 @@ def build_yoy_heatmap_data(
         peer_cur = pd.to_numeric(peer_cur, errors="coerce")
         peer_pri = pd.to_numeric(peer_pri, errors="coerce")
 
-        subj_yoy = subj_cur - subj_pri if pd.notna(subj_cur) and pd.notna(subj_pri) else np.nan
-        peer_yoy = peer_cur - peer_pri if pd.notna(peer_cur) and pd.notna(peer_pri) else np.nan
+        # Composition/share metrics use percent-change YoY (balance growth)
+        # instead of simple subtraction to avoid confusing share-point deltas
+        # with true growth/shrinkage of the underlying balance.
+        _is_composition = any(k in code for k in ("Composition", "Loan_Share", "ACL_Share"))
+        if _is_composition:
+            subj_yoy = ((subj_cur / subj_pri) - 1.0 if (
+                pd.notna(subj_cur) and pd.notna(subj_pri)
+                and abs(subj_pri) > 1e-12) else np.nan)
+            peer_yoy = ((peer_cur / peer_pri) - 1.0 if (
+                pd.notna(peer_cur) and pd.notna(peer_pri)
+                and abs(peer_pri) > 1e-12) else np.nan)
+        else:
+            subj_yoy = subj_cur - subj_pri if pd.notna(subj_cur) and pd.notna(subj_pri) else np.nan
+            peer_yoy = peer_cur - peer_pri if pd.notna(peer_cur) and pd.notna(peer_pri) else np.nan
         vs_peer = subj_cur - peer_cur if pd.notna(subj_cur) and pd.notna(peer_cur) else np.nan
 
         rows.append({
@@ -197,6 +209,7 @@ def build_yoy_heatmap_data(
             "polarity": polarity.value,
             "display_format": disp_fmt.value,
             "delta_format": delta_fmt.value,
+            "is_composition": _is_composition,
             "subj_current": subj_cur,
             "subj_prior": subj_pri,
             "subj_yoy": subj_yoy,
@@ -216,6 +229,7 @@ def render_yoy_heatmap_html(
     heatmap_df: pd.DataFrame,
     title: str = "Key Risk Indicators — YoY Heatmap",
     latest_date: Optional[pd.Timestamp] = None,
+    peer_label: str = "Peers",
 ) -> str:
     """Render a heatmap DataFrame as a self-contained HTML table."""
     date_str = latest_date.strftime("%B %d, %Y") if latest_date else ""
@@ -259,10 +273,10 @@ def render_yoy_heatmap_html(
             <th>MSPBNA<br>Current</th>
             <th>MSPBNA<br>YoY</th>
             <th>Direction</th>
-            <th>Peers<br>Current</th>
-            <th>Peers<br>YoY</th>
+            <th>{peer_label}<br>Current</th>
+            <th>{peer_label}<br>YoY</th>
             <th>Direction</th>
-            <th>vs Peers</th>
+            <th>vs {peer_label}</th>
         </tr></thead>
         <tbody>
     """
@@ -276,12 +290,21 @@ def render_yoy_heatmap_html(
 
         disp_fmt = DisplayFormat(row["display_format"])
         delta_fmt = DisplayFormat(row["delta_format"])
+        is_comp = row.get("is_composition", False)
 
         subj_v = _fmt_val(row["subj_current"], disp_fmt)
-        subj_yoy = _fmt_delta(row["subj_yoy"], delta_fmt)
         peer_v = _fmt_val(row["peer_current"], disp_fmt)
-        peer_yoy = _fmt_delta(row["peer_yoy"], delta_fmt)
         vs_peer = _fmt_delta(row["vs_peer_delta"], delta_fmt)
+
+        # Composition YoY is already a percent-change ratio; format as ±X.X%
+        if is_comp:
+            _sy = row["subj_yoy"]
+            subj_yoy = f"{_sy * 100:+.1f}%" if pd.notna(_sy) else "N/A"
+            _py = row["peer_yoy"]
+            peer_yoy = f"{_py * 100:+.1f}%" if pd.notna(_py) else "N/A"
+        else:
+            subj_yoy = _fmt_delta(row["subj_yoy"], delta_fmt)
+            peer_yoy = _fmt_delta(row["peer_yoy"], delta_fmt)
 
         s_dir = row["subj_direction"]
         p_dir = row["peer_direction"]
@@ -323,8 +346,16 @@ def generate_yoy_heatmap(
     peer_cert: int,
     is_normalized: bool = False,
     save_path: Optional[str] = None,
+    peer_label: Optional[str] = None,
 ) -> Optional[str]:
-    """Full pipeline: build data → render HTML → optionally save."""
+    """Full pipeline: build data → render HTML → optionally save.
+
+    Parameters
+    ----------
+    peer_label : str, optional
+        Human-readable peer group name (e.g. "Wealth Peers", "All Peers").
+        Used in title and column headers. Defaults to "Peers".
+    """
     hdata = build_yoy_heatmap_data(df, subject_cert, peer_cert,
                                     is_normalized=is_normalized)
     if hdata is None or hdata.empty:
@@ -333,9 +364,11 @@ def generate_yoy_heatmap(
 
     latest = df["REPDTE"].max() if "REPDTE" in df.columns else None
     norm_label = "Normalized" if is_normalized else "Standard"
-    title = f"Key Risk Indicators — YoY Heatmap ({norm_label})"
+    _peer = peer_label or "Peers"
+    title = f"Key Risk Indicators — YoY Heatmap ({norm_label} — {_peer})"
 
-    html = render_yoy_heatmap_html(hdata, title=title, latest_date=latest)
+    html = render_yoy_heatmap_html(hdata, title=title, latest_date=latest,
+                                    peer_label=_peer)
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         with open(save_path, "w", encoding="utf-8") as f:
@@ -635,6 +668,20 @@ SPARKLINE_METRICS = [
     "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_ACL_Coverage",
 ]
 
+# Standard-only sparkline metrics (non-Norm, non-segment-normalized)
+SPARKLINE_METRICS_STANDARD = [
+    "TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate",
+    "Allowance_to_Gross_Loans_Rate", "Risk_Adj_Allowance_Coverage",
+    "Past_Due_Rate",
+    "RIC_CRE_Nonaccrual_Rate", "RIC_CRE_ACL_Coverage",
+]
+
+# Normalized-only sparkline metrics
+SPARKLINE_METRICS_NORMALIZED = [
+    "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_ACL_Coverage",
+    "Norm_Risk_Adj_Allowance_Coverage", "Norm_Delinquency_Rate",
+]
+
 
 def _svg_sparkline(values: List[float], width: int = 120, height: int = 24,
                    color: str = "#4C78A8") -> str:
@@ -678,6 +725,7 @@ def generate_sparkline_table(
     metrics: Optional[List[str]] = None,
     trailing_quarters: int = 8,
     save_path: Optional[str] = None,
+    peer_label: Optional[str] = None,
 ) -> Optional[str]:
     """Generate an HTML table with inline SVG sparklines for trend context.
 
@@ -689,6 +737,8 @@ def generate_sparkline_table(
         Comparator CERT for standard metrics (default 90003 = All Peers).
     norm_peer_cert : int
         Comparator CERT for Norm_* metrics (default 90006 = All Peers Norm).
+    peer_label : str, optional
+        Human-readable peer group name for title/headers. Defaults to "Peers".
     """
     if "REPDTE" not in df.columns:
         return None
@@ -730,6 +780,7 @@ def generate_sparkline_table(
         return pd.to_numeric(row[col].iloc[0], errors="coerce")
 
     date_str = latest.strftime("%B %d, %Y") if hasattr(latest, 'strftime') else str(latest)
+    _peer_lbl = peer_label or "Peers"
 
     html = f"""<html><head><style>
         body {{ font-family: Arial, sans-serif; }}
@@ -749,7 +800,7 @@ def generate_sparkline_table(
         .neutral-trend {{ color: #757575; }}
     </style></head><body>
     <div class="spark-container">
-        <h3>Credit Risk Dashboard — Trend Summary</h3>
+        <h3>Credit Risk Dashboard — Trend Summary ({_peer_lbl})</h3>
         <p class="date">{date_str}</p>
         <table>
         <thead><tr>
@@ -757,7 +808,7 @@ def generate_sparkline_table(
             <th>Trend ({trailing_quarters}Q)</th>
             <th>Current</th>
             <th>YoY</th>
-            <th>vs Peers</th>
+            <th>vs {_peer_lbl}</th>
         </tr></thead>
         <tbody>
     """

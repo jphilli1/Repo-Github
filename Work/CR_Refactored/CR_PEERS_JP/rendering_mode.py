@@ -164,6 +164,10 @@ _reg("scatter_pd_vs_npl", ArtifactAvailability.FULL_LOCAL_ONLY, "scatter",
      "Standard scatter: PD vs NPL (8Q avg)")
 _reg("scatter_norm_nco_vs_nonaccrual", ArtifactAvailability.FULL_LOCAL_ONLY, "scatter",
      "Normalized scatter: NCO vs Nonaccrual (8Q avg)")
+_reg("scatter_cre_nco_vs_nonaccrual", ArtifactAvailability.FULL_LOCAL_ONLY, "scatter",
+     "CRE scatter: NCO Rate vs Nonaccrual Rate (8Q avg)")
+_reg("scatter_norm_acl_vs_delinquency", ArtifactAvailability.FULL_LOCAL_ONLY, "scatter",
+     "Normalized scatter: ACL Coverage vs Delinquency Rate (8Q avg)")
 
 # --- Segment-Level Charts (matplotlib → full_local only) ---
 _reg("portfolio_mix", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
@@ -208,10 +212,16 @@ _reg("cs_collateral_panel", ArtifactAvailability.FULL_LOCAL_ONLY, "fred_chart",
      "Case-Shiller collateral panel chart")
 
 # --- Executive Charts (Prompt 2) ---
-_reg("yoy_heatmap_standard", ArtifactAvailability.BOTH, "table",
-     "YoY directional heatmap (standard metrics)")
-_reg("yoy_heatmap_normalized", ArtifactAvailability.BOTH, "table",
-     "YoY directional heatmap (normalized metrics)")
+# YoY Heatmaps — 4 variants: Standard/Normalized × Wealth/All Peers
+_reg("yoy_heatmap_standard_wealth", ArtifactAvailability.BOTH, "table",
+     "YoY directional heatmap (standard metrics, Wealth Peers)")
+_reg("yoy_heatmap_standard_allpeers", ArtifactAvailability.BOTH, "table",
+     "YoY directional heatmap (standard metrics, All Peers)")
+_reg("yoy_heatmap_normalized_wealth", ArtifactAvailability.BOTH, "table",
+     "YoY directional heatmap (normalized metrics, Wealth Peers)")
+_reg("yoy_heatmap_normalized_allpeers", ArtifactAvailability.BOTH, "table",
+     "YoY directional heatmap (normalized metrics, All Peers)")
+# KRI Bullet Charts (unchanged)
 _reg("kri_bullet_standard", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "KRI football-field chart — standard % rate metrics (MSPBNA vs nested peer range)")
 _reg("kri_bullet_standard_coverage", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
@@ -220,8 +230,15 @@ _reg("kri_bullet_normalized_rates", ArtifactAvailability.FULL_LOCAL_ONLY, "chart
      "KRI football-field chart — normalized rate metrics (MSPBNA vs norm peer range)")
 _reg("kri_bullet_normalized_composition", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "KRI football-field chart — normalized composition metrics (MSPBNA vs norm peer range)")
-_reg("sparkline_summary", ArtifactAvailability.BOTH, "table",
-     "Sparkline-enhanced summary table with trailing 8Q trends")
+# Sparklines — 4 variants: Standard/Normalized × Wealth/All Peers
+_reg("sparkline_standard_wealth", ArtifactAvailability.BOTH, "table",
+     "Sparkline summary (standard metrics, Wealth Peers)")
+_reg("sparkline_standard_allpeers", ArtifactAvailability.BOTH, "table",
+     "Sparkline summary (standard metrics, All Peers)")
+_reg("sparkline_normalized_wealth", ArtifactAvailability.BOTH, "table",
+     "Sparkline summary (normalized metrics, Wealth Peers)")
+_reg("sparkline_normalized_allpeers", ArtifactAvailability.BOTH, "table",
+     "Sparkline summary (normalized metrics, All Peers)")
 
 # --- Corp Overlay Artifacts (separate workflow: corp_overlay_runner.py) ---
 _reg("loan_balance_by_product", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
