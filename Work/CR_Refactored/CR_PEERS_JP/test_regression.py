@@ -4740,10 +4740,13 @@ class TestArtifactRegistryCanonical(unittest.TestCase):
             "scatter_norm_nco_vs_nonaccrual",
             "portfolio_mix", "migration_ladder", "fred_table",
             "yoy_heatmap_standard", "kri_bullet_standard",
+            "kri_bullet_standard_coverage",
             "kri_bullet_normalized_rates", "kri_bullet_normalized_composition",
             "sparkline_summary",
             "macro_corr_heatmap_lag1", "macro_overlay_credit_stress",
             "macro_overlay_rates_housing",
+            "growth_vs_deterioration_bookwide",
+            "msa_macro_panel",
         }
         for name in expected:
             self.assertIn(name, ARTIFACT_REGISTRY, f"Missing artifact: {name}")
@@ -6230,6 +6233,215 @@ class TestWealthPeersInclusion(unittest.TestCase):
         fn_body = fn_match.group(0)
         self.assertIn("Wealth Peers", fn_body,
                        "plot_concentration_vs_capital must include 'Wealth Peers' label")
+
+
+###############################################################################
+# Test Suite: Chart Package Expansion (Bookwide, Football-Field, MSA Panel)
+###############################################################################
+
+class TestBookwideGrowthChart(unittest.TestCase):
+    """Tests for the bookwide growth vs deterioration chart (PART 1)."""
+
+    @classmethod
+    def setUpClass(cls):
+        src = Path(__file__).parent / "report_generator.py"
+        cls._src = src.read_text(encoding="utf-8")
+
+    def test_bookwide_function_exists(self):
+        """plot_growth_vs_deterioration_bookwide must be defined."""
+        self.assertIn("def plot_growth_vs_deterioration_bookwide(", self._src)
+
+    def test_bookwide_artifact_registered(self):
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertIn("growth_vs_deterioration_bookwide", ARTIFACT_REGISTRY)
+
+    def test_bookwide_is_full_local_only(self):
+        from rendering_mode import ARTIFACT_REGISTRY, RenderMode
+        cap = ARTIFACT_REGISTRY["growth_vs_deterioration_bookwide"]
+        self.assertTrue(cap.is_available(RenderMode.FULL_LOCAL))
+        self.assertFalse(cap.is_available(RenderMode.CORP_SAFE))
+
+    def test_bookwide_called_in_generate_reports(self):
+        """generate_reports() must call the bookwide chart."""
+        self.assertIn("growth_vs_deterioration_bookwide", self._src)
+
+    def test_bookwide_uses_gross_loans(self):
+        """Bookwide chart must reference Gross_Loans for x-axis."""
+        import re
+        fn_match = re.search(
+            r'def plot_growth_vs_deterioration_bookwide\(.*?\n(?=def |\Z)',
+            self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        body = fn_match.group(0)
+        self.assertIn("Gross_Loans", body)
+
+    def test_bookwide_uses_centralized_palette(self):
+        """Bookwide chart must use _C_* palette aliases."""
+        import re
+        fn_match = re.search(
+            r'def plot_growth_vs_deterioration_bookwide\(.*?\n(?=def |\Z)',
+            self._src, re.DOTALL)
+        body = fn_match.group(0)
+        self.assertIn("_C_MSPBNA", body)
+        self.assertIn("_C_WEALTH", body)
+        self.assertIn("_C_PEER_CLOUD", body)
+
+    def test_bookwide_has_wealth_peers_marker(self):
+        """Bookwide chart must include Wealth Peers marker."""
+        import re
+        fn_match = re.search(
+            r'def plot_growth_vs_deterioration_bookwide\(.*?\n(?=def |\Z)',
+            self._src, re.DOTALL)
+        body = fn_match.group(0)
+        self.assertIn("Wealth Peers", body)
+
+    def test_original_cre_chart_still_exists(self):
+        """The original CRE growth_vs_deterioration chart must still exist."""
+        self.assertIn("def plot_growth_vs_deterioration(", self._src)
+
+
+class TestFootballFieldKRI(unittest.TestCase):
+    """Tests for nested-band football-field KRI charts (PARTS 2 & 3)."""
+
+    def test_bullet_chart_has_member_cert_params(self):
+        """generate_kri_bullet_chart must accept wealth_member_certs and all_peers_member_certs."""
+        import inspect
+        from executive_charts import generate_kri_bullet_chart
+        sig = inspect.signature(generate_kri_bullet_chart)
+        self.assertIn("wealth_member_certs", sig.parameters)
+        self.assertIn("all_peers_member_certs", sig.parameters)
+
+    def test_standard_rates_metric_list_exists(self):
+        from executive_charts import BULLET_METRICS_STANDARD_RATES
+        self.assertIsInstance(BULLET_METRICS_STANDARD_RATES, list)
+        self.assertTrue(len(BULLET_METRICS_STANDARD_RATES) >= 3)
+
+    def test_standard_coverage_metric_list_exists(self):
+        from executive_charts import BULLET_METRICS_STANDARD_COVERAGE
+        self.assertIsInstance(BULLET_METRICS_STANDARD_COVERAGE, list)
+        self.assertTrue(len(BULLET_METRICS_STANDARD_COVERAGE) >= 2)
+
+    def test_standard_rates_are_percent_metrics(self):
+        """Standard rates list must not contain x-multiple coverage metrics."""
+        from executive_charts import BULLET_METRICS_STANDARD_RATES
+        x_mult = {"Risk_Adj_Allowance_Coverage", "RIC_CRE_Risk_Adj_Coverage",
+                   "RIC_Resi_Risk_Adj_Coverage", "RIC_Comm_Risk_Adj_Coverage"}
+        overlap = set(BULLET_METRICS_STANDARD_RATES) & x_mult
+        self.assertEqual(overlap, set(),
+                         f"Rate list must not contain x-multiple metrics: {overlap}")
+
+    def test_standard_coverage_are_x_multiple_metrics(self):
+        """Standard coverage list must contain only x-multiple metrics."""
+        from executive_charts import BULLET_METRICS_STANDARD_COVERAGE
+        for m in BULLET_METRICS_STANDARD_COVERAGE:
+            self.assertIn("Coverage", m,
+                          f"Coverage list metric {m} does not contain 'Coverage'")
+
+    def test_no_overlap_standard_rates_and_coverage(self):
+        """Standard rates and coverage lists must not share any metrics."""
+        from executive_charts import BULLET_METRICS_STANDARD_RATES, BULLET_METRICS_STANDARD_COVERAGE
+        overlap = set(BULLET_METRICS_STANDARD_RATES) & set(BULLET_METRICS_STANDARD_COVERAGE)
+        self.assertEqual(overlap, set())
+
+    def test_standard_coverage_artifact_registered(self):
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertIn("kri_bullet_standard_coverage", ARTIFACT_REGISTRY)
+
+    def test_member_certs_passed_to_bullet_charts(self):
+        """report_generator.py must pass member CERTs to bullet chart calls."""
+        src = Path(__file__).parent / "report_generator.py"
+        content = src.read_text(encoding="utf-8")
+        self.assertIn("wealth_member_certs=_WEALTH_MEMBER_CERTS", content)
+        self.assertIn("all_peers_member_certs=_ALL_PEERS_MEMBER_CERTS", content)
+
+    def test_wealth_member_certs_defined(self):
+        """_WEALTH_MEMBER_CERTS must be defined in report_generator.py."""
+        src = Path(__file__).parent / "report_generator.py"
+        content = src.read_text(encoding="utf-8")
+        self.assertIn("_WEALTH_MEMBER_CERTS", content)
+
+    def test_all_peers_member_certs_defined(self):
+        """_ALL_PEERS_MEMBER_CERTS must be defined in report_generator.py."""
+        src = Path(__file__).parent / "report_generator.py"
+        content = src.read_text(encoding="utf-8")
+        self.assertIn("_ALL_PEERS_MEMBER_CERTS", content)
+
+    def test_football_field_uses_nested_bands(self):
+        """Bullet chart function must reference both range colors (outer + inner)."""
+        src = Path(__file__).parent / "executive_charts.py"
+        content = src.read_text(encoding="utf-8")
+        # Outer band (All Peers) should use light gray
+        self.assertIn("#D0D0D0", content)
+        # Inner band (Wealth Peers) should use muted purple-gray
+        self.assertIn("#B8A0C8", content)
+
+    def test_bullet_specs_has_four_entries(self):
+        """report_generator.py must define 4 bullet chart specs (std rates, std cov, norm rates, norm comp)."""
+        src = Path(__file__).parent / "report_generator.py"
+        content = src.read_text(encoding="utf-8")
+        self.assertIn("kri_bullet_standard_coverage", content)
+        self.assertIn("kri_bullet_standard", content)
+        self.assertIn("kri_bullet_normalized_rates", content)
+        self.assertIn("kri_bullet_normalized_composition", content)
+
+
+class TestMSAMacroPanel(unittest.TestCase):
+    """Tests for the MSA macro panel functions in corp_overlay.py (PART 4)."""
+
+    def test_select_top_msas_exists(self):
+        from corp_overlay import select_top_msas
+        self.assertTrue(callable(select_top_msas))
+
+    def test_build_msa_macro_panel_exists(self):
+        from corp_overlay import build_msa_macro_panel
+        self.assertTrue(callable(build_msa_macro_panel))
+
+    def test_select_top_msas_returns_list(self):
+        from corp_overlay import select_top_msas
+        import pandas as pd
+        df = pd.DataFrame({
+            "msa": ["NYC", "LA", "CHI", "NYC", "LA"],
+            "current_balance": [100, 200, 50, 150, 300],
+        })
+        result = select_top_msas(df, geo_field="msa", top_n=2)
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], "LA")  # 500 > 250
+
+    def test_select_top_msas_empty_on_missing_col(self):
+        from corp_overlay import select_top_msas
+        import pandas as pd
+        df = pd.DataFrame({"foo": [1, 2], "current_balance": [100, 200]})
+        result = select_top_msas(df, geo_field="msa")
+        self.assertEqual(result, [])
+
+    def test_msa_macro_series_has_correct_units(self):
+        """_MSA_MACRO_SERIES must have correct unit labels."""
+        from corp_overlay import _MSA_MACRO_SERIES
+        self.assertEqual(_MSA_MACRO_SERIES["case_shiller_yoy"]["unit"], "%")
+        self.assertEqual(_MSA_MACRO_SERIES["gdp_yoy"]["unit"], "%")
+        self.assertEqual(_MSA_MACRO_SERIES["unemployment_chg"]["unit"], "pp")
+
+    def test_unemployment_unit_is_percentage_points(self):
+        """Unemployment change must be labeled as percentage points (pp), NOT %."""
+        from corp_overlay import _MSA_MACRO_SERIES
+        unemp = _MSA_MACRO_SERIES["unemployment_chg"]
+        self.assertEqual(unemp["unit"], "pp")
+        self.assertIn("percentage points", unemp["note"].lower())
+
+    def test_msa_macro_panel_artifact_registered(self):
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertIn("msa_macro_panel", ARTIFACT_REGISTRY)
+
+    def test_build_msa_macro_panel_handles_no_data(self):
+        from corp_overlay import build_msa_macro_panel
+        result = build_msa_macro_panel(msas=["NYC", "LA"])
+        self.assertIsNone(result)  # No data passed → None
+
+    def test_build_msa_macro_panel_handles_empty_msas(self):
+        from corp_overlay import build_msa_macro_panel
+        result = build_msa_macro_panel(msas=[])
+        self.assertIsNone(result)
 
 
 if __name__ == '__main__':

@@ -353,6 +353,15 @@ BULLET_METRICS_STANDARD = [
     "RIC_CRE_ACL_Coverage", "RIC_CRE_Risk_Adj_Coverage",
 ]
 
+# Standard metrics split by unit family (Part 3: never mix % rates with x-multiples)
+BULLET_METRICS_STANDARD_RATES = [
+    "TTM_NCO_Rate", "Nonaccrual_to_Gross_Loans_Rate", "Past_Due_Rate",
+    "Allowance_to_Gross_Loans_Rate", "RIC_CRE_ACL_Coverage",
+]
+BULLET_METRICS_STANDARD_COVERAGE = [
+    "Risk_Adj_Allowance_Coverage", "RIC_CRE_Risk_Adj_Coverage",
+]
+
 BULLET_METRICS_NORMALIZED = [
     "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
     "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
@@ -384,19 +393,29 @@ def generate_kri_bullet_chart(
     is_normalized: bool = False,
     save_path: Optional[str] = None,
     title_override: Optional[str] = None,
+    wealth_member_certs: Optional[List[int]] = None,
+    all_peers_member_certs: Optional[List[int]] = None,
 ) -> Optional["plt.Figure"]:
-    """Generate a horizontal bullet / football-field chart.
+    """Generate a horizontal football-field chart with nested peer range bands.
 
     For each metric, shows:
-      - Gray band: range between Wealth Peers and All Peers
-      - Gold marker: MSPBNA value
-      - Optional threshold bands from metric_semantics
+      - Outer lighter band: All Peers min–max range (light gray)
+      - Inner darker band: Wealth Peers min–max range (muted purple-gray)
+      - Gold diamond: MSPBNA value
+      - Optional median markers and edge labels with min/max peer tickers
 
     Parameters
     ----------
     is_normalized : bool
-        If True, uses normalized metric list and comparator CERTs
-        (90004 Wealth Peers Norm, 90006 All Peers Norm).
+        If True, uses normalized metric list and comparator CERTs.
+    wealth_member_certs : list of int, optional
+        Individual bank CERTs that belong to the Wealth Peers group.
+        Used to compute the actual min/max range for the inner band.
+        Falls back to composite CERT if not provided.
+    all_peers_member_certs : list of int, optional
+        Individual bank CERTs that belong to the All Peers group.
+        Used to compute the actual min/max range for the outer band.
+        Falls back to composite CERT if not provided.
     """
     _ensure_mpl()
 
@@ -416,76 +435,156 @@ def generate_kri_bullet_chart(
         row = latest_df[latest_df["CERT"] == cert]
         return float(row[col].iloc[0]) if not row.empty and pd.notna(row[col].iloc[0]) else np.nan
 
-    # Build chart data
-    # ref_markers tracks metrics where only one comparator is available:
-    #   index → x-value of the single available comparator (drawn as thin marker)
-    labels, subj_vals, lo_vals, hi_vals = [], [], [], []
-    ref_markers: Dict[int, float] = {}
+    def _range_for_group(certs, col):
+        """Compute (min, max, median, min_cert, max_cert) across a set of member CERTs."""
+        vals = {}
+        for c in certs:
+            v = _val(c, col)
+            if pd.notna(v):
+                vals[c] = v
+        if not vals:
+            return None
+        min_cert = min(vals, key=vals.get)
+        max_cert = max(vals, key=vals.get)
+        values = list(vals.values())
+        return {
+            "lo": min(values), "hi": max(values),
+            "median": float(np.median(values)),
+            "min_cert": min_cert, "max_cert": max_cert,
+            "count": len(values),
+        }
+
+    # Try to resolve display label for edge annotations
+    try:
+        from report_generator import resolve_display_label
+        _has_resolver = True
+    except ImportError:
+        _has_resolver = False
+
+    def _cert_label(cert):
+        if _has_resolver:
+            row = latest_df[latest_df["CERT"] == cert]
+            name = row["REPNM"].iloc[0] if not row.empty and "REPNM" in row.columns else ""
+            return resolve_display_label(cert, name)
+        return str(cert)
+
+    # Build chart data — nested bands
+    # For each metric: outer_range (All Peers), inner_range (Wealth Peers), subject value
+    _COLOR_RANGE_ALL = "#D0D0D0"      # Light gray — outer band
+    _COLOR_RANGE_WEALTH = "#B8A0C8"   # Muted purple-gray — inner band
+    _COLOR_MSPBNA = "#F7A81B"         # Gold
+    _COLOR_REF = "#808080"            # Single-comparator reference line
+
+    chart_rows = []
     for code in metrics:
         sem = get_semantic(code)
         label = sem.display_name if sem else code.replace("_", " ")
         sv = _val(subject_cert, code)
-        wv = _val(wealth_cert, code)
-        av = _val(all_peers_cert, code)
         if pd.isna(sv):
             continue
-        both_present = pd.notna(wv) and pd.notna(av)
-        one_present = pd.notna(wv) or pd.notna(av)
-        if both_present:
-            # Normal case: gray band between the two comparators
-            labels.append(label)
-            subj_vals.append(sv)
-            lo_vals.append(min(wv, av))
-            hi_vals.append(max(wv, av))
-        elif one_present:
-            # Single comparator: thin reference marker (NOT collapse to subject)
-            single_val = wv if pd.notna(wv) else av
-            labels.append(label)
-            subj_vals.append(sv)
-            lo_vals.append(single_val)
-            hi_vals.append(single_val)
-            ref_markers[len(labels) - 1] = single_val
-        else:
-            # Neither comparator available: skip this metric row entirely
+
+        # Compute ranges from individual peer members if available
+        all_range = None
+        wealth_range = None
+        if all_peers_member_certs:
+            all_range = _range_for_group(all_peers_member_certs, code)
+        if wealth_member_certs:
+            wealth_range = _range_for_group(wealth_member_certs, code)
+
+        # Fallback: use composite CERT values as single-point bands
+        if all_range is None:
+            av = _val(all_peers_cert, code)
+            if pd.notna(av):
+                all_range = {"lo": av, "hi": av, "median": av,
+                             "min_cert": all_peers_cert, "max_cert": all_peers_cert, "count": 1}
+        if wealth_range is None:
+            wv = _val(wealth_cert, code)
+            if pd.notna(wv):
+                wealth_range = {"lo": wv, "hi": wv, "median": wv,
+                                "min_cert": wealth_cert, "max_cert": wealth_cert, "count": 1}
+
+        has_all = all_range is not None
+        has_wealth = wealth_range is not None
+        if not has_all and not has_wealth:
+            # Neither comparator group available: skip metric
             continue
 
-    if not labels:
+        chart_rows.append({
+            "label": label, "code": code, "sv": sv,
+            "all_range": all_range, "wealth_range": wealth_range,
+        })
+
+    if not chart_rows:
         print("  Skipped KRI bullet chart: all values N/A")
         return None
 
-    n = len(labels)
-    fig, ax = plt.subplots(figsize=(10, max(3, n * 0.8 + 1.5)))
+    n = len(chart_rows)
+    fig, ax = plt.subplots(figsize=(10, max(3, n * 0.9 + 1.5)))
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
 
     y = np.arange(n)
-    bar_height = 0.35
+    bar_height_outer = 0.38
+    bar_height_inner = 0.24
 
-    # Peer range bands (gray) or thin reference markers (single comparator)
-    for i in range(n):
-        lo, hi = lo_vals[i], hi_vals[i]
-        if i in ref_markers:
-            # Single comparator: thin vertical reference line
-            ax.plot([ref_markers[i], ref_markers[i]],
-                    [y[i] - bar_height, y[i] + bar_height],
-                    color="#808080", linewidth=2.0, zorder=3)
-        else:
-            ax.barh(y[i], hi - lo, left=lo, height=bar_height * 2,
-                    color="#D0D0D0", alpha=0.6, edgecolor="#B0B0B0", linewidth=0.5)
+    labels = []
+    for i, row in enumerate(chart_rows):
+        labels.append(row["label"])
+        ar = row["all_range"]
+        wr = row["wealth_range"]
+
+        # Outer band: All Peers range
+        if ar and ar["hi"] > ar["lo"]:
+            ax.barh(y[i], ar["hi"] - ar["lo"], left=ar["lo"],
+                    height=bar_height_outer * 2,
+                    color=_COLOR_RANGE_ALL, alpha=0.5, edgecolor="#B0B0B0",
+                    linewidth=0.5, zorder=2)
+            # Median marker for All Peers
+            ax.plot([ar["median"]], [y[i]], marker="|", color="#888888",
+                    markersize=10, markeredgewidth=1.5, zorder=3)
+        elif ar:
+            # Single-point All Peers: thin reference line
+            ax.plot([ar["lo"], ar["lo"]],
+                    [y[i] - bar_height_outer, y[i] + bar_height_outer],
+                    color=_COLOR_REF, linewidth=1.5, zorder=3)
+
+        # Inner band: Wealth Peers range
+        if wr and wr["hi"] > wr["lo"]:
+            ax.barh(y[i], wr["hi"] - wr["lo"], left=wr["lo"],
+                    height=bar_height_inner * 2,
+                    color=_COLOR_RANGE_WEALTH, alpha=0.7, edgecolor="#9070A0",
+                    linewidth=0.5, zorder=3)
+            # Median marker for Wealth Peers
+            ax.plot([wr["median"]], [y[i]], marker="|", color="#6B3D7B",
+                    markersize=8, markeredgewidth=1.5, zorder=4)
+        elif wr:
+            # Single-point Wealth Peers: thin reference line
+            ax.plot([wr["lo"], wr["lo"]],
+                    [y[i] - bar_height_inner, y[i] + bar_height_inner],
+                    color="#7B2D8E", linewidth=2.0, zorder=4)
+
+        # Edge labels: min/max peer tickers on the outer band
+        if ar and ar["count"] > 1:
+            min_lbl = _cert_label(ar["min_cert"])
+            max_lbl = _cert_label(ar["max_cert"])
+            ax.annotate(min_lbl, xy=(ar["lo"], y[i]), xytext=(-3, -12),
+                        textcoords="offset points", fontsize=7, color="#666666",
+                        ha="center", va="top")
+            ax.annotate(max_lbl, xy=(ar["hi"], y[i]), xytext=(3, -12),
+                        textcoords="offset points", fontsize=7, color="#666666",
+                        ha="center", va="top")
 
     # MSPBNA markers (gold diamonds)
-    ax.scatter(subj_vals, y, s=120, color="#F7A81B", edgecolor="black",
-               linewidth=0.8, zorder=5, marker="D", label="MSPBNA")
+    subj_vals = [r["sv"] for r in chart_rows]
+    ax.scatter(subj_vals, y, s=130, color=_COLOR_MSPBNA, edgecolor="black",
+               linewidth=0.8, zorder=6, marker="D", label="MSPBNA")
 
-    # Value annotations
-    for i in range(n):
-        sem = get_semantic(labels[i]) or get_semantic(
-            [m for m in metrics if (get_semantic(m) and get_semantic(m).display_name == labels[i]) or m.replace("_", " ") == labels[i]][0]
-            if any((get_semantic(m) and get_semantic(m).display_name == labels[i]) or m.replace("_", " ") == labels[i] for m in metrics) else ""
-        )
+    # Value annotations next to MSPBNA diamond
+    for i, row in enumerate(chart_rows):
+        sem = get_semantic(row["code"])
         disp_fmt = sem.display_format if sem else DisplayFormat.PERCENT
-        ax.annotate(_fmt_val(subj_vals[i], disp_fmt),
-                    xy=(subj_vals[i], y[i]), xytext=(8, 0),
+        ax.annotate(_fmt_val(row["sv"], disp_fmt),
+                    xy=(row["sv"], y[i]), xytext=(8, 0),
                     textcoords="offset points", fontsize=9, fontweight="bold",
                     color="#2B2B2B", va="center")
 
@@ -508,16 +607,13 @@ def generate_kri_bullet_chart(
     from matplotlib.patches import Patch
     from matplotlib.lines import Line2D
     legend_elements = [
-        Line2D([0], [0], marker="D", color="w", markerfacecolor="#F7A81B",
+        Line2D([0], [0], marker="D", color="w", markerfacecolor=_COLOR_MSPBNA,
                markeredgecolor="black", markersize=10, label="MSPBNA"),
-        Patch(facecolor="#D0D0D0", edgecolor="#B0B0B0",
-              label="Wealth Peers Norm ↔ All Peers Norm" if is_normalized
-              else "Wealth Peers ↔ All Peers"),
+        Patch(facecolor=_COLOR_RANGE_ALL, edgecolor="#B0B0B0", alpha=0.5,
+              label="All Peers Range"),
+        Patch(facecolor=_COLOR_RANGE_WEALTH, edgecolor="#9070A0", alpha=0.7,
+              label="Wealth Peers Range"),
     ]
-    if ref_markers:
-        legend_elements.append(
-            Line2D([0], [0], color="#808080", linewidth=2.0,
-                   label="Single Comparator Ref."))
     ax.legend(handles=legend_elements, loc="lower right", frameon=True, fontsize=9)
 
     plt.tight_layout()

@@ -74,6 +74,8 @@ try:
         generate_sparkline_table,
         BULLET_METRICS_NORMALIZED_RATES,
         BULLET_METRICS_NORMALIZED_COMPOSITION,
+        BULLET_METRICS_STANDARD_RATES,
+        BULLET_METRICS_STANDARD_COVERAGE,
     )
     _HAS_EXECUTIVE_CHARTS = True
 except ImportError:
@@ -351,6 +353,12 @@ ALL_COMPOSITE_CERTS = (
 # Plotted peer-average composites by chart path (derived from canonical dicts)
 _STANDARD_COMPOSITES = set(ACTIVE_STANDARD_COMPOSITES.values())
 _NORMALIZED_COMPOSITES = set(ACTIVE_NORMALIZED_COMPOSITES.values())
+
+# Individual member CERTs for football-field peer range computation
+# These match the PEER_GROUPS definitions in MSPBNA_CR_Normalized.py
+_SUBJECT_BANK_CERT_DEFAULT = int(os.getenv("MSPBNA_CERT", "34221"))
+_WEALTH_MEMBER_CERTS = [33124, 57565]             # GS, UBS (excludes subject)
+_ALL_PEERS_MEMBER_CERTS = [32992, 33124, 57565, 628, 3511, 7213, 3510]  # MSBNA + all
 
 
 # ==================================================================================
@@ -2656,6 +2664,10 @@ def generate_reports(
                        plot_growth_vs_deterioration, charts_dir,
                        proc_df_with_peers, subject_bank_cert)
 
+        _produce_chart(ctx, "growth_vs_deterioration_bookwide", csv_log,
+                       plot_growth_vs_deterioration_bookwide, charts_dir,
+                       proc_df_with_peers, subject_bank_cert)
+
         _produce_chart(ctx, "risk_adjusted_return", csv_log,
                        plot_risk_adjusted_return, charts_dir,
                        proc_df_with_peers, subject_bank_cert)
@@ -2769,50 +2781,39 @@ def generate_reports(
                         manifest.record_failed(art_name, str(exc))
                         print(f"  Failed {art_name}: {exc}")
 
-            # KRI Bullet Chart — standard (single artifact, matplotlib — full_local only)
-            art_name = "kri_bullet_standard"
-            if should_produce(art_name, mode, manifest, suppressed_charts):
-                try:
-                    save = str(charts_dir / f"{base}_kri_bullet_standard.png")
-                    fig = generate_kri_bullet_chart(
-                        proc_df_with_peers, subject_bank_cert,
-                        wealth_cert=ACTIVE_STANDARD_COMPOSITES["core_pb"],
-                        all_peers_cert=ACTIVE_STANDARD_COMPOSITES["all_peers"],
-                        is_normalized=False,
-                        save_path=save,
-                    )
-                    if fig is not None:
-                        manifest.record_generated(art_name, save)
-                        print(f"  Generated: {art_name}")
-                        csv_log.log_file_written(save, phase="executive_charts",
-                                                 component=art_name)
-                    else:
-                        manifest.record_failed(art_name, "insufficient data")
-                except Exception as exc:
-                    manifest.record_failed(art_name, str(exc))
-                    print(f"  Failed {art_name}: {exc}")
-
-            # KRI Bullet Charts — normalized rates + normalized composition (two separate artifacts)
-            _norm_bullet_specs = [
-                ("kri_bullet_normalized_rates",
-                 BULLET_METRICS_NORMALIZED_RATES,
-                 "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)"),
-                ("kri_bullet_normalized_composition",
-                 BULLET_METRICS_NORMALIZED_COMPOSITION,
-                 "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)"),
+            # KRI Football-Field Charts — split by unit family
+            # Standard: 2 charts (% rates + x-multiple coverage)
+            # Normalized: 2 charts (rates + composition)
+            _bullet_specs = [
+                # Standard family
+                ("kri_bullet_standard", BULLET_METRICS_STANDARD_RATES,
+                 "Key Risk Indicators — MSPBNA vs Peer Range (Standard Rates)",
+                 False, ACTIVE_STANDARD_COMPOSITES),
+                ("kri_bullet_standard_coverage", BULLET_METRICS_STANDARD_COVERAGE,
+                 "Key Risk Indicators — MSPBNA vs Peer Range (Standard Coverage)",
+                 False, ACTIVE_STANDARD_COMPOSITES),
+                # Normalized family
+                ("kri_bullet_normalized_rates", BULLET_METRICS_NORMALIZED_RATES,
+                 "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)",
+                 True, ACTIVE_NORMALIZED_COMPOSITES),
+                ("kri_bullet_normalized_composition", BULLET_METRICS_NORMALIZED_COMPOSITION,
+                 "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)",
+                 True, ACTIVE_NORMALIZED_COMPOSITES),
             ]
-            for art_name, metric_list, chart_title in _norm_bullet_specs:
+            for art_name, metric_list, chart_title, is_norm, composites in _bullet_specs:
                 if should_produce(art_name, mode, manifest, suppressed_charts):
                     try:
                         save = str(charts_dir / f"{base}_{art_name}.png")
                         fig = generate_kri_bullet_chart(
                             proc_df_with_peers, subject_bank_cert,
-                            wealth_cert=ACTIVE_NORMALIZED_COMPOSITES["core_pb"],
-                            all_peers_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"],
+                            wealth_cert=composites["core_pb"],
+                            all_peers_cert=composites["all_peers"],
                             metrics=metric_list,
-                            is_normalized=True,
+                            is_normalized=is_norm,
                             save_path=save,
                             title_override=chart_title,
+                            wealth_member_certs=_WEALTH_MEMBER_CERTS,
+                            all_peers_member_certs=_ALL_PEERS_MEMBER_CERTS,
                         )
                         if fig is not None:
                             manifest.record_generated(art_name, save)
@@ -3748,6 +3749,109 @@ def plot_growth_vs_deterioration(
     ax.set_xlabel(growth_col.replace("_", " "), fontsize=13, fontweight="bold")
     ax.set_ylabel("TTM NCO Rate", fontsize=13, fontweight="bold")
     ax.set_title("Growth vs Deterioration Quadrant", fontsize=18, fontweight="bold", color="#2B2B2B")
+    ax.legend(loc="upper right", frameon=True, fontsize=11)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def plot_growth_vs_deterioration_bookwide(
+    df: pd.DataFrame,
+    subject_bank_cert: int,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Bookwide growth vs deterioration: total gross loan growth TTM (x) vs TTM NCO Rate (y).
+
+    Unlike the CRE variant, this uses bookwide loan growth computed as trailing-4Q
+    growth on Gross_Loans.  Falls back to NPL_to_Gross_Loans_Rate for y-axis if
+    TTM_NCO_Rate is unavailable.
+    """
+    # Compute trailing-4Q gross loan growth for each CERT
+    if "Gross_Loans" not in df.columns and "LNLSNET" not in df.columns:
+        print("  Skipped growth-vs-deterioration-bookwide: no gross loan column")
+        return None
+
+    loan_col = "Gross_Loans" if "Gross_Loans" in df.columns else "LNLSNET"
+    # Y-axis: prefer TTM_NCO_Rate, fall back to NPL_to_Gross_Loans_Rate
+    y_col = None
+    for cand in ["TTM_NCO_Rate", "NPL_to_Gross_Loans_Rate"]:
+        if cand in df.columns:
+            y_col = cand
+            break
+    if y_col is None:
+        print("  Skipped growth-vs-deterioration-bookwide: no deterioration column")
+        return None
+
+    work = df[["CERT", "REPDTE", loan_col, y_col]].copy()
+    work[loan_col] = pd.to_numeric(work[loan_col], errors="coerce")
+    work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    work = work.sort_values(["CERT", "REPDTE"])
+
+    # Compute trailing-4Q loan growth per CERT
+    growth_records = []
+    for cert, grp in work.groupby("CERT"):
+        grp = grp.sort_values("REPDTE")
+        if len(grp) >= 5:
+            curr = grp[loan_col].iloc[-1]
+            prev = grp[loan_col].iloc[-5]
+            if pd.notna(curr) and pd.notna(prev) and prev != 0:
+                growth = (curr - prev) / abs(prev)
+                growth_records.append({"CERT": cert, "_bookwide_growth": growth})
+    if not growth_records:
+        print("  Skipped growth-vs-deterioration-bookwide: insufficient history for growth calc")
+        return None
+
+    growth_df = pd.DataFrame(growth_records)
+    latest_date = df["REPDTE"].max()
+    latest = df[df["REPDTE"] == latest_date].copy()
+    latest[y_col] = pd.to_numeric(latest[y_col], errors="coerce")
+    latest = latest.merge(growth_df, on="CERT", how="inner")
+    latest = latest.dropna(subset=["_bookwide_growth", y_col])
+    if latest.empty:
+        print("  Skipped growth-vs-deterioration-bookwide: no valid data")
+        return None
+
+    growth_col = "_bookwide_growth"
+    composite = ALL_COMPOSITE_CERTS
+    peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
+    subj = latest[latest["CERT"] == subject_bank_cert]
+    wealth = latest[latest["CERT"] == ACTIVE_STANDARD_COMPOSITES["core_pb"]]
+    all_peers_row = latest[latest["CERT"] == ACTIVE_STANDARD_COMPOSITES["all_peers"]]
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+    _economist_ax(ax)
+
+    ax.scatter(peers[growth_col], peers[y_col], s=50, alpha=0.7, color=_C_PEER_CLOUD,
+               edgecolor="white", linewidth=0.5, label="Peers")
+    if not subj.empty:
+        ax.scatter(subj[growth_col], subj[y_col], s=120, color=_C_MSPBNA,
+                   edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+    if not wealth.empty:
+        ax.scatter(wealth[growth_col], wealth[y_col], s=90, color=_C_WEALTH,
+                   marker="^", edgecolor="black", linewidth=0.7, zorder=4, label="Wealth Peers")
+    if not all_peers_row.empty:
+        ax.scatter(all_peers_row[growth_col], all_peers_row[y_col], s=90, color=_C_ALL_PEERS,
+                   marker="s", edgecolor="black", linewidth=0.7, zorder=4, label="All Peers")
+
+    # Quadrant lines at medians
+    mx = latest[growth_col].median()
+    my = latest[y_col].median()
+    ax.axvline(mx, linestyle="--", color=_C_GUIDE, alpha=0.7, linewidth=1)
+    ax.axhline(my, linestyle="--", color=_C_GUIDE, alpha=0.7, linewidth=1)
+
+    # Format x-axis as %
+    from matplotlib.ticker import FuncFormatter
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x*100:.1f}%"))
+
+    y_label = "TTM NCO Rate" if y_col == "TTM_NCO_Rate" else "NPL to Gross Loans Rate"
+    ax.set_xlabel("Bookwide Loan Growth (Trailing 4Q)", fontsize=13, fontweight="bold")
+    ax.set_ylabel(y_label, fontsize=13, fontweight="bold")
+    ax.set_title("Growth vs Deterioration — Bookwide", fontsize=18, fontweight="bold", color=_C_TEXT)
     ax.legend(loc="upper right", frameon=True, fontsize=11)
     plt.tight_layout()
 

@@ -179,7 +179,9 @@ _reg("migration_ladder", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
 _reg("years_of_reserves", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "Years-of-reserves lollipop chart")
 _reg("growth_vs_deterioration", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "Growth vs deterioration quadrant scatter")
+     "Growth vs deterioration quadrant scatter (CRE)")
+_reg("growth_vs_deterioration_bookwide", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "Bookwide growth vs deterioration quadrant scatter (total gross loans)")
 _reg("risk_adjusted_return", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "Risk-adjusted return frontier bubble scatter")
 _reg("concentration_vs_capital", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
@@ -211,11 +213,13 @@ _reg("yoy_heatmap_standard", ArtifactAvailability.BOTH, "table",
 _reg("yoy_heatmap_normalized", ArtifactAvailability.BOTH, "table",
      "YoY directional heatmap (normalized metrics)")
 _reg("kri_bullet_standard", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "KRI bullet chart — standard metrics (MSPBNA vs peer range)")
+     "KRI football-field chart — standard % rate metrics (MSPBNA vs nested peer range)")
+_reg("kri_bullet_standard_coverage", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "KRI football-field chart — standard x-multiple coverage metrics (MSPBNA vs nested peer range)")
 _reg("kri_bullet_normalized_rates", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "KRI bullet chart — normalized rate metrics (MSPBNA vs norm peer range)")
+     "KRI football-field chart — normalized rate metrics (MSPBNA vs norm peer range)")
 _reg("kri_bullet_normalized_composition", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "KRI bullet chart — normalized composition metrics (MSPBNA vs norm peer range)")
+     "KRI football-field chart — normalized composition metrics (MSPBNA vs norm peer range)")
 _reg("sparkline_summary", ArtifactAvailability.BOTH, "table",
      "Sparkline-enhanced summary table with trailing 8Q trends")
 
@@ -228,6 +232,8 @@ _reg("internal_credit_flags_summary", ArtifactAvailability.BOTH, "table",
      "Internal delinquency/nonaccrual/risk-rating distribution summary")
 _reg("peer_vs_internal_mix_bridge", ArtifactAvailability.BOTH, "table",
      "Peer-report composition vs internal loan product/geography mix")
+_reg("msa_macro_panel", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "MSA-level macro backdrop panel (Case-Shiller, GDP, unemployment)")
 
 
 # =====================================================================

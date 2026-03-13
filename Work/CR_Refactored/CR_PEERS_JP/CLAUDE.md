@@ -157,12 +157,14 @@ report_generator.py
   - `{stem}_scatter_norm_nco_vs_nonaccrual.png`
   - `{stem}_years_of_reserves.png`
   - `{stem}_growth_vs_deterioration.png`
+  - `{stem}_growth_vs_deterioration_bookwide.png`
   - `{stem}_risk_adjusted_return.png`
   - `{stem}_concentration_vs_capital.png`
   - `{stem}_liquidity_overlay.png`
   - `{stem}_yoy_heatmap_standard.html`
   - `{stem}_yoy_heatmap_normalized.html`
   - `{stem}_kri_bullet_standard.png`
+  - `{stem}_kri_bullet_standard_coverage.png`
   - `{stem}_kri_bullet_normalized_rates.png`
   - `{stem}_kri_bullet_normalized_composition.png`
   - `{stem}_sparkline_summary.html`
@@ -330,7 +332,7 @@ python report_generator.py
 
 All of these must be imported from `rendering_mode.py`. The `_ReportContext` dataclass in `report_generator.py` is a lightweight internal carrier and is NOT a duplicate of any rendering-mode type.
 
-### Executive Chart Artifacts (6 Artifacts)
+### Executive Chart Artifacts (8 Artifacts)
 
 Implemented in `executive_charts.py`, integrated into `report_generator.py` Phase 8.
 
@@ -339,25 +341,43 @@ Implemented in `executive_charts.py`, integrated into `report_generator.py` Phas
 | `yoy_heatmap_standard` | `{stem}_yoy_heatmap_standard.html` | BOTH | HTML |
 | `yoy_heatmap_normalized` | `{stem}_yoy_heatmap_normalized.html` | BOTH | HTML |
 | `kri_bullet_standard` | `{stem}_kri_bullet_standard.png` | FULL_LOCAL_ONLY | PNG |
+| `kri_bullet_standard_coverage` | `{stem}_kri_bullet_standard_coverage.png` | FULL_LOCAL_ONLY | PNG |
 | `kri_bullet_normalized_rates` | `{stem}_kri_bullet_normalized_rates.png` | FULL_LOCAL_ONLY | PNG |
 | `kri_bullet_normalized_composition` | `{stem}_kri_bullet_normalized_composition.png` | FULL_LOCAL_ONLY | PNG |
 | `sparkline_summary` | `{stem}_sparkline_summary.html` | BOTH | HTML |
+| `growth_vs_deterioration_bookwide` | `{stem}_growth_vs_deterioration_bookwide.png` | FULL_LOCAL_ONLY | PNG |
 
 **Integration pattern:**
 - Heatmaps loop over `[False, True]` for standard/normalized variants
-- Standard bullet chart is a single artifact; normalized is split into two (rates vs composition) with separate metric lists and axis scales
-- Bullet charts use correct composite CERTs per variant: standard → 90001/90003, normalized → 90004/90006
+- KRI bullet charts are now **football-field** style with nested peer range bands
+- All 4 KRI bullet charts use `_bullet_specs` loop with per-spec metric list, title, and composite CERTs
+- Bullet charts pass `wealth_member_certs` and `all_peers_member_certs` for actual min/max range computation
 - Sparkline passes `norm_peer_cert=90006` for Norm_ metric rows, `peer_cert=90003` for standard rows
 - The obsolete single artifact names `kri_bullet_chart` and `kri_bullet_normalized` are removed from the registry
 
-**Normalized bullet chart split:**
+**Football-field KRI chart design (nested bands):**
+- **Outer lighter band (light gray #D0D0D0)**: All Peers min–max range across individual member CERTs
+- **Inner darker band (muted purple-gray #B8A0C8)**: Wealth Peers min–max range across member CERTs
+- **Gold diamond (#F7A81B)**: MSPBNA value
+- **Median markers**: Vertical tick marks at median of each peer group
+- **Edge labels**: Min/max peer tickers annotated at band edges (using `resolve_display_label()`)
+- Fallback: if member CERTs not provided, falls back to composite CERT values as single-point bands
+
+**Unit family separation (Part 3 — never mix % rates with x-multiples):**
+- `kri_bullet_standard` — 5 % rate metrics: TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Past_Due_Rate, Allowance_to_Gross_Loans_Rate, RIC_CRE_ACL_Coverage
+- `kri_bullet_standard_coverage` — 2 x-multiple metrics: Risk_Adj_Allowance_Coverage, RIC_CRE_Risk_Adj_Coverage
 - `kri_bullet_normalized_rates` — 5 rate metrics: Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage
 - `kri_bullet_normalized_composition` — 5 composition metrics: Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share
 
+**Bookwide growth vs deterioration:**
+- `growth_vs_deterioration_bookwide` — X-axis: trailing-4Q total gross loan growth. Y-axis: TTM NCO Rate (fallback: NPL to Gross Loans Rate).
+- Complementary to the existing CRE-focused `growth_vs_deterioration` chart.
+- Same visual style: quadrant scatter with median crosshair lines, MSPBNA diamond, Wealth Peers triangle, All Peers square.
+
 **Comparator fallback behavior:**
-- Both comparators available → gray band between min and max
-- Single comparator available → thin vertical reference marker (NOT collapse to subject value)
-- Neither comparator available → metric row skipped entirely (NOT drawn with subject-to-subject band)
+- Both peer groups have data → nested bands (outer All Peers + inner Wealth Peers)
+- Single peer group only → single band for that group, other drawn as thin reference line
+- Neither peer group available → metric row skipped entirely
 
 ### Deterministic Macro Chart Artifacts (3 Artifacts)
 
@@ -796,6 +816,32 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — Chart Package Expansion (Bookwide, Football-Field, MSA Panel)
+
+**Objective**: Expand the chart package for board-level use with bookwide growth analysis, true football-field KRI visuals with nested peer bands, unit-family separation, and dynamic MSA macro panels.
+
+**5-part implementation:**
+
+1. **Bookwide growth vs deterioration chart** (`plot_growth_vs_deterioration_bookwide`): New scatter chart using trailing-4Q total gross loan growth (X-axis) vs TTM NCO Rate or NPL-to-Gross-Loans (Y-axis). Complements the existing CRE-focused `growth_vs_deterioration` chart. Same visual style with MSPBNA diamond, Wealth Peers triangle, All Peers square, and median quadrant crosshairs. X-axis formatted as %. Registered as `growth_vs_deterioration_bookwide` artifact.
+
+2. **Football-field KRI charts with nested bands**: `generate_kri_bullet_chart()` in `executive_charts.py` rewritten with two new parameters: `wealth_member_certs` and `all_peers_member_certs`. When provided, computes actual min/max/median ranges from individual bank data instead of using composite CERT values. Produces nested bands: outer lighter band (#D0D0D0) = All Peers range, inner darker band (#B8A0C8) = Wealth Peers range. Median markers at each group center. Edge labels show min/max peer tickers via `resolve_display_label()`. Falls back to composite CERTs when member lists not provided.
+
+3. **Unit family separation**: Standard KRI metrics split into two charts: `kri_bullet_standard` (5 % rate metrics) and `kri_bullet_standard_coverage` (2 x-multiple metrics). This ensures incompatible units never share a shared axis. Normalized was already split (rates vs composition). Total: 4 KRI football-field artifacts produced via unified `_bullet_specs` loop.
+
+4. **Dynamic MSA macro panel**: Added `select_top_msas()` and `build_msa_macro_panel()` to `corp_overlay.py`. `select_top_msas` ranks MSAs by aggregate loan balance. `build_msa_macro_panel` creates a small-multiple grid: rows = MSAs, columns = Case-Shiller HPI YoY%, GDP YoY%, Unemployment Rate Change (pp). Critical unit rules enforced: house price/GDP in %, unemployment in percentage points (pp). Registered as `msa_macro_panel` artifact.
+
+5. **Tests and documentation**: Added 3 test classes (29 tests): `TestBookwideGrowthChart` (8 tests), `TestFootballFieldKRI` (12 tests), `TestMSAMacroPanel` (9 tests). Updated `test_registry_covers_known_artifacts` with new artifacts. Updated CLAUDE.md with football-field design, unit family split, MSA panel documentation, output filenames, and changelog.
+
+**New metric lists (executive_charts.py):**
+- `BULLET_METRICS_STANDARD_RATES` — 5 % rate metrics (split from BULLET_METRICS_STANDARD)
+- `BULLET_METRICS_STANDARD_COVERAGE` — 2 x-multiple metrics (split from BULLET_METRICS_STANDARD)
+
+**New constants (report_generator.py):**
+- `_WEALTH_MEMBER_CERTS = [33124, 57565]` — GS, UBS (for football-field range computation)
+- `_ALL_PEERS_MEMBER_CERTS = [32992, 33124, 57565, 628, 3511, 7213, 3510]` — all individual peers
+
+**Files changed:** `report_generator.py`, `executive_charts.py`, `rendering_mode.py`, `corp_overlay.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-13 — Centralized Chart Palette, Annotation Engine, and Wealth Peers Inclusion
 
@@ -2370,9 +2416,39 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 | `internal_credit_flags_summary.html` | Distribution tables for risk_rating, delinquency_status, nonaccrual_flag; reduced to portfolio summary if optional columns absent | BOTH |
 | `peer_vs_internal_mix_bridge.html` | Side-by-side: MSPBNA peer-report composition (SBL/CRE/Resi shares from dashboard) vs internal loan product/geography mix | BOTH |
 
+### MSA-Level Macro Panel
+
+`corp_overlay.py` includes two functions for dynamic geographic macro analysis:
+
+| Function | Purpose |
+|---|---|
+| `select_top_msas(loan_df, geo_field, top_n)` | Select top-N MSAs by aggregate loan balance from the internal loan file |
+| `build_msa_macro_panel(msas, case_shiller_df, bea_gdp_df, unemployment_df, save_path)` | Build a multi-panel small-multiple chart for selected MSAs |
+
+**MSA macro panel artifact:** `msa_macro_panel` (FULL_LOCAL_ONLY, PNG chart)
+
+**Data panels (3 columns per MSA row):**
+
+| Panel | Data Source | Unit | Y-axis Label |
+|---|---|---|---|
+| Case-Shiller HPI YoY | Case-Shiller ZIP-mapped data | `%` | `+5.2%` |
+| GDP YoY | BEA Regional GDP | `%` | `+3.1%` |
+| Unemployment Rate Change | Census/BLS | `pp` (percentage points) | `+0.30 pp` |
+
+**Critical unit rules:**
+- House price and GDP growth are in **percent** (%)
+- Unemployment change is in **percentage points** (pp) — NOT percent. This is the year-over-year change in the unemployment rate level, not a percentage change.
+- Y-axis labels MUST reflect the correct unit. Never mislabel frequency or unit.
+
+**Input DataFrames** (all optional — panel degrades gracefully if absent):
+- `case_shiller_df`: columns `[msa, date, hpi_yoy_pct]`
+- `bea_gdp_df`: columns `[msa, date, gdp_yoy_pct]`
+- `unemployment_df`: columns `[msa, date, unemp_rate_chg_pp]`
+
 ### Known Limitations
 
 - Census and BEA enrichment hooks are stub implementations — they return no-op results. When API integrations are needed, implement the actual API calls inside `enrich_geography()`.
 - The bridge table extracts composition from `Summary_Dashboard` sheet only. If the dashboard uses a different sheet layout, `load_dashboard_composition()` falls back to `FDIC_Data`.
 - Dashboard auto-discovery uses the same `Bank_Performance_Dashboard_*.xlsx` glob pattern as `report_generator.py`.
 - Loan file must be CSV, TSV, or Excel (.xlsx/.xls). Other formats are rejected.
+- MSA macro panel requires pre-formatted DataFrames from external sources (Case-Shiller, BEA, Census). The data ingestion/API calls are hook points, not yet implemented.

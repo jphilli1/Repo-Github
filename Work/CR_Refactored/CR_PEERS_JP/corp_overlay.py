@@ -888,3 +888,187 @@ def run_corp_overlay(
         csv_log.shutdown()
 
     return result
+
+
+# =====================================================================
+# MSA-Level Macro Panel — dynamic geographic macro context
+# =====================================================================
+
+# FRED series patterns for MSA-level macro data.
+# Actual series IDs are constructed dynamically per MSA.
+_MSA_MACRO_SERIES = {
+    "case_shiller_yoy": {
+        "label": "Case-Shiller HPI YoY %",
+        "unit": "%",
+        "note": "Year-over-year house price growth",
+    },
+    "gdp_yoy": {
+        "label": "GDP YoY %",
+        "unit": "%",
+        "note": "Year-over-year GDP growth (BEA)",
+    },
+    "unemployment_chg": {
+        "label": "Unemployment Rate Chg (pp)",
+        "unit": "pp",
+        "note": "Year-over-year change in unemployment rate (percentage points)",
+    },
+}
+
+
+def select_top_msas(
+    loan_df: pd.DataFrame,
+    geo_field: str = "msa",
+    top_n: int = 5,
+) -> List[str]:
+    """Select top-N MSAs by aggregate loan balance from the internal loan file.
+
+    Parameters
+    ----------
+    loan_df : DataFrame with geo_field and current_balance columns
+    geo_field : column to aggregate by (default: msa)
+    top_n : number of top MSAs to return
+
+    Returns
+    -------
+    List of MSA identifiers, sorted descending by balance
+    """
+    if geo_field not in loan_df.columns or "current_balance" not in loan_df.columns:
+        return []
+
+    work = loan_df[[geo_field, "current_balance"]].copy()
+    work["current_balance"] = pd.to_numeric(work["current_balance"], errors="coerce")
+    work = work.dropna(subset=[geo_field, "current_balance"])
+    if work.empty:
+        return []
+
+    agg = (
+        work.groupby(geo_field)["current_balance"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(top_n)
+    )
+    return list(agg.index)
+
+
+def build_msa_macro_panel(
+    msas: List[str],
+    case_shiller_df: Optional[pd.DataFrame] = None,
+    bea_gdp_df: Optional[pd.DataFrame] = None,
+    unemployment_df: Optional[pd.DataFrame] = None,
+    save_path: Optional[str] = None,
+) -> Any:
+    """Build a multi-panel macro chart for selected MSAs.
+
+    Each MSA gets a small-multiple row with up to 3 subplots:
+      1. Case-Shiller HPI YoY % (house price growth)
+      2. GDP YoY % (economic growth from BEA)
+      3. Unemployment Rate Change in percentage points (NOT %, NOT mislabeled)
+
+    Critical unit rules:
+      - House price and GDP growth are in % (e.g., +5.2%)
+      - Unemployment change is in percentage points (e.g., +0.3 pp)
+      - Y-axis labels MUST reflect the correct unit
+
+    Parameters
+    ----------
+    msas : list of MSA identifiers (from select_top_msas)
+    case_shiller_df : DataFrame with columns [msa, date, hpi_yoy_pct]
+    bea_gdp_df : DataFrame with columns [msa, date, gdp_yoy_pct]
+    unemployment_df : DataFrame with columns [msa, date, unemp_rate_chg_pp]
+    save_path : file path for PNG output
+
+    Returns
+    -------
+    matplotlib Figure, or None if no data or matplotlib unavailable
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    if not msas:
+        print("  Skipped MSA macro panel: no MSAs selected")
+        return None
+
+    # Determine which data panels are available
+    panels = []
+    if case_shiller_df is not None and not case_shiller_df.empty:
+        panels.append(("hpi_yoy_pct", "Case-Shiller HPI YoY (%)", "%", case_shiller_df))
+    if bea_gdp_df is not None and not bea_gdp_df.empty:
+        panels.append(("gdp_yoy_pct", "GDP YoY (%)", "%", bea_gdp_df))
+    if unemployment_df is not None and not unemployment_df.empty:
+        panels.append(("unemp_rate_chg_pp", "Unemployment Rate Chg (pp)", "pp", unemployment_df))
+
+    if not panels:
+        print("  Skipped MSA macro panel: no macro data available")
+        return None
+
+    n_msas = len(msas)
+    n_panels = len(panels)
+
+    fig, axes = plt.subplots(
+        n_msas, n_panels, figsize=(5 * n_panels, 3 * n_msas),
+        squeeze=False,
+    )
+    fig.patch.set_alpha(0)
+
+    # Color palette for MSA panels
+    _MSA_COLORS = ["#5B9BD5", "#70AD47", "#ED7D31", "#FFC000", "#A855F7"]
+
+    for row_idx, msa in enumerate(msas):
+        for col_idx, (value_col, title, unit, panel_df) in enumerate(panels):
+            ax = axes[row_idx, col_idx]
+            ax.set_facecolor("none")
+
+            # Filter data for this MSA
+            msa_col = "msa" if "msa" in panel_df.columns else panel_df.columns[0]
+            date_col = "date" if "date" in panel_df.columns else panel_df.columns[1]
+            msa_data = panel_df[panel_df[msa_col].astype(str) == str(msa)].copy()
+            if msa_data.empty:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=10, color="#888888")
+                ax.set_title(f"{msa}" if row_idx == 0 else "", fontsize=10)
+                continue
+
+            msa_data[date_col] = pd.to_datetime(msa_data[date_col], errors="coerce")
+            msa_data = msa_data.sort_values(date_col)
+
+            color = _MSA_COLORS[row_idx % len(_MSA_COLORS)]
+            ax.plot(msa_data[date_col], msa_data[value_col],
+                    color=color, linewidth=1.5)
+            ax.axhline(0, color="#888888", linewidth=0.5, linestyle="--", alpha=0.5)
+
+            # Labels
+            if row_idx == 0:
+                ax.set_title(title, fontsize=11, fontweight="bold", color="#2B2B2B")
+            if col_idx == 0:
+                ax.set_ylabel(str(msa), fontsize=10, fontweight="bold", rotation=0,
+                              labelpad=50, ha="right")
+            else:
+                ax.set_ylabel("")
+
+            # Y-axis unit label
+            ax.yaxis.set_major_formatter(
+                plt.FuncFormatter(
+                    lambda x, _, u=unit: f"{x:.1f}{u}" if u == "%" else f"{x:+.2f} {u}"
+                )
+            )
+
+            # Clean up
+            for sp in ["top", "right"]:
+                ax.spines[sp].set_visible(False)
+            ax.tick_params(axis="x", labelsize=8, rotation=30)
+            ax.tick_params(axis="y", labelsize=8)
+            ax.grid(True, alpha=0.3, color="#D0D0D0")
+
+    fig.suptitle("MSA Macro Backdrop — Top Exposures",
+                 fontsize=14, fontweight="bold", color="#2B2B2B", y=1.02)
+    fig.tight_layout()
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=True)
+        plt.close(fig)
+    return fig
