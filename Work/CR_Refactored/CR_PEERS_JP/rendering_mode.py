@@ -258,14 +258,14 @@ _reg("internal_credit_flags_summary", ArtifactAvailability.BOTH, "table",
 _reg("peer_vs_internal_mix_bridge", ArtifactAvailability.BOTH, "table",
      "Peer-report composition vs internal loan product/geography mix")
 
-# --- MSA Macro Panel (future: dedicated local_macro module) ---
-# This artifact is registered but NOT yet produced by any script.
-# The chart functions (select_top_msas, build_msa_macro_panel) live in
-# corp_overlay.py as utilities.  When real BEA/Census/Case-Shiller API
-# integrations are available, a dedicated local_macro.py module will
-# own production.  report_generator.py must NOT import corp_overlay.
+# --- MSA Macro Panel (workbook-driven via local_macro.py) ---
+# Produced by report_generator.py::plot_msa_macro_panel(), which reads
+# from the Local_Macro_Latest sheet written by local_macro.py in Step 1.
+# Top MSA selection is data-driven (portfolio_balance or GDP level).
+# No synthetic data — skips when workbook lacks required sheets.
+# report_generator.py does NOT import local_macro or corp_overlay directly.
 _reg("msa_macro_panel", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
-     "MSA-level macro backdrop panel (Case-Shiller, GDP, unemployment)")
+     "MSA-level macro backdrop panel (GDP, unemployment, per-capita metrics)")
 
 
 # =====================================================================

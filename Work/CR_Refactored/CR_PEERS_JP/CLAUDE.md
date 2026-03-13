@@ -867,6 +867,43 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-13 — Workbook-Driven MSA Macro Panel (Prompt 4)
+
+**Objective:** Replace the synthetic msa_macro_panel path with workbook-driven reporting. Complete the final reporting integration for geography-aware macro context.
+
+**Dependency chain (end-to-end):**
+```
+Step 1 (MSPBNA_CR_Normalized.py)
+  └─ local_macro.py::run_local_macro_pipeline()
+       └─ BEA/BLS/Census APIs → geography spine → derived metrics
+       └─ Writes: Local_Macro_Latest, MSA_Board_Panel, MSA_Crosswalk_Audit (+ 3 others)
+       └─ If no data: writes Local_Macro_Skip_Audit with explicit reason
+            ▼
+Dashboard workbook (Bank_Performance_Dashboard_*.xlsx)
+            ▼
+Step 2 (report_generator.py)
+  └─ plot_msa_macro_panel()
+       └─ Reads Local_Macro_Latest from workbook (pd.ExcelFile)
+       └─ Reads MSA_Crosswalk_Audit for quality flags
+       └─ Top MSA selection: portfolio_balance → real_gdp_level → first 10
+       └─ Produces msa_macro_panel PNG chart
+       └─ Skips cleanly if sheets absent (no synthetic fallback)
+```
+
+**Changes:**
+
+1. **`report_generator.py`** — Added `plot_msa_macro_panel()` and `_load_local_macro_sheet()`. Replaced the "NOT produced here" comment (lines 2879-2883) with `_produce_chart()` call. Chart reads workbook sheets, selects top MSAs by portfolio_balance (data-driven), shows correct units (GDP=%, unemployment=pp, GDP/100k=$), adds mapping-quality warnings and macro_stress_flag summary. Does NOT import `local_macro` or `corp_overlay`.
+
+2. **`rendering_mode.py`** — Updated `msa_macro_panel` comment block from "NOT yet produced" to "Produced by report_generator.py::plot_msa_macro_panel()". Updated description.
+
+3. **`test_regression.py`** — `TestMSAMacroPanelReporting` class (12 tests): no synthetic random data, chart reads workbook sheets, data-driven MSA selection, missing sheets cause controlled skip, correct unit labels, mapping quality propagation, no corp_overlay/local_macro imports, rendering_mode documents production, _produce_chart call exists, stress flag in chart, CLAUDE.md documentation.
+
+4. **`CLAUDE.md`** — Updated Section 12 production status, added full dependency chain diagram, changelog entry.
+
+**Synthetic logic removed:** The original `build_msa_macro_panel()` / `select_top_msas()` functions in `corp_overlay.py` are superseded. `report_generator.py` has zero references to synthetic MSA data generation. All data flows through the workbook.
+
+**Files changed:** `report_generator.py`, `rendering_mode.py`, `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-13 — Board-Ready Workbook Output Persistence (Prompt 3)
 
 **Objective:** Write canonical local macro sheets into the dashboard workbook so reporting artifacts can consume real geography-aware macro context.
@@ -2741,7 +2778,7 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 - `bea_gdp_df`: columns `[msa, date, gdp_yoy_pct]`
 - `unemployment_df`: columns `[msa, date, unemp_rate_chg_pp]`
 
-**Production status:** The MSA macro panel chart (`msa_macro_panel` artifact) is **not currently produced** as a PNG chart. The chart functions (`select_top_msas`, `build_msa_macro_panel`) exist in `corp_overlay.py` as utilities, but `report_generator.py` does **not** import or call them — doing so would violate the standalone architecture contract. The `msa_macro_panel` artifact is registered in `rendering_mode.py` for forward compatibility.
+**Production status:** The MSA macro panel chart (`msa_macro_panel` artifact) is **now produced** by `report_generator.py::plot_msa_macro_panel()`, which reads from the `Local_Macro_Latest` workbook sheet. Data flows through the workbook (Step 1 → Step 2 pattern) — `report_generator.py` does NOT import `local_macro.py` or `corp_overlay.py` directly. Top MSA selection is data-driven (portfolio_balance or GDP level), not hardcoded. The legacy utility functions (`select_top_msas`, `build_msa_macro_panel`) in `corp_overlay.py` are superseded but retained for backward compatibility.
 
 **Local macro data pipeline:** The dedicated `local_macro.py` module now provides the underlying macro data layer. It produces three Excel sheets (`Local_Macro_Raw`, `Local_Macro_Mapped`, `MSA_Crosswalk_Audit`) integrated into the Step 1 dashboard via `MSPBNA_CR_Normalized.py`. See Section 13 for full architecture details.
 

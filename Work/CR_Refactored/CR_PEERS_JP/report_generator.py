@@ -2876,11 +2876,11 @@ def generate_reports(
                        plot_macro_overlay_rates_housing, charts_dir,
                        proc_df_with_peers, subject_bank_cert, excel_file)
 
-        # MSA macro panel — NOT produced here.
-        # msa_macro_panel is registered in rendering_mode.py but its data source
-        # (BEA/Census/Case-Shiller APIs) is not yet integrated. The artifact
-        # will be produced by a dedicated local_macro module when real data is
-        # available. See CLAUDE.md Section 12 for the standalone overlay architecture.
+        # MSA macro panel — reads from workbook Local_Macro_Latest sheet.
+        # Data is produced by local_macro.py via MSPBNA_CR_Normalized.py (Step 1).
+        # No synthetic data — skips cleanly if workbook lacks required sheets.
+        _produce_chart(ctx, "msa_macro_panel", csv_log,
+                       plot_msa_macro_panel, charts_dir, excel_file)
 
         # ------------------------------------------------------------------
         # PHASE 7: FRED EXPANSION CHARTS (full_local only)
@@ -4677,6 +4677,186 @@ def plot_macro_overlay_rates_housing(
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", frameon=True, fontsize=10)
+    plt.tight_layout()
+
+    if save_path:
+        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+    return fig
+
+
+def _load_local_macro_sheet(
+    excel_file: str,
+    sheet_name: str,
+) -> Optional[pd.DataFrame]:
+    """Load a local macro sheet from the workbook. Returns None if absent."""
+    try:
+        with pd.ExcelFile(excel_file) as xls:
+            if sheet_name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet_name)
+                df.columns = [c.strip() for c in df.columns]
+                return df
+    except Exception as e:
+        logging.debug(f"Could not load {sheet_name}: {e}")
+    return None
+
+
+def plot_msa_macro_panel(
+    excel_file: str,
+    save_path: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """MSA-level macro backdrop panel driven by workbook Local_Macro_Latest sheet.
+
+    Reads Local_Macro_Latest from the dashboard workbook, selects top MSAs by
+    portfolio_balance (or GDP level as fallback), and produces a small-multiple
+    grid: rows = MSAs, columns = GDP YoY%, Unemployment Change (pp), GDP per 100k.
+
+    Data is entirely workbook-driven — no synthetic/placeholder data.
+    Skips cleanly when required sheets are absent.
+
+    Unit rules (enforced):
+      - GDP/HPI growth: % (percent)
+      - Unemployment change: pp (percentage points)
+      - GDP per 100k: level (dollars per 100k population)
+    """
+    latest_df = _load_local_macro_sheet(excel_file, "Local_Macro_Latest")
+    if latest_df is None or latest_df.empty:
+        print("  Skipped msa_macro_panel: Local_Macro_Latest sheet not in workbook")
+        return None
+
+    # Check required columns
+    required = {"msa_name", "cbsa_code"}
+    if not required.issubset(set(latest_df.columns)):
+        print(f"  Skipped msa_macro_panel: missing columns {required - set(latest_df.columns)}")
+        return None
+
+    # Select top MSAs: prefer portfolio_balance (data-driven), fallback to GDP level
+    if "portfolio_balance" in latest_df.columns and latest_df["portfolio_balance"].notna().any():
+        sort_col = "portfolio_balance"
+    elif "real_gdp_level" in latest_df.columns and latest_df["real_gdp_level"].notna().any():
+        sort_col = "real_gdp_level"
+    else:
+        sort_col = None
+
+    if sort_col:
+        latest_df[sort_col] = pd.to_numeric(latest_df[sort_col], errors="coerce")
+        top = latest_df.dropna(subset=[sort_col]).nlargest(10, sort_col)
+    else:
+        top = latest_df.head(10)
+
+    if top.empty:
+        print("  Skipped msa_macro_panel: no MSA rows with data")
+        return None
+
+    # Load audit for quality flags (optional)
+    audit_df = _load_local_macro_sheet(excel_file, "MSA_Crosswalk_Audit")
+    quality_lookup = {}
+    if audit_df is not None and not audit_df.empty:
+        for col_name in ["target_cbsa_code", "cbsa_code"]:
+            if col_name in audit_df.columns:
+                for _, row in audit_df.iterrows():
+                    cbsa = row.get(col_name)
+                    if cbsa and cbsa not in quality_lookup:
+                        quality_lookup[str(cbsa)] = {
+                            "quality": row.get("quality_flag", ""),
+                            "method": row.get("mapping_method", ""),
+                            "coverage": row.get("coverage_pct", ""),
+                        }
+                break
+
+    # Define panel columns with correct units
+    panel_specs = []
+    if "real_gdp_yoy_pct" in top.columns and top["real_gdp_yoy_pct"].notna().any():
+        panel_specs.append(("real_gdp_yoy_pct", "GDP YoY (%)", "%", "#4C78A8"))
+    if "unemployment_yoy_pp" in top.columns and top["unemployment_yoy_pp"].notna().any():
+        panel_specs.append(("unemployment_yoy_pp", "Unemp. Change (pp)", "pp", "#E45756"))
+    if "real_gdp_per_100k" in top.columns and top["real_gdp_per_100k"].notna().any():
+        panel_specs.append(("real_gdp_per_100k", "GDP per 100k ($)", "$", "#70AD47"))
+    if "real_gdp_per_100k_yoy_pct" in top.columns and top["real_gdp_per_100k_yoy_pct"].notna().any():
+        panel_specs.append(("real_gdp_per_100k_yoy_pct", "GDP/100k YoY (%)", "%", "#9C6FB6"))
+
+    if not panel_specs:
+        print("  Skipped msa_macro_panel: no numeric metric columns with data")
+        return None
+
+    n_cols = len(panel_specs)
+    n_rows = len(top)
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(4 * n_cols + 1, 1.2 * n_rows + 2),
+                             squeeze=False)
+    fig.patch.set_alpha(0)
+
+    msa_names = top["msa_name"].tolist()
+
+    for col_idx, (col, title, unit, color) in enumerate(panel_specs):
+        axes[0, col_idx].set_title(title, fontsize=11, fontweight="bold",
+                                   color="#2B2B2B", pad=8)
+        values = pd.to_numeric(top[col], errors="coerce").tolist()
+
+        for row_idx, (msa, val) in enumerate(zip(msa_names, values)):
+            ax = axes[row_idx, col_idx]
+            ax.set_facecolor("none")
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.tick_params(left=False, bottom=False, labelbottom=False)
+
+            if col_idx == 0:
+                # MSA label on leftmost column
+                cbsa = str(top.iloc[row_idx].get("cbsa_code", ""))
+                quality_info = quality_lookup.get(cbsa, {})
+                label = str(msa)[:30]
+                quality = quality_info.get("quality", "")
+                if quality and quality not in ("high", ""):
+                    label += f" [{quality}]"
+                ax.set_ylabel(label, fontsize=9, rotation=0, ha="right",
+                              va="center", labelpad=5)
+            else:
+                ax.set_yticks([])
+
+            if pd.notna(val):
+                bar_color = color
+                # Stress coloring for unemployment
+                if unit == "pp" and val > 0.5:
+                    bar_color = "#D62728"  # red for rising unemployment
+                ax.barh([0], [val], color=bar_color, height=0.6, alpha=0.85)
+                # Format value with correct unit
+                if unit == "%":
+                    ax.text(val, 0, f" {val:+.1f}%", va="center", fontsize=8)
+                elif unit == "pp":
+                    ax.text(val, 0, f" {val:+.2f} pp", va="center", fontsize=8)
+                elif unit == "$":
+                    ax.text(val, 0, f" ${val:,.0f}", va="center", fontsize=8)
+                else:
+                    ax.text(val, 0, f" {val:.1f}", va="center", fontsize=8)
+            else:
+                ax.text(0, 0, " n/a", va="center", fontsize=8, color="#999")
+                ax.set_xlim(-1, 1)
+
+    # Add mapping quality warning if any MSAs have low/medium quality
+    low_quality_msas = [
+        msa for msa, cbsa_val in zip(msa_names,
+                                      top["cbsa_code"].astype(str).tolist())
+        if quality_lookup.get(cbsa_val, {}).get("quality", "high") in ("low", "medium", "unmatched")
+    ]
+    if low_quality_msas:
+        fig.text(0.5, 0.01,
+                 f"⚠ Mapping quality warning: {', '.join(low_quality_msas[:3])} "
+                 f"have reduced geography coverage",
+                 ha="center", fontsize=8, color="#D62728", style="italic")
+
+    # Stress flag summary
+    if "macro_stress_flag" in top.columns:
+        stress_count = (top["macro_stress_flag"] == "STRESS").sum()
+        watch_count = (top["macro_stress_flag"] == "WATCH").sum()
+        if stress_count > 0 or watch_count > 0:
+            fig.text(0.5, -0.01,
+                     f"Macro signals: {stress_count} STRESS, {watch_count} WATCH "
+                     f"of {len(top)} MSAs",
+                     ha="center", fontsize=8, color="#2B2B2B")
+
+    fig.suptitle("MSA Macro Panel — Top MSAs by Portfolio Exposure",
+                 fontsize=13, fontweight="bold", color="#2B2B2B", y=1.02)
     plt.tight_layout()
 
     if save_path:

@@ -6446,6 +6446,147 @@ class TestLocalMacroWorkbookOutput(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MSA Macro Panel — Workbook-Driven Reporting (Prompt 4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMSAMacroPanelReporting(unittest.TestCase):
+    """Tests for the final workbook-driven MSA macro panel integration."""
+
+    def test_no_synthetic_random_msa_path_in_report_generator(self):
+        """report_generator.py must not contain seeded random/synthetic MSA data."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertNotIn("RandomState", content)
+        self.assertNotIn("np.random.seed", content)
+        # No synthetic MSA placeholder
+        self.assertNotIn("synth_msa", content)
+        self.assertNotIn("_synth_rows", content)
+
+    def test_chart_uses_workbook_local_macro_sheets(self):
+        """plot_msa_macro_panel must read from Local_Macro_Latest sheet."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("Local_Macro_Latest", content,
+                       "Chart must read from Local_Macro_Latest workbook sheet")
+        self.assertIn("_load_local_macro_sheet", content,
+                       "Must use workbook sheet loader, not direct API calls")
+
+    def test_top_msa_selection_is_data_driven(self):
+        """Top MSA selection must use portfolio_balance or GDP, not hardcoded names."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("portfolio_balance", content,
+                       "Must support portfolio_balance for data-driven MSA ranking")
+        self.assertIn("real_gdp_level", content,
+                       "Must support GDP level as fallback ranking")
+        self.assertIn("nlargest", content,
+                       "Must use data-driven top-N selection")
+
+    def test_missing_local_macro_causes_controlled_skip(self):
+        """plot_msa_macro_panel must return None when workbook lacks required sheets."""
+        import importlib
+        rg = importlib.import_module("report_generator")
+        # Call with non-existent file — should return None, not raise
+        result = rg.plot_msa_macro_panel(
+            excel_file="/tmp/nonexistent_dashboard.xlsx",
+            save_path=None,
+        )
+        self.assertIsNone(result, "Must skip cleanly when workbook missing")
+
+    def test_unit_labels_correct_in_panel_specs(self):
+        """Chart must use correct unit labels: % for GDP, pp for unemployment."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        # GDP growth labeled as %
+        self.assertIn("GDP YoY (%)", content)
+        # Unemployment change labeled as pp
+        self.assertIn("Unemp. Change (pp)", content)
+        # GDP per 100k labeled as level ($)
+        self.assertIn("GDP per 100k ($)", content)
+
+    def test_mapping_quality_flags_propagate(self):
+        """Chart must read MSA_Crosswalk_Audit for quality flags."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("quality_flag", content,
+                       "Must read quality_flag from audit")
+        self.assertIn("MSA_Crosswalk_Audit", content,
+                       "Must load audit sheet for quality warnings")
+        self.assertIn("Mapping quality warning", content,
+                       "Must show visible warning for low-quality mappings")
+
+    def test_report_generator_does_not_import_corp_overlay(self):
+        """report_generator.py must still not import corp_overlay."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertNotIn("from corp_overlay import", content)
+        self.assertNotIn("import corp_overlay", content)
+
+    def test_report_generator_does_not_import_local_macro(self):
+        """report_generator.py must not import local_macro directly."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertNotIn("from local_macro import", content,
+                         "report_generator reads workbook, not local_macro directly")
+        self.assertNotIn("import local_macro", content)
+
+    def test_rendering_mode_documents_msa_panel_as_produced(self):
+        """rendering_mode.py must document msa_macro_panel as produced, not future."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "rendering_mode.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("msa_macro_panel", content)
+        # Must NOT say "NOT yet produced" anymore
+        self.assertNotIn("NOT yet produced", content,
+                         "msa_macro_panel is now produced — remove 'NOT yet produced'")
+
+    def test_produce_chart_call_exists(self):
+        """report_generator.py must call _produce_chart for msa_macro_panel."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn('_produce_chart(ctx, "msa_macro_panel"', content,
+                       "Must call _produce_chart for msa_macro_panel artifact")
+        self.assertIn("plot_msa_macro_panel", content,
+                       "Must define and use plot_msa_macro_panel function")
+
+    def test_macro_stress_flag_in_chart(self):
+        """Chart must incorporate macro_stress_flag for visual indicators."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "report_generator.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("macro_stress_flag", content,
+                       "Chart must show stress flag information")
+
+    def test_claude_md_documents_final_chain(self):
+        """CLAUDE.md must document the final workbook-driven dependency chain."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("plot_msa_macro_panel", content)
+        self.assertIn("workbook-driven", content.lower(),
+                       "CLAUDE.md must describe the workbook-driven pattern")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # HUD HTTP Failure Diagnostics & Hardening (Parts 1-9)
 # ═══════════════════════════════════════════════════════════════════════════
 
