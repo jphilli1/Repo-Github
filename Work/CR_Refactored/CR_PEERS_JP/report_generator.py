@@ -86,6 +86,161 @@ sns.set_palette("husl")
 
 
 # ==================================================================================
+# CENTRALIZED CHART PALETTE — single color system for all charts
+# ==================================================================================
+# All chart functions MUST use these constants. No arbitrary per-chart color choices.
+
+CHART_PALETTE = {
+    "mspbna":         "#F7A81B",   # Gold — subject bank
+    "wealth_peers":   "#7B2D8E",   # Purple — Wealth Peers / Core PB composite
+    "all_peers":      "#5B9BD5",   # Blue — All Peers composite
+    "peer_cloud":     "#8FA8C8",   # Muted blue-gray — individual peer dots
+    "guide":          "#6B7B8D",   # Slate-gray — averages / crosshair guides
+    "range_all":      "#D0D0D0",   # Light gray — range bands (All Peers)
+    "range_wealth":   "#B8A0C8",   # Muted purple-gray — range bands (Wealth Peers)
+    "text":           "#2B2B2B",   # Dark — titles, axis labels
+    "grid":           "#D0D0D0",   # Grid lines
+}
+
+# Convenience aliases used in chart functions
+_C_MSPBNA       = CHART_PALETTE["mspbna"]
+_C_WEALTH       = CHART_PALETTE["wealth_peers"]
+_C_ALL_PEERS    = CHART_PALETTE["all_peers"]
+_C_PEER_CLOUD   = CHART_PALETTE["peer_cloud"]
+_C_GUIDE        = CHART_PALETTE["guide"]
+_C_RANGE_ALL    = CHART_PALETTE["range_all"]
+_C_RANGE_WEALTH = CHART_PALETTE["range_wealth"]
+_C_TEXT         = CHART_PALETTE["text"]
+
+
+# ==================================================================================
+# CHART ANNOTATION HELPER — label anti-overlap engine
+# ==================================================================================
+
+class ChartAnnotationHelper:
+    """Shared label placement engine for all chart types.
+
+    Priority tiers:
+      1. MSPBNA (always labeled)
+      2. Wealth Peers (always labeled when plotted)
+      3. All Peers (labeled only when explicitly plotted)
+      4. Individual peers (labeled only for outliers, edge-of-range, or specifically selected)
+
+    Rules:
+      - Use ticker abbreviations only (MSPBNA, GS, UBS, C, JPM, BAC, WFC, MS)
+      - Endpoint labels preferred on time-series charts
+      - Value labels on bar/line combos are sparse and strategic
+      - Leader lines allowed on scatter plots for displaced labels
+    """
+
+    # Priority tiers for label placement
+    TIER_SUBJECT = 1    # MSPBNA — always label
+    TIER_WEALTH = 2     # Wealth Peers — always label when plotted
+    TIER_ALL_PEERS = 3  # All Peers — label only if explicitly plotted
+    TIER_INDIVIDUAL = 4 # Individual peers — outlier/edge only
+
+    def __init__(self, ax, tag_size: int = 12):
+        self.ax = ax
+        self.tag_size = tag_size
+        self._placed_rects = []  # list of (x0, y0, x1, y1) in display coords
+
+    def _rect_for(self, x_data, y_data, xpx, ypx, text, pad=6):
+        """Compute bounding rect in display coords for a label at (x_data, y_data) + pixel offset."""
+        xd, yd = self.ax.transData.transform((x_data, y_data))
+        cx, cy = xd + xpx, yd + ypx
+        w = max(40.0, 0.62 * self.tag_size * len(text)) + 2 * pad
+        h = self.tag_size * 1.7 + 2 * pad
+        return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+    @staticmethod
+    def _rects_overlap(a, b):
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        return not (ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0)
+
+    def _can_place(self, rect):
+        return all(not self._rects_overlap(rect, r) for r in self._placed_rects)
+
+    def place_label(self, x, y, text, tier=4, color="black", box=True,
+                    preferred_directions=None, fontweight="bold"):
+        """Place a label near (x, y) avoiding collisions with previously placed labels.
+
+        Parameters
+        ----------
+        x, y : float
+            Data coordinates for the anchor point.
+        text : str
+            Label text (should be a ticker abbreviation).
+        tier : int
+            Priority tier (1=highest). Higher-priority labels get first placement.
+        color : str
+            Text color.
+        box : bool
+            Whether to draw a background box.
+        preferred_directions : list of (dx, dy) tuples, optional
+            Custom offset candidates in pixels.
+        fontweight : str
+            Font weight for the annotation.
+
+        Returns
+        -------
+        bool
+            True if label was placed successfully, False if skipped due to crowding.
+        """
+        if preferred_directions is None:
+            preferred_directions = [
+                (10, 12), (12, -12), (-10, 12), (-12, -12),
+                (16, 0), (-16, 0), (0, 16), (0, -16),
+                (22, 14), (-22, 14), (22, -14), (-22, -14),
+                (30, 0), (-30, 0), (0, 30), (0, -30),
+            ]
+
+        for dx, dy in preferred_directions:
+            rect = self._rect_for(x, y, dx, dy, text)
+            if self._can_place(rect):
+                bbox_props = (dict(boxstyle="round,pad=0.25", fc="white", ec="black",
+                                   lw=0.6, alpha=0.95) if box else None)
+                arrow_props = (dict(arrowstyle="->", lw=1.0, color="black") if box else None)
+                self.ax.annotate(
+                    text, xy=(x, y), xytext=(dx, dy), textcoords="offset points",
+                    fontsize=self.tag_size, fontweight=fontweight, color=color,
+                    bbox=bbox_props, arrowprops=arrow_props, va="center", zorder=10,
+                )
+                self._placed_rects.append(rect)
+                return True
+
+        # Fallback: place at first candidate regardless of overlap (for tier 1-2 only)
+        if tier <= 2 and preferred_directions:
+            dx, dy = preferred_directions[0]
+            rect = self._rect_for(x, y, dx, dy, text)
+            bbox_props = (dict(boxstyle="round,pad=0.25", fc="white", ec="black",
+                               lw=0.6, alpha=0.95) if box else None)
+            arrow_props = (dict(arrowstyle="->", lw=1.0, color="black") if box else None)
+            self.ax.annotate(
+                text, xy=(x, y), xytext=(dx, dy), textcoords="offset points",
+                fontsize=self.tag_size, fontweight=fontweight, color=color,
+                bbox=bbox_props, arrowprops=arrow_props, va="center", zorder=10,
+            )
+            self._placed_rects.append(rect)
+            return True
+        return False
+
+    def place_endpoint_label(self, x, y, text, color="black"):
+        """Place a right-aligned endpoint label on a time-series chart.
+
+        Prefers rightward placement with leader line.
+        """
+        return self.place_label(
+            x, y, text, tier=self.TIER_SUBJECT, color=color, box=True,
+            preferred_directions=[(14, 0), (14, 10), (14, -10), (20, 0), (20, 12), (20, -12)],
+        )
+
+    def register_fixed_rect(self, x0, y0, x1, y1):
+        """Register a fixed rectangle (e.g., from bar labels) to avoid collisions."""
+        self._placed_rects.append((x0, y0, x1, y1))
+
+
+# ==================================================================================
 # REPORT CONTEXT — lightweight carrier for generate_reports() helpers
 # ==================================================================================
 
@@ -2444,8 +2599,9 @@ def generate_reports(
                        x_col="NPL_to_Gross_Loans_Rate",
                        y_col="TTM_NCO_Rate",
                        subject_cert=subject_bank_cert,
-                       peer_avg_cert_primary=90003,
-                       peer_avg_cert_alt=90001,
+                       peer_avg_cert_primary=ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                       peer_avg_cert_alt=ACTIVE_STANDARD_COMPOSITES["core_pb"],
+                       wealth_peer_cert=ACTIVE_STANDARD_COMPOSITES["core_pb"],
                        use_alt_peer_avg=False,
                        **scatter_common)
 
@@ -2455,8 +2611,9 @@ def generate_reports(
                        x_col="NPL_to_Gross_Loans_Rate",
                        y_col="Past_Due_Rate",
                        subject_cert=subject_bank_cert,
-                       peer_avg_cert_primary=90003,
-                       peer_avg_cert_alt=90001,
+                       peer_avg_cert_primary=ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                       peer_avg_cert_alt=ACTIVE_STANDARD_COMPOSITES["core_pb"],
+                       wealth_peer_cert=ACTIVE_STANDARD_COMPOSITES["core_pb"],
                        use_alt_peer_avg=False,
                        **scatter_common)
 
@@ -2466,8 +2623,9 @@ def generate_reports(
                        x_col="Norm_Nonaccrual_Rate",
                        y_col="Norm_NCO_Rate",
                        subject_cert=subject_bank_cert,
-                       peer_avg_cert_primary=90006,
-                       peer_avg_cert_alt=90004,
+                       peer_avg_cert_primary=ACTIVE_NORMALIZED_COMPOSITES["all_peers"],
+                       peer_avg_cert_alt=ACTIVE_NORMALIZED_COMPOSITES["core_pb"],
+                       wealth_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["core_pb"],
                        use_alt_peer_avg=False,
                        **scatter_common)
 
@@ -2745,7 +2903,7 @@ def create_credit_deterioration_chart_ppt(
     if proc_df_with_peers.empty:
         return None, None
 
-    GOLD, BLUE, PURPLE = "#F7A81B", "#4C78A8", "#9C6FB6"
+    GOLD, BLUE, PURPLE = _C_MSPBNA, _C_ALL_PEERS, _C_WEALTH
     default_entities = [subject_bank_cert, 90003, 90001]
     bar_entities  = bar_entities  or default_entities
     line_entities = line_entities or list(bar_entities)
@@ -3032,6 +3190,7 @@ def plot_scatter_dynamic(
     subject_cert: int = 34221,
     peer_avg_cert_primary: int = 90003,
     peer_avg_cert_alt: int = 90001,
+    wealth_peer_cert: Optional[int] = None,
     use_alt_peer_avg: bool = False,
     composite_certs: Optional[set] = None,
     show_peers_avg_label: bool = True,
@@ -3049,7 +3208,7 @@ def plot_scatter_dynamic(
     save_path: Optional[str] = None
 ) -> Tuple[plt.Figure, plt.Axes]:
     if df.empty: raise ValueError("scatter DF is empty")
-    GOLD, PEER, GUIDE = "#F7A81B", "#4C78A8", "#7F8C8D"
+    GOLD, PEER, GUIDE = _C_MSPBNA, _C_PEER_CLOUD, _C_GUIDE
 
     def to_decimals_series(s: pd.Series) -> pd.Series:
         s = pd.to_numeric(s, errors="coerce")
@@ -3093,9 +3252,19 @@ def plot_scatter_dynamic(
     if not peer_avg.empty:
         px = float(to_decimals_series(peer_avg[x_col]).iloc[0])
         py = float(to_decimals_series(peer_avg[y_col]).iloc[0])
-        ax.scatter(px, py, s=90, color=PEER, marker="s", edgecolor="black", linewidth=0.7, label="_nolegend_")
+        ax.scatter(px, py, s=90, color=_C_ALL_PEERS, marker="s", edgecolor="black", linewidth=0.7, label="All Peers")
         ax.axvline(px, linestyle="--", linewidth=1.2, color=GUIDE, alpha=0.95)
         ax.axhline(py, linestyle="--", linewidth=1.2, color=GUIDE, alpha=0.95)
+
+    # Wealth Peers marker (explicit styled point, not implied in peer cloud)
+    wx = wy = None
+    if wealth_peer_cert is not None:
+        wealth_row = df[df["CERT"] == wealth_peer_cert]
+        if not wealth_row.empty:
+            wx = float(to_decimals_series(wealth_row[x_col]).iloc[0])
+            wy = float(to_decimals_series(wealth_row[y_col]).iloc[0])
+            ax.scatter(wx, wy, s=90, color=_C_WEALTH, marker="^", edgecolor="black",
+                       linewidth=0.7, zorder=4, label="Wealth Peers")
 
     SUFFIX_RE = re.compile(r"(\s*,?\s*THE)?(\s*\(.*?\))?(\s+(NATIONAL(\s+ASSOCIATION|(\s+ASSN\.?))|N\.?A\.?|NA|FEDERAL(\s+SAVINGS\s+BANK)?|SAVINGS\s+BANK|STATE\s+BANK|NATIONAL\s+BANK|BANK|BANCORP(?:ORATION)?|CORP(?:ORATION)?|COMPANY|CO\.?|INC|INC\.?|LTD\.?|LIMITED|FSB|F\.S\.B\.?|ASSOCIATION|ASSN\.?))+\s*$", re.IGNORECASE)
     def short_name(s): s=str(s).strip(); s=re.sub(r"\s+"," ",s); return SUFFIX_RE.sub("", s).strip(", ").strip() or s
@@ -3201,7 +3370,7 @@ def plot_portfolio_mix(
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
 
-    colors = ["#F7A81B", "#4C78A8", "#70AD47", "#9C6FB6"]
+    colors = [_C_MSPBNA, _C_ALL_PEERS, _C_WEALTH, _C_GUIDE]
     labels = [c.replace("_Composition", "").replace("_", " ") for c in available]
 
     ax.stackplot(
@@ -3331,8 +3500,8 @@ def plot_reserve_risk_allocation(
 
     x = np.arange(len(seg_labels))
     width = 0.35
-    ax.bar(x - width / 2, acl_vals, width, label="Share of ACL", color="#E74C3C", alpha=0.85)
-    ax.bar(x + width / 2, loan_vals, width, label="Share of Loans", color="#4C78A8", alpha=0.85)
+    ax.bar(x - width / 2, acl_vals, width, label="Share of ACL", color=_C_MSPBNA, alpha=0.85)
+    ax.bar(x + width / 2, loan_vals, width, label="Share of Loans", color=_C_ALL_PEERS, alpha=0.85)
 
     ax.set_xticks(x)
     ax.set_xticklabels(seg_labels, rotation=30, ha="right", fontsize=11)
@@ -3362,10 +3531,10 @@ def plot_migration_ladder(
     for Wealth Peers (Core PB, 90001) and All Peers (90003).
     """
     series_map = {
-        "TTM_PD30_Rate": ("Past Due 30-90d", "#3498DB"),
-        "TTM_PD90_Rate": ("Past Due 90d+", "#F39C12"),
-        "Norm_Nonaccrual_Rate": ("Nonaccrual", "#E74C3C"),
-        "TTM_NCO_Rate": ("NCO", "#2C3E50"),
+        "TTM_PD30_Rate": ("Past Due 30-90d", _C_ALL_PEERS),
+        "TTM_PD90_Rate": ("Past Due 90d+", _C_MSPBNA),
+        "Norm_Nonaccrual_Rate": ("Nonaccrual", _C_WEALTH),
+        "TTM_NCO_Rate": ("NCO", _C_TEXT),
     }
     available = {k: v for k, v in series_map.items() if k in df.columns}
     if not available:
@@ -3470,18 +3639,22 @@ def plot_years_of_reserves(
         return None
     subj = subj.iloc[0]
 
-    # Also get All Peers (90003) for comparison
-    peer = df[(df["CERT"] == 90003) & (df["REPDTE"] == latest_date)]
-    peer = peer.iloc[0] if not peer.empty else None
+    # Get All Peers (90003) and Wealth Peers (90001) for comparison
+    all_peer = df[(df["CERT"] == ACTIVE_STANDARD_COMPOSITES["all_peers"]) & (df["REPDTE"] == latest_date)]
+    all_peer = all_peer.iloc[0] if not all_peer.empty else None
+    wealth_peer = df[(df["CERT"] == ACTIVE_STANDARD_COMPOSITES["core_pb"]) & (df["REPDTE"] == latest_date)]
+    wealth_peer = wealth_peer.iloc[0] if not wealth_peer.empty else None
 
-    segments, subj_vals, peer_vals = [], [], []
+    segments, subj_vals, all_peer_vals, wealth_peer_vals = [], [], [], []
     for col, seg_label in reserve_cols.items():
         sv = pd.to_numeric(subj.get(col, np.nan), errors="coerce")
         if pd.notna(sv):
             segments.append(seg_label.replace("_", " "))
             subj_vals.append(float(sv))
-            pv = pd.to_numeric(peer.get(col, np.nan), errors="coerce") if peer is not None else np.nan
-            peer_vals.append(float(pv) if pd.notna(pv) else 0.0)
+            apv = pd.to_numeric(all_peer.get(col, np.nan), errors="coerce") if all_peer is not None else np.nan
+            all_peer_vals.append(float(apv) if pd.notna(apv) else 0.0)
+            wpv = pd.to_numeric(wealth_peer.get(col, np.nan), errors="coerce") if wealth_peer is not None else np.nan
+            wealth_peer_vals.append(float(wpv) if pd.notna(wpv) else 0.0)
 
     if not segments:
         print("  Skipped years-of-reserves: all values N/A")
@@ -3494,10 +3667,12 @@ def plot_years_of_reserves(
 
     y = np.arange(len(segments))
     # Lollipop: horizontal stems + dots
-    ax.hlines(y, 0, subj_vals, color="#F7A81B", linewidth=2.5, zorder=2)
-    ax.scatter(subj_vals, y, color="#F7A81B", s=100, zorder=3, label="MSPBNA")
-    if any(v > 0 for v in peer_vals):
-        ax.scatter(peer_vals, y, color="#4C78A8", s=80, marker="D", zorder=3, label=resolve_display_label(90003))
+    ax.hlines(y, 0, subj_vals, color=_C_MSPBNA, linewidth=2.5, zorder=2)
+    ax.scatter(subj_vals, y, color=_C_MSPBNA, s=100, zorder=3, label="MSPBNA")
+    if any(v > 0 for v in wealth_peer_vals):
+        ax.scatter(wealth_peer_vals, y, color=_C_WEALTH, s=80, marker="^", zorder=3, label="Wealth Peers")
+    if any(v > 0 for v in all_peer_vals):
+        ax.scatter(all_peer_vals, y, color=_C_ALL_PEERS, s=80, marker="D", zorder=3, label="All Peers")
 
     ax.set_yticks(y)
     ax.set_yticklabels(segments, fontsize=12)
@@ -3544,23 +3719,31 @@ def plot_growth_vs_deterioration(
     composite = ALL_COMPOSITE_CERTS
     peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
     subj = latest[latest["CERT"] == subject_bank_cert]
+    wealth = latest[latest["CERT"] == ACTIVE_STANDARD_COMPOSITES["core_pb"]]
+    all_peers_row = latest[latest["CERT"] == ACTIVE_STANDARD_COMPOSITES["all_peers"]]
 
     fig, ax = plt.subplots(figsize=(10, 8))
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
     _economist_ax(ax)
 
-    ax.scatter(peers[growth_col], peers[nco_col], s=50, alpha=0.7, color="#4C78A8",
+    ax.scatter(peers[growth_col], peers[nco_col], s=50, alpha=0.7, color=_C_PEER_CLOUD,
                edgecolor="white", linewidth=0.5, label="Peers")
     if not subj.empty:
-        ax.scatter(subj[growth_col], subj[nco_col], s=120, color="#F7A81B",
+        ax.scatter(subj[growth_col], subj[nco_col], s=120, color=_C_MSPBNA,
                    edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+    if not wealth.empty:
+        ax.scatter(wealth[growth_col], wealth[nco_col], s=90, color=_C_WEALTH,
+                   marker="^", edgecolor="black", linewidth=0.7, zorder=4, label="Wealth Peers")
+    if not all_peers_row.empty:
+        ax.scatter(all_peers_row[growth_col], all_peers_row[nco_col], s=90, color=_C_ALL_PEERS,
+                   marker="s", edgecolor="black", linewidth=0.7, zorder=4, label="All Peers")
 
     # Quadrant lines at medians
     mx = latest[growth_col].median()
     my = latest[nco_col].median()
-    ax.axvline(mx, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
-    ax.axhline(my, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
+    ax.axvline(mx, linestyle="--", color=_C_GUIDE, alpha=0.7, linewidth=1)
+    ax.axhline(my, linestyle="--", color=_C_GUIDE, alpha=0.7, linewidth=1)
 
     ax.set_xlabel(growth_col.replace("_", " "), fontsize=13, fontweight="bold")
     ax.set_ylabel("TTM NCO Rate", fontsize=13, fontweight="bold")
@@ -3601,6 +3784,8 @@ def plot_risk_adjusted_return(
     composite = ALL_COMPOSITE_CERTS
     peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
     subj = latest[latest["CERT"] == subject_bank_cert]
+    wealth = latest[latest["CERT"] == ACTIVE_NORMALIZED_COMPOSITES["core_pb"]]
+    all_peers_row = latest[latest["CERT"] == ACTIVE_NORMALIZED_COMPOSITES["all_peers"]]
 
     # Bubble sizes: scale NCO rate to reasonable dot sizes
     def bubble_size(s):
@@ -3616,11 +3801,19 @@ def plot_risk_adjusted_return(
 
     if not peers.empty:
         ax.scatter(peers[x_col], peers[y_col], s=bubble_size(peers[size_col]),
-                   alpha=0.55, color="#4C78A8", edgecolor="white", linewidth=0.5, label="Peers")
+                   alpha=0.55, color=_C_PEER_CLOUD, edgecolor="white", linewidth=0.5, label="Peers")
     if not subj.empty:
         ax.scatter(subj[x_col].values, subj[y_col].values,
                    s=bubble_size(subj[size_col]).values,
-                   color="#F7A81B", edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+                   color=_C_MSPBNA, edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+    if not wealth.empty:
+        ax.scatter(wealth[x_col].values, wealth[y_col].values,
+                   s=bubble_size(wealth[size_col]).values if size_col in wealth.columns else [100],
+                   color=_C_WEALTH, marker="^", edgecolor="black", linewidth=0.7, zorder=4, label="Wealth Peers")
+    if not all_peers_row.empty:
+        ax.scatter(all_peers_row[x_col].values, all_peers_row[y_col].values,
+                   s=bubble_size(all_peers_row[size_col]).values if size_col in all_peers_row.columns else [100],
+                   color=_C_ALL_PEERS, marker="s", edgecolor="black", linewidth=0.7, zorder=4, label="All Peers")
 
     ax.set_xlabel("Norm Loss-Adjusted Yield", fontsize=13, fontweight="bold")
     ax.set_ylabel("Norm Risk-Adjusted Return", fontsize=13, fontweight="bold")
@@ -3660,30 +3853,38 @@ def plot_concentration_vs_capital(
     composite = ALL_COMPOSITE_CERTS
     peers = latest[~latest["CERT"].isin(composite | {subject_bank_cert})]
     subj = latest[latest["CERT"] == subject_bank_cert]
+    wealth = latest[latest["CERT"] == ACTIVE_STANDARD_COMPOSITES["core_pb"]]
+    all_peers_row = latest[latest["CERT"] == ACTIVE_STANDARD_COMPOSITES["all_peers"]]
 
     fig, ax = plt.subplots(figsize=(10, 8))
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
     _economist_ax(ax)
 
-    ax.scatter(peers[x_col], peers[y_col], s=50, alpha=0.7, color="#4C78A8",
+    ax.scatter(peers[x_col], peers[y_col], s=50, alpha=0.7, color=_C_PEER_CLOUD,
                edgecolor="white", linewidth=0.5, label="Peers")
     if not subj.empty:
-        ax.scatter(subj[x_col].values, subj[y_col].values, s=120, color="#F7A81B",
+        ax.scatter(subj[x_col].values, subj[y_col].values, s=120, color=_C_MSPBNA,
                    edgecolor="black", linewidth=0.8, zorder=5, label="MSPBNA")
+    if not wealth.empty:
+        ax.scatter(wealth[x_col].values, wealth[y_col].values, s=90, color=_C_WEALTH,
+                   marker="^", edgecolor="black", linewidth=0.7, zorder=4, label="Wealth Peers")
+    if not all_peers_row.empty:
+        ax.scatter(all_peers_row[x_col].values, all_peers_row[y_col].values, s=90, color=_C_ALL_PEERS,
+                   marker="s", edgecolor="black", linewidth=0.7, zorder=4, label="All Peers")
 
     # Quadrant lines at medians
     mx = latest[x_col].median()
     my = latest[y_col].median()
-    ax.axvline(mx, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
-    ax.axhline(my, linestyle="--", color="#7F8C8D", alpha=0.7, linewidth=1)
+    ax.axvline(mx, linestyle="--", color=_C_GUIDE, alpha=0.7, linewidth=1)
+    ax.axhline(my, linestyle="--", color=_C_GUIDE, alpha=0.7, linewidth=1)
 
     # Quadrant labels
     xlims, ylims = ax.get_xlim(), ax.get_ylim()
     ax.text(xlims[1], ylims[1], "High CRE + High C&I", ha="right", va="top",
-            fontsize=9, color="#7F8C8D", style="italic")
+            fontsize=9, color=_C_GUIDE, style="italic")
     ax.text(xlims[0], ylims[0], "Low CRE + Low C&I", ha="left", va="bottom",
-            fontsize=9, color="#7F8C8D", style="italic")
+            fontsize=9, color=_C_GUIDE, style="italic")
 
     ax.set_xlabel("CRE Concentration / Capital Risk (%)", fontsize=13, fontweight="bold")
     ax.set_ylabel("C&I / Capital Risk (%)", fontsize=13, fontweight="bold")
@@ -3704,9 +3905,9 @@ def plot_liquidity_overlay(
 ) -> Optional[plt.Figure]:
     """Combo chart: Loans-to-Deposits, Liquidity Ratio, HQLA Ratio over time for the subject bank."""
     series_map = {
-        "Loans_to_Deposits": ("Loans / Deposits", "#F7A81B", "-"),
-        "Liquidity_Ratio": ("Liquidity Ratio", "#4C78A8", "--"),
-        "HQLA_Ratio": ("HQLA Ratio", "#70AD47", "-."),
+        "Loans_to_Deposits": ("Loans / Deposits", _C_MSPBNA, "-"),
+        "Liquidity_Ratio": ("Liquidity Ratio", _C_ALL_PEERS, "--"),
+        "HQLA_Ratio": ("HQLA Ratio", _C_WEALTH, "-."),
     }
     available = {k: v for k, v in series_map.items() if k in df.columns}
     if not available:

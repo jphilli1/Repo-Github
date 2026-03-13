@@ -478,17 +478,51 @@ Every ratio-component row label **must** match its denominator type:
 
 Dict-style access (`config["key"]`, `config.get("key")`) will raise `TypeError` on `DashboardConfig` and is forbidden.
 
-### CHARTING STYLES
+### CENTRALIZED CHART PALETTE (CHART_PALETTE)
 
-All charts must use this color palette consistently:
+All charts **must** use the centralized `CHART_PALETTE` dict and its convenience aliases (`_C_MSPBNA`, `_C_WEALTH`, `_C_ALL_PEERS`, `_C_PEER_CLOUD`, `_C_GUIDE`, etc.) defined at the top of `report_generator.py`. No chart should use arbitrary per-chart color choices.
 
-| Entity | Hex Color | Description |
+| Key | Hex Color | Entity / Usage |
 |---|---|---|
-| **MSPBNA (Subject Bank)** | `#F7A81B` | Gold |
-| **All Peers** | `#5B9BD5` or `#4C78A8` | Blue |
-| **Core PB / Peers (Ex. F&V)** | `#70AD47` or `#9C6FB6` | Green or Purple |
+| `mspbna` | `#F7A81B` | Gold — Subject bank (MSPBNA) |
+| `wealth_peers` | `#7B2D8E` | Purple — Wealth Peers / Core PB composite |
+| `all_peers` | `#5B9BD5` | Blue — All Peers composite |
+| `peer_cloud` | `#8FA8C8` | Muted blue-gray — individual peer dots in scatter |
+| `guide` | `#6B7B8D` | Slate-gray — averages, crosshair guides, reference lines |
+| `range_all` | `#D0D0D0` | Light gray — range bands (All Peers) |
+| `range_wealth` | `#B8A0C8` | Muted purple-gray — range bands (Wealth Peers) |
+| `text` | `#2B2B2B` | Dark — titles, axis labels |
+| `grid` | `#D0D0D0` | Grid lines |
 
-**Do not alter** the internal matplotlib/seaborn plotting logic in `create_credit_deterioration_chart_ppt` or `plot_scatter_dynamic` without explicit permission from the project owner.
+### CHART ANNOTATION / ANTI-OVERLAP POLICY
+
+`ChartAnnotationHelper` in `report_generator.py` provides a shared label placement engine:
+
+**Priority tiers:**
+1. **MSPBNA** — always labeled (TIER_SUBJECT = 1)
+2. **Wealth Peers** — always labeled when plotted (TIER_WEALTH = 2)
+3. **All Peers** — labeled only when explicitly plotted (TIER_ALL_PEERS = 3)
+4. **Individual peers** — labeled only for outliers, edge-of-range, or specifically selected (TIER_INDIVIDUAL = 4)
+
+**Rules:**
+- Use ticker abbreviations only: MSPBNA, GS, UBS, C, JPM, BAC, WFC, MS
+- Endpoint labels preferred over many internal labels on time-series charts
+- Value labels on bar/line combos should be sparse and strategic (latest quarter, major inflection points only)
+- Leader lines allowed on scatter plots for displaced labels
+- Directional nudges used to avoid collisions; higher-priority labels get first placement
+
+### WEALTH PEERS COMPARATOR INCLUSION POLICY
+
+Wealth Peers must appear as an explicit styled point/line/marker (not implied in the peer cloud) in these charts:
+- `scatter_nco_vs_npl` — triangle marker, purple
+- `scatter_pd_vs_npl` — triangle marker, purple
+- `scatter_norm_nco_vs_nonaccrual` — triangle marker, purple
+- `risk_adjusted_return` — bubble marker, purple
+- `years_of_reserves` — triangle marker, purple
+- `growth_vs_deterioration` — triangle marker, purple
+- `concentration_vs_capital` — triangle marker, purple
+
+All Peers remains as a reference marker/crosshair where appropriate. Do NOT clutter charts that are intentionally subject-only operational overlays (e.g., `portfolio_mix`, `liquidity_overlay`).
 
 ### CSS CLASS NAMING
 
@@ -762,6 +796,38 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — Centralized Chart Palette, Annotation Engine, and Wealth Peers Inclusion
+
+**Objective**: Establish a professional, board-ready charting foundation by enforcing a single color system, building a robust label anti-overlap engine, and adding Wealth Peers to high-value charts.
+
+**6-part implementation:**
+
+1. **Centralized chart palette (`CHART_PALETTE`)**: Created a single dict in `report_generator.py` with 9 color mappings (mspbna=gold, wealth_peers=purple, all_peers=blue, peer_cloud=muted blue-gray, guide=slate-gray, range bands, text, grid). All chart functions now use `_C_*` convenience aliases instead of per-chart hardcoded hex colors. Affected functions: `plot_scatter_dynamic`, `create_credit_deterioration_chart_ppt`, `plot_portfolio_mix`, `plot_years_of_reserves`, `plot_growth_vs_deterioration`, `plot_risk_adjusted_return`, `plot_concentration_vs_capital`, `plot_migration_ladder`, `plot_reserve_risk_allocation`, `plot_liquidity_overlay`.
+
+2. **Chart annotation helper (`ChartAnnotationHelper`)**: New class with priority-tiered label placement. Tier 1 (MSPBNA) always labeled, Tier 2 (Wealth Peers) always labeled when plotted, Tier 3 (All Peers) labeled only when explicit, Tier 4 (individuals) outlier/edge only. Includes `place_label()` with collision detection, `place_endpoint_label()` for time-series endpoints, and `register_fixed_rect()` for pre-placed elements.
+
+3. **Wealth Peers added to high-value charts**: `plot_scatter_dynamic` now accepts `wealth_peer_cert` parameter — plots Wealth Peers as a distinct purple triangle marker. All 3 scatter call sites pass `wealth_peer_cert`. `plot_years_of_reserves` now shows MSPBNA, Wealth Peers, and All Peers side-by-side. `plot_risk_adjusted_return`, `plot_growth_vs_deterioration`, and `plot_concentration_vs_capital` all add Wealth Peers (triangle) and All Peers (square) markers alongside the MSPBNA diamond.
+
+4. **Credit chart polish**: `create_credit_deterioration_chart_ppt` uses centralized palette for GOLD/BLUE/PURPLE. Low-coverage series suppression already in place. Strategic sparse labels (latest quarter, Q4 only) already enforced by `idx_to_label` logic.
+
+5. **Years of reserves update**: Title now clearly shows "Years of Reserves by Segment". Both Wealth Peers (triangle, purple) and All Peers (diamond, blue) plotted alongside MSPBNA (circle, gold).
+
+6. **Tests and documentation**: Added 3 test classes (24 tests): `TestCentralizedChartPalette` (11 tests: palette keys, color ranges, aliases, no hardcoded hex), `TestChartAnnotationHelper` (5 tests: class exists, methods, priority tiers), `TestWealthPeersInclusion` (8 tests: scatter param, call sites, years_of_reserves, risk_adjusted_return, growth_vs_deterioration, concentration_vs_capital). Updated CLAUDE.md with centralized palette table, annotation policy, and Wealth Peers inclusion policy.
+
+**Functions updated:**
+- `plot_scatter_dynamic` — new `wealth_peer_cert` param, centralized colors, Wealth Peers marker
+- `create_credit_deterioration_chart_ppt` — centralized palette aliases
+- `plot_portfolio_mix` — centralized palette
+- `plot_years_of_reserves` — Wealth Peers + All Peers markers, centralized colors
+- `plot_growth_vs_deterioration` — Wealth Peers + All Peers markers, centralized colors
+- `plot_risk_adjusted_return` — Wealth Peers + All Peers markers, centralized colors
+- `plot_concentration_vs_capital` — Wealth Peers + All Peers markers, centralized colors
+- `plot_migration_ladder` — centralized metric colors
+- `plot_reserve_risk_allocation` — centralized colors
+- `plot_liquidity_overlay` — centralized colors
+
+**Files changed:** `report_generator.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Normalized KRI Bullet Chart Split (Rates vs Composition)
 

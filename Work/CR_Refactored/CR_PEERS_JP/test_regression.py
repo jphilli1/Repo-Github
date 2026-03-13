@@ -6064,5 +6064,173 @@ class TestRenderingReconciliation(unittest.TestCase):
         self.assertIn("from rendering_mode import", self._rg_src)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# CHART PALETTE, ANNOTATION HELPER, AND WEALTH PEERS INCLUSION TESTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCentralizedChartPalette(unittest.TestCase):
+    """Verify the centralized chart palette exists and contains required mappings."""
+
+    def test_chart_palette_exists(self):
+        from report_generator import CHART_PALETTE
+        self.assertIsInstance(CHART_PALETTE, dict)
+
+    def test_chart_palette_has_required_keys(self):
+        from report_generator import CHART_PALETTE
+        required = ["mspbna", "wealth_peers", "all_peers", "peer_cloud",
+                     "guide", "range_all", "range_wealth", "text"]
+        for key in required:
+            self.assertIn(key, CHART_PALETTE, f"CHART_PALETTE missing key: {key}")
+
+    def test_mspbna_is_gold(self):
+        from report_generator import CHART_PALETTE
+        self.assertEqual(CHART_PALETTE["mspbna"], "#F7A81B")
+
+    def test_wealth_peers_is_purple(self):
+        from report_generator import CHART_PALETTE
+        # Purple family check (hex starts with #7 or contains purple-range)
+        color = CHART_PALETTE["wealth_peers"]
+        self.assertTrue(color.startswith("#7") or color.startswith("#8") or color.startswith("#9"),
+                        f"Wealth Peers color {color} should be in purple range")
+
+    def test_all_peers_is_blue(self):
+        from report_generator import CHART_PALETTE
+        color = CHART_PALETTE["all_peers"]
+        self.assertTrue(color.startswith("#5") or color.startswith("#4"),
+                        f"All Peers color {color} should be in blue range")
+
+    def test_peer_cloud_is_muted_blue_gray(self):
+        from report_generator import CHART_PALETTE
+        self.assertIn("peer_cloud", CHART_PALETTE)
+        # Just verify it exists and is not the same as all_peers
+        self.assertNotEqual(CHART_PALETTE["peer_cloud"], CHART_PALETTE["all_peers"])
+
+    def test_guide_is_slate_gray(self):
+        from report_generator import CHART_PALETTE
+        self.assertIn("guide", CHART_PALETTE)
+        color = CHART_PALETTE["guide"]
+        self.assertTrue(color.startswith("#6") or color.startswith("#7") or color.startswith("#8"),
+                        f"Guide color {color} should be in slate-gray range")
+
+    def test_convenience_aliases_match_palette(self):
+        from report_generator import (CHART_PALETTE, _C_MSPBNA, _C_WEALTH,
+                                       _C_ALL_PEERS, _C_PEER_CLOUD, _C_GUIDE)
+        self.assertEqual(_C_MSPBNA, CHART_PALETTE["mspbna"])
+        self.assertEqual(_C_WEALTH, CHART_PALETTE["wealth_peers"])
+        self.assertEqual(_C_ALL_PEERS, CHART_PALETTE["all_peers"])
+        self.assertEqual(_C_PEER_CLOUD, CHART_PALETTE["peer_cloud"])
+        self.assertEqual(_C_GUIDE, CHART_PALETTE["guide"])
+
+    def test_no_arbitrary_hardcoded_colors_in_scatter(self):
+        """plot_scatter_dynamic should use centralized palette, not hardcoded hex."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        # Find the scatter function
+        import re
+        scatter_match = re.search(r'def plot_scatter_dynamic\(.*?\n(?=def |\Z)', text, re.DOTALL)
+        if scatter_match:
+            scatter_body = scatter_match.group(0)
+            # Should not contain raw #4C78A8 or #F7A81B as standalone color definitions
+            # (the centralized aliases should be used instead)
+            self.assertNotIn('GOLD, PEER, GUIDE = "#F7A81B"', scatter_body,
+                             "Scatter should use centralized palette aliases, not raw hex")
+
+    def test_credit_chart_uses_centralized_palette(self):
+        """create_credit_deterioration_chart_ppt should use _C_ aliases."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        self.assertIn("_C_MSPBNA", text)
+        self.assertIn("_C_ALL_PEERS", text)
+        self.assertIn("_C_WEALTH", text)
+
+
+class TestChartAnnotationHelper(unittest.TestCase):
+    """Verify the ChartAnnotationHelper class exists and has required methods."""
+
+    def test_annotation_helper_exists(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(callable(ChartAnnotationHelper))
+
+    def test_annotation_helper_has_place_label(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(hasattr(ChartAnnotationHelper, 'place_label'))
+
+    def test_annotation_helper_has_place_endpoint_label(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(hasattr(ChartAnnotationHelper, 'place_endpoint_label'))
+
+    def test_annotation_helper_has_priority_tiers(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertEqual(ChartAnnotationHelper.TIER_SUBJECT, 1)
+        self.assertEqual(ChartAnnotationHelper.TIER_WEALTH, 2)
+        self.assertEqual(ChartAnnotationHelper.TIER_ALL_PEERS, 3)
+        self.assertEqual(ChartAnnotationHelper.TIER_INDIVIDUAL, 4)
+
+    def test_annotation_helper_has_register_fixed_rect(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(hasattr(ChartAnnotationHelper, 'register_fixed_rect'))
+
+
+class TestWealthPeersInclusion(unittest.TestCase):
+    """Verify Wealth Peers is included in designated high-value charts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._src = (Path(__file__).parent / "report_generator.py").read_text()
+
+    def test_scatter_has_wealth_peer_cert_param(self):
+        """plot_scatter_dynamic must accept wealth_peer_cert parameter."""
+        self.assertIn("wealth_peer_cert", self._src)
+        import re
+        m = re.search(r'def plot_scatter_dynamic\([^)]*wealth_peer_cert', self._src, re.DOTALL)
+        self.assertIsNotNone(m, "wealth_peer_cert parameter not in plot_scatter_dynamic signature")
+
+    def test_scatter_calls_pass_wealth_peer_cert(self):
+        """Scatter call sites in generate_reports must pass wealth_peer_cert."""
+        # Count how many scatter calls pass wealth_peer_cert
+        count = self._src.count("wealth_peer_cert=")
+        # At minimum 3 scatter calls + 1 definition
+        self.assertGreaterEqual(count, 4,
+                                f"Expected at least 4 wealth_peer_cert references, got {count}")
+
+    def test_years_of_reserves_has_wealth_peers(self):
+        """plot_years_of_reserves must include Wealth Peers comparison."""
+        import re
+        fn_match = re.search(r'def plot_years_of_reserves\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("wealth_peer", fn_body.lower(),
+                       "plot_years_of_reserves must reference Wealth Peers")
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_years_of_reserves legend must include 'Wealth Peers'")
+
+    def test_risk_adjusted_return_has_wealth_peers(self):
+        """plot_risk_adjusted_return must include Wealth Peers marker."""
+        import re
+        fn_match = re.search(r'def plot_risk_adjusted_return\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_risk_adjusted_return must include 'Wealth Peers' label")
+
+    def test_growth_vs_deterioration_has_wealth_peers(self):
+        """plot_growth_vs_deterioration must include Wealth Peers marker."""
+        import re
+        fn_match = re.search(r'def plot_growth_vs_deterioration\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_growth_vs_deterioration must include 'Wealth Peers' label")
+
+    def test_concentration_vs_capital_has_wealth_peers(self):
+        """plot_concentration_vs_capital must include Wealth Peers marker."""
+        import re
+        fn_match = re.search(r'def plot_concentration_vs_capital\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_concentration_vs_capital must include 'Wealth Peers' label")
+
+
 if __name__ == '__main__':
     unittest.main()
