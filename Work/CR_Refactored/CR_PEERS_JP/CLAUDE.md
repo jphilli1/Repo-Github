@@ -627,8 +627,11 @@ Both standard and normalized credit-deterioration charts are generated.
 
 - The FRED API returns HTTP 400 Bad Request for discontinued or mistyped series IDs. Always verify IDs against the FRED website before adding them to `FRED_SERIES_TO_FETCH`.
 - Known corrections: `CORCCACBS` (not `CORCCLACBS`), `RHVRUSQ156N` (not `RCVRUSQ156N`).
-- Discontinued series must be removed, not left in the fetch list (e.g., `GOLDAMGBD228NLBM` was discontinued by FRED).
+- Discontinued series must be removed, not left in the fetch list (e.g., `GOLDAMGBD228NLBM` was discontinued by FRED, `STLFSI2` discontinued 2022-01-07 and replaced by `STLFSI4`).
 - Redundant series should be removed if covered by another ID (e.g., `DEPALL` removed in favor of `DPSACBW027SBOG`).
+- `USALOLITONOSTSAM` (OECD Leading Indicator) is valid but stale — last observation January 2024. Monitor for potential functional discontinuation.
+- `FREDDataFetcher._fetch_single_series` classifies failures as `FAIL_INVALID_ID` (HTTP 400), `FAIL_CONNECTION` (DNS/proxy/timeout — retried with backoff), or `FAIL_OTHER`. Connection errors are retried up to 3 times with exponential backoff (2s, 4s, 8s). HTTP 400 errors are not retried.
+- `fetch_all_series_async` logs a structured summary at the end of the FRED fetch phase: total/fetched/failed counts, breakdown by failure type, and a list of missing macro chart series (from `MACRO_CORR_FRED_SERIES`).
 
 ### STOCK vs FLOW MATH CONVENTION
 
@@ -855,6 +858,21 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — FRED Series Audit & Fetch Resilience
+
+**3-item change set (Prompt 4):**
+
+1. **FRED series audit**: Audited 10 failed FRED series IDs. All are valid active series — failures were VPN/proxy connection blocks, not bad IDs. One discontinued series found and removed: **STLFSI2** (St. Louis Financial Stress Index v2, last observation 2022-01-07, replaced by STLFSI4). STLFSI4 was already in `FRED_SERIES_TO_FETCH`. USALOLITONOSTSAM is valid but stale (last obs January 2024) — flagged for monitoring.
+
+2. **Macro chart series update**: Replaced STLFSI2 → STLFSI4 in `MACRO_CORR_FRED_SERIES` and `_FRED_DISPLAY` in `report_generator.py`. All 13 macro chart FRED series confirmed present and active in `FRED_SERIES_TO_FETCH`.
+
+3. **FRED fetch resilience** (`FREDDataFetcher` in `MSPBNA_CR_Normalized.py`):
+   - `_fetch_single_series` now classifies failures: `FAIL_INVALID_ID` (HTTP 400 — bad/discontinued ID, no retry), `FAIL_CONNECTION` (DNS/proxy/timeout — retried with exponential backoff up to 3 times at 2s/4s/8s), `FAIL_OTHER` (unexpected errors, no retry).
+   - Returns 3-tuple `(series_id, DataFrame_or_None, failure_class_or_None)` instead of 2-tuple.
+   - `fetch_all_series_async` logs a structured summary: total/fetched/failed counts, breakdown by failure type (invalid IDs, connection failures, other), and a list of any missing macro chart series (cross-referenced against `MACRO_CORR_FRED_SERIES` from `report_generator.py`).
+
+**Files changed:** `MSPBNA_CR_Normalized.py`, `report_generator.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-13 — Capital Concentration Ratios & Cumulative Growth Base-Period Fix
 
@@ -1193,7 +1211,7 @@ server=160, exception=0, parse=0, empty=0 }
 | Credit/Stress | BAMLH0A0HYM2 | HY OAS | Daily |
 | Credit/Stress | VIXCLS | VIX | Daily |
 | Credit/Stress | NFCI | Chicago Fed NFCI | Weekly |
-| Credit/Stress | STLFSI2 | St. Louis FSI v2 | Weekly |
+| Credit/Stress | STLFSI4 | St. Louis FSI | Weekly |
 | Credit/Stress | DRTSCILM | C&I Standards (Large/Med) | Quarterly |
 | Bank Health | DRALACBS | All Loans Delinquency | Quarterly |
 | Bank Health | DRCRELEXFACBS | CRE Delinq (ex-farm) | Quarterly |
@@ -1202,7 +1220,7 @@ server=160, exception=0, parse=0, empty=0 }
 | Housing | HOUST | Housing Starts | Monthly |
 | Housing | CSUSHPISA | Case-Shiller National (SA) | Monthly |
 
-**Series availability:** All 13 series are now in `FRED_SERIES_TO_FETCH` (legacy ingestion path). STLFSI2 and CSUSHPISA were added in this prompt. Other 11 were already present.
+**Series availability:** All 13 series are in `FRED_SERIES_TO_FETCH` (legacy ingestion path). STLFSI2 was discontinued (last obs 2022-01-07) and replaced by STLFSI4 (already present). CSUSHPISA was added in a prior prompt. All 13 are valid and active.
 
 **Artifact 1 — macro_corr_heatmap_lag1.html:**
 - Internal metric rows (8): Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, RIC_CRE_Nonaccrual_Rate, RIC_CRE_NCO_Rate, RIC_CRE_ACL_Coverage
@@ -1230,7 +1248,7 @@ The old `plot_macro_overlay()` used: `target_names = ["Fed Funds", "Unemployment
 
 **Changes:**
 
-1. **MSPBNA_CR_Normalized.py** — Added STLFSI2 and CSUSHPISA to `FRED_SERIES_TO_FETCH` so both are fetched into the workbook FRED_Data sheet.
+1. **MSPBNA_CR_Normalized.py** — Added CSUSHPISA to `FRED_SERIES_TO_FETCH` (STLFSI2 was also added here but later removed as discontinued — see 2026-03-13 FRED Series Audit).
 
 2. **rendering_mode.py** — Replaced `macro_overlay` (FULL_LOCAL_ONLY) with 3 new registrations: `macro_corr_heatmap_lag1` (BOTH), `macro_overlay_credit_stress` (FULL_LOCAL_ONLY), `macro_overlay_rates_housing` (FULL_LOCAL_ONLY).
 

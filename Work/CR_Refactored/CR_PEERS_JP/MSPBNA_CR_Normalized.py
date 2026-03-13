@@ -785,7 +785,7 @@ FRED_SERIES_TO_FETCH = {
     },
     'Financial Stress & Risk': {
         'STLFSI4': {'short': 'St. Louis FSI', 'long': 'St. Louis Fed Financial Stress Index'},
-        'STLFSI2': {'short': 'St. Louis FSI v2', 'long': 'St. Louis Fed Financial Stress Index (v2, weekly)'},
+
         'VIXCLS': {'short': 'VIX', 'long': 'CBOE Volatility Index: VIX'},
         'NFCI': {'short': 'NFCI', 'long': 'Chicago Fed National Financial Conditions Index'}
     },
@@ -2142,11 +2142,21 @@ class FREDDataFetcher:
             finally:
                 await asyncio.sleep(self.rate_limit_delay)
 
+    # Failure classification constants
+    FAIL_INVALID_ID = "invalid_id"        # HTTP 400 — bad or discontinued series ID
+    FAIL_CONNECTION = "connection_error"   # DNS, proxy, timeout — retryable
+    FAIL_OTHER = "other_error"            # Unexpected failures
+
     async def _fetch_single_series(
-        self, session: aiohttp.ClientSession, series_id: str, start_date: str
-    ) -> Tuple[str, Optional[pd.DataFrame]]:
+        self, session: aiohttp.ClientSession, series_id: str, start_date: str,
+        max_retries: int = 3, backoff_base: float = 2.0,
+    ) -> Tuple[str, Optional[pd.DataFrame], Optional[str]]:
         """
         Fetches a single time series from the FRED API asynchronously.
+
+        Returns:
+            (series_id, DataFrame_or_None, failure_class_or_None)
+            failure_class is one of FAIL_INVALID_ID, FAIL_CONNECTION, FAIL_OTHER, or None on success.
         """
         params = {
             "series_id": series_id,
@@ -2157,8 +2167,16 @@ class FREDDataFetcher:
         }
 
         async with self.semaphore:
+            # --- HTTP 400 (bad ID) — no retry ---
             try:
                 async with session.get(self.BASE_URL, params=params) as response:
+                    if response.status == 400:
+                        body = await response.text()
+                        self.logger.error(
+                            f"FRED returned HTTP 400 for {series_id} — "
+                            f"series ID is invalid or discontinued. Response: {body[:200]}"
+                        )
+                        return series_id, None, self.FAIL_INVALID_ID
                     response.raise_for_status()
                     data = await response.json()
 
@@ -2168,16 +2186,56 @@ class FREDDataFetcher:
                         df['date'] = pd.to_datetime(df['date'])
                         df['value'] = pd.to_numeric(df['value'], errors='coerce')
                         df = df.set_index('date').rename(columns={'value': series_id})
-                        return series_id, df
+                        return series_id, df, None
                     else:
                         self.logger.warning(f"No observations returned for series {series_id}.")
-                        return series_id, None
-            except aiohttp.ClientError as e:
-                self.logger.error(f"HTTP error fetching {series_id}: {e}")
-                return series_id, None
+                        return series_id, None, None
+            except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError,
+                    OSError, asyncio.TimeoutError) as e:
+                # Connection-level failure — retry with backoff
+                last_err = e
+                for attempt in range(1, max_retries + 1):
+                    wait = backoff_base ** attempt
+                    self.logger.warning(
+                        f"Connection error fetching {series_id} (attempt {attempt}/{max_retries}): "
+                        f"{type(e).__name__}: {e}. Retrying in {wait:.0f}s..."
+                    )
+                    await asyncio.sleep(wait)
+                    try:
+                        async with session.get(self.BASE_URL, params=params) as response:
+                            if response.status == 400:
+                                return series_id, None, self.FAIL_INVALID_ID
+                            response.raise_for_status()
+                            data = await response.json()
+                            if "observations" in data and data["observations"]:
+                                df = pd.DataFrame(data["observations"])
+                                df = df[['date', 'value']]
+                                df['date'] = pd.to_datetime(df['date'])
+                                df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                                df = df.set_index('date').rename(columns={'value': series_id})
+                                self.logger.info(f"Retry succeeded for {series_id} on attempt {attempt}.")
+                                return series_id, df, None
+                            else:
+                                self.logger.warning(f"No observations returned for series {series_id}.")
+                                return series_id, None, None
+                    except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError,
+                            OSError, asyncio.TimeoutError) as retry_e:
+                        last_err = retry_e
+                        continue
+                    except Exception as retry_e:
+                        last_err = retry_e
+                        break
+                self.logger.error(
+                    f"All {max_retries} retries exhausted for {series_id}: "
+                    f"{type(last_err).__name__}: {last_err}"
+                )
+                return series_id, None, self.FAIL_CONNECTION
+            except aiohttp.ClientResponseError as e:
+                self.logger.error(f"HTTP {e.status} error fetching {series_id}: {e}")
+                return series_id, None, self.FAIL_INVALID_ID if e.status == 400 else self.FAIL_OTHER
             except Exception as e:
-                self.logger.error(f"An unexpected error occurred for {series_id}: {e}")
-                return series_id, None
+                self.logger.error(f"Unexpected error for {series_id}: {type(e).__name__}: {e}")
+                return series_id, None, self.FAIL_OTHER
             finally:
                 await asyncio.sleep(self.rate_limit_delay)
 
@@ -2220,21 +2278,71 @@ class FREDDataFetcher:
 
         successful_dfs = []
         failed_series = []
+        invalid_id_series = []     # HTTP 400 — bad/discontinued ID
+        connection_fail_series = []  # DNS/proxy/timeout after retries
+        other_fail_series = []     # Unexpected errors
         metadata_dict = {}
         raw_df_map = {}  # keep original (pre-resample) series by id
 
-        # Process data results
-        for series_id, df in data_results:
+        # Process data results (3-tuple: series_id, df, failure_class)
+        for result in data_results:
+            series_id, df, failure_class = result
             if df is not None and not df.empty:
                 successful_dfs.append(df)          # this is your resample-ready frame (DATE, sid as column)
                 raw_df_map[series_id] = df.copy()  # keep the original obs-dated frame
             else:
                 failed_series.append(series_id)
+                if failure_class == self.FAIL_INVALID_ID:
+                    invalid_id_series.append(series_id)
+                elif failure_class == self.FAIL_CONNECTION:
+                    connection_fail_series.append(series_id)
+                elif failure_class == self.FAIL_OTHER:
+                    other_fail_series.append(series_id)
 
         # Process metadata results
         for series_id, metadata in metadata_results:
             if metadata:
-                metadata_dict[series_id] = metadata
+                metadata_dict[series_id]  = metadata
+
+        # --- FRED Fetch Summary ---
+        # Identify which failed series are needed for macro charts
+        try:
+            from report_generator import MACRO_CORR_FRED_SERIES as _macro_series
+        except ImportError:
+            _macro_series = []
+        missing_macro = [s for s in _macro_series if s in failed_series]
+
+        _total = len(series_ids)
+        _ok = len(successful_dfs)
+        _fail = len(failed_series)
+        summary_lines = [
+            f"FRED fetch summary: {_ok}/{_total} series fetched, {_fail} failed.",
+        ]
+        if invalid_id_series:
+            summary_lines.append(
+                f"  Invalid/discontinued IDs (HTTP 400): {', '.join(invalid_id_series)}"
+            )
+        if connection_fail_series:
+            summary_lines.append(
+                f"  Connection failures (DNS/proxy/timeout, retries exhausted): "
+                f"{', '.join(connection_fail_series)}"
+            )
+        if other_fail_series:
+            summary_lines.append(
+                f"  Other failures: {', '.join(other_fail_series)}"
+            )
+        if missing_macro:
+            summary_lines.append(
+                f"  *** Missing macro chart series: {', '.join(missing_macro)} — "
+                f"macro chart artifacts may be incomplete."
+            )
+        summary_msg = "\n".join(summary_lines)
+        if failed_series:
+            self.logger.warning(summary_msg)
+            print(summary_msg)
+        else:
+            self.logger.info(summary_msg)
+            print(summary_msg)
 
         if not successful_dfs:
             self.logger.error("No FRED series were successfully fetched.")

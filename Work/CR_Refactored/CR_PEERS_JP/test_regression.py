@@ -5295,7 +5295,7 @@ class TestMacroChartTranche(unittest.TestCase):
             source = f.read()
         required = [
             "FEDFUNDS", "T10Y2Y", "BAMLH0A0HYM2", "VIXCLS", "NFCI",
-            "STLFSI2", "DRTSCILM", "DRALACBS", "DRCRELEXFACBS", "DRSFRMACBS",
+            "STLFSI4", "DRTSCILM", "DRALACBS", "DRCRELEXFACBS", "DRSFRMACBS",
             "MORTGAGE30US", "HOUST", "CSUSHPISA",
         ]
         for sid in required:
@@ -5325,7 +5325,7 @@ class TestMacroChartTranche(unittest.TestCase):
             return
         expected = [
             "FEDFUNDS", "T10Y2Y", "BAMLH0A0HYM2", "VIXCLS", "NFCI",
-            "STLFSI2", "DRTSCILM", "DRALACBS", "DRCRELEXFACBS", "DRSFRMACBS",
+            "STLFSI4", "DRTSCILM", "DRALACBS", "DRCRELEXFACBS", "DRSFRMACBS",
             "MORTGAGE30US", "HOUST", "CSUSHPISA",
         ]
         self.assertEqual(MACRO_CORR_FRED_SERIES, expected)
@@ -5417,13 +5417,14 @@ class TestMacroChartTranche(unittest.TestCase):
         self.assertIn("z = (qtr_data - mu) / sigma", source)
         self.assertIn("Z-Score", source)
 
-    def test_stlfsi2_added_to_fetch_list(self):
-        """STLFSI2 must be in the FRED fetch source."""
+    def test_stlfsi4_in_fetch_list(self):
+        """STLFSI4 must be in the FRED fetch source (STLFSI2 was discontinued 2022-01-07)."""
         src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "MSPBNA_CR_Normalized.py")
         with open(src_path, "r") as f:
             source = f.read()
-        self.assertIn("'STLFSI2'", source, "STLFSI2 missing from MSPBNA_CR_Normalized.py")
+        self.assertIn("'STLFSI4'", source, "STLFSI4 missing from MSPBNA_CR_Normalized.py")
+        self.assertNotIn("'STLFSI2'", source, "STLFSI2 (discontinued) should be removed")
 
     def test_csushpisa_sa_in_fetch_list(self):
         """CSUSHPISA (seasonally adjusted) must be in the FRED fetch source."""
