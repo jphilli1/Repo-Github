@@ -5798,6 +5798,79 @@ class TestCorpOverlayCLAUDEMDAccuracy(unittest.TestCase):
         self.assertIn("BEA_API_KEY", content)
 
 
+class TestArchitectureReconciliation(unittest.TestCase):
+    """Verify docs, tests, and imports are consistent regarding corp_overlay isolation
+    and that synthetic placeholder data is not used in the production report path."""
+
+    def _read_file(self, filename):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        with open(path, "r") as f:
+            return f.read()
+
+    def test_report_generator_does_not_import_corp_overlay(self):
+        """report_generator.py must not contain any import of corp_overlay."""
+        content = self._read_file("report_generator.py")
+        self.assertNotIn("from corp_overlay", content,
+                         "report_generator.py must not import from corp_overlay")
+        self.assertNotIn("import corp_overlay", content,
+                         "report_generator.py must not import corp_overlay")
+
+    def test_no_synthetic_placeholder_data_in_report_generator(self):
+        """report_generator.py must not generate synthetic/placeholder MSA data."""
+        content = self._read_file("report_generator.py")
+        self.assertNotIn("RandomState", content,
+                         "report_generator.py must not use np.random for synthetic data")
+        self.assertNotIn("synth_df", content,
+                         "report_generator.py must not have synthetic data variables")
+        self.assertNotIn("_synth_rows", content,
+                         "report_generator.py must not build synthetic rows")
+
+    def test_mspbna_does_not_import_corp_overlay(self):
+        """MSPBNA_CR_Normalized.py must not contain any import of corp_overlay."""
+        content = self._read_file("MSPBNA_CR_Normalized.py")
+        self.assertNotIn("from corp_overlay", content)
+        self.assertNotIn("import corp_overlay", content)
+
+    def test_claude_md_says_corp_overlay_standalone(self):
+        """CLAUDE.md must document corp_overlay as standalone, not integrated."""
+        content = self._read_file("CLAUDE.md")
+        self.assertIn("standalone", content.lower(),
+                      "CLAUDE.md must describe corp_overlay as standalone")
+        self.assertIn("NOT", content,
+                      "CLAUDE.md must state corp_overlay is NOT integrated")
+
+    def test_rendering_mode_documents_corp_overlay_as_separate(self):
+        """rendering_mode.py must comment that corp overlay artifacts are a separate workflow."""
+        content = self._read_file("rendering_mode.py")
+        self.assertIn("separate workflow", content,
+                      "rendering_mode.py must note corp overlay is a separate workflow")
+
+    def test_msa_macro_panel_not_produced_by_report_generator(self):
+        """report_generator.py must not call build_msa_macro_panel."""
+        content = self._read_file("report_generator.py")
+        self.assertNotIn("build_msa_macro_panel", content,
+                         "msa_macro_panel must not be produced by report_generator.py")
+
+    def test_msa_macro_panel_still_registered(self):
+        """msa_macro_panel must still be registered in the artifact registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertIn("msa_macro_panel", ARTIFACT_REGISTRY)
+
+    def test_rendering_mode_documents_msa_panel_future(self):
+        """rendering_mode.py must note msa_macro_panel is not yet produced."""
+        content = self._read_file("rendering_mode.py")
+        self.assertIn("NOT yet produced", content,
+                      "rendering_mode.py must document msa_macro_panel as not yet produced")
+
+    def test_docs_tests_imports_triad_consistent(self):
+        """The three-way contract (docs say standalone, tests enforce it, code obeys it)
+        must be consistent — no file should contradict the others."""
+        rg_content = self._read_file("report_generator.py")
+        # report_generator must not reference corp_overlay at all
+        self.assertNotIn("corp_overlay", rg_content,
+                         "Architecture violation: report_generator.py references corp_overlay")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # HUD HTTP Failure Diagnostics & Hardening (Parts 1-9)
 # ═══════════════════════════════════════════════════════════════════════════

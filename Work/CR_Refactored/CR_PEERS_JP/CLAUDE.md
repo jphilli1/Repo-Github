@@ -866,6 +866,38 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-13 — Architecture Reconciliation (Corp Overlay / MSA Macro Panel)
+
+**Objective:** Resolve architecture drift between `report_generator.py`, `corp_overlay.py`, `test_regression.py`, and `CLAUDE.md` regarding ownership of MSA macro panel logic and the corp_overlay standalone contract.
+
+**Problem:** `report_generator.py` imported `corp_overlay` at line 2883 to produce `msa_macro_panel` with synthetic placeholder data, violating three documented contracts:
+1. CLAUDE.md Section 12: "`corp_overlay.py` is a standalone module ... NOT integrated into `report_generator.py`"
+2. `test_regression.py` `test_corp_overlay_not_in_report_generator`: asserts no `corp_overlay` references in `report_generator.py`
+3. `rendering_mode.py`: comments corp overlay artifacts as "separate workflow: `corp_overlay_runner.py`"
+
+**Architecture decision:** Option A — MSA macro panel will be owned by a future dedicated `local_macro.py` module when real API data is available. The synthetic placeholder path is removed entirely from production.
+
+**Changes:**
+
+1. **`report_generator.py`** — Removed the entire `msa_macro_panel` production block (lines 2879-2918) that imported `corp_overlay` and generated synthetic placeholder data. Replaced with a comment documenting the artifact as not-yet-produced. Zero references to `corp_overlay` remain.
+
+2. **`rendering_mode.py`** — Updated comments: corp overlay artifacts section now explicitly states artifacts are produced by `corp_overlay_runner.py`, not `report_generator.py`. Added separate comment block for `msa_macro_panel` documenting it as a future artifact not yet produced by any script.
+
+3. **`test_regression.py`** — Added `TestArchitectureReconciliation` class (9 tests):
+   - `test_report_generator_does_not_import_corp_overlay` — no `from corp_overlay` or `import corp_overlay`
+   - `test_no_synthetic_placeholder_data_in_report_generator` — no `RandomState`, `synth_df`, or `_synth_rows`
+   - `test_mspbna_does_not_import_corp_overlay` — verifies MSPBNA script isolation
+   - `test_claude_md_says_corp_overlay_standalone` — docs must say "standalone" and "NOT"
+   - `test_rendering_mode_documents_corp_overlay_as_separate` — comments must say "separate workflow"
+   - `test_msa_macro_panel_not_produced_by_report_generator` — no `build_msa_macro_panel` call
+   - `test_msa_macro_panel_still_registered` — artifact remains in registry for forward compatibility
+   - `test_rendering_mode_documents_msa_panel_future` — comments document "NOT yet produced"
+   - `test_docs_tests_imports_triad_consistent` — three-way consistency check
+
+4. **`CLAUDE.md`** — Updated Section 12 MSA macro panel documentation: replaced "current wiring with synthetic placeholder data" with "not currently produced by any script" and future `local_macro.py` ownership contract.
+
+**Files changed:** `report_generator.py`, `rendering_mode.py`, `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-13 — Final Production Fixes & Pipeline Runner
 
 **4-item change set (Prompt 6):**
@@ -2609,7 +2641,7 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 - `bea_gdp_df`: columns `[msa, date, gdp_yoy_pct]`
 - `unemployment_df`: columns `[msa, date, unemp_rate_chg_pp]`
 
-**Current wiring in `report_generator.py`:** The MSA macro panel is wired with synthetic placeholder data (5 MSAs × 20 quarters, seeded random). This produces a valid chart for the board deck template while real BEA/Census/Case-Shiller API integrations are pending. Replace the synthetic data block with real `select_top_msas()` + API data when available.
+**Production status:** The MSA macro panel is **not currently produced** by any script. The chart functions (`select_top_msas`, `build_msa_macro_panel`) exist in `corp_overlay.py` as utilities, but `report_generator.py` does **not** import or call them — doing so would violate the standalone architecture contract. The `msa_macro_panel` artifact is registered in `rendering_mode.py` for forward compatibility. When real BEA/Census/Case-Shiller API integrations are available, a dedicated `local_macro.py` module should own production of this artifact.
 
 ### Known Limitations
 

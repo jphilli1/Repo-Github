@@ -2876,46 +2876,11 @@ def generate_reports(
                        plot_macro_overlay_rates_housing, charts_dir,
                        proc_df_with_peers, subject_bank_cert, excel_file)
 
-        # MSA macro panel — geographic macro context (full_local only)
-        art_name = "msa_macro_panel"
-        if should_produce(art_name, mode, manifest, suppressed_charts):
-            try:
-                from corp_overlay import select_top_msas, build_msa_macro_panel
-                # Build synthetic placeholder data for top MSAs
-                # In production, these would come from BEA/Census/Case-Shiller APIs
-                top_msas = ["New York", "Los Angeles", "San Francisco", "Miami", "Chicago"]
-                _synth_dates = pd.date_range("2020-01-01", periods=20, freq="QS")
-                _rng = np.random.RandomState(42)
-                _synth_rows = []
-                for msa in top_msas:
-                    for d in _synth_dates:
-                        _synth_rows.append({
-                            "msa": msa, "date": d,
-                            "hpi_yoy_pct": _rng.normal(5.0, 3.0),
-                            "gdp_yoy_pct": _rng.normal(2.5, 1.5),
-                            "unemp_rate_chg_pp": _rng.normal(0.0, 0.3),
-                        })
-                synth_df = pd.DataFrame(_synth_rows)
-                save = str(charts_dir / f"{base}_{art_name}.png")
-                fig = build_msa_macro_panel(
-                    msas=top_msas,
-                    case_shiller_df=synth_df[["msa", "date", "hpi_yoy_pct"]],
-                    bea_gdp_df=synth_df[["msa", "date", "gdp_yoy_pct"]],
-                    unemployment_df=synth_df[["msa", "date", "unemp_rate_chg_pp"]],
-                    save_path=save,
-                )
-                if fig is not None:
-                    manifest.record_generated(art_name, save)
-                    csv_log.log_file_written(save, phase="chart", component=art_name)
-                    print(f"  {art_name} saved: {save}")
-                else:
-                    manifest.record_failed(art_name, "generator returned None")
-            except ImportError:
-                manifest.record_failed(art_name, "corp_overlay module not available")
-                print(f"  [{art_name}] SKIPPED: corp_overlay not importable")
-            except Exception as exc:
-                manifest.record_failed(art_name, str(exc)[:200])
-                print(f"  [{art_name}] FAILED: {exc}")
+        # MSA macro panel — NOT produced here.
+        # msa_macro_panel is registered in rendering_mode.py but its data source
+        # (BEA/Census/Case-Shiller APIs) is not yet integrated. The artifact
+        # will be produced by a dedicated local_macro module when real data is
+        # available. See CLAUDE.md Section 12 for the standalone overlay architecture.
 
         # ------------------------------------------------------------------
         # PHASE 7: FRED EXPANSION CHARTS (full_local only)

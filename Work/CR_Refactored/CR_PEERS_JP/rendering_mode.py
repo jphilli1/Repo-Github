@@ -246,6 +246,9 @@ _reg("cumul_growth_loans_vs_acl_allpeers", ArtifactAvailability.FULL_LOCAL_ONLY,
      "Cumulative growth: Target Loans vs CRE ACL (MSPBNA vs All Peers)")
 
 # --- Corp Overlay Artifacts (separate workflow: corp_overlay_runner.py) ---
+# These artifacts are produced by corp_overlay.py via corp_overlay_runner.py,
+# NOT by report_generator.py.  They are registered here so that the manifest
+# and should_produce() machinery can track them consistently.
 _reg("loan_balance_by_product", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "Descending bar chart of current_balance by product_type")
 _reg("top10_geography_by_balance", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
@@ -254,6 +257,13 @@ _reg("internal_credit_flags_summary", ArtifactAvailability.BOTH, "table",
      "Internal delinquency/nonaccrual/risk-rating distribution summary")
 _reg("peer_vs_internal_mix_bridge", ArtifactAvailability.BOTH, "table",
      "Peer-report composition vs internal loan product/geography mix")
+
+# --- MSA Macro Panel (future: dedicated local_macro module) ---
+# This artifact is registered but NOT yet produced by any script.
+# The chart functions (select_top_msas, build_msa_macro_panel) live in
+# corp_overlay.py as utilities.  When real BEA/Census/Case-Shiller API
+# integrations are available, a dedicated local_macro.py module will
+# own production.  report_generator.py must NOT import corp_overlay.
 _reg("msa_macro_panel", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
      "MSA-level macro backdrop panel (Case-Shiller, GDP, unemployment)")
 
