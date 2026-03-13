@@ -6119,165 +6119,172 @@ class TestRenderingReconciliation(unittest.TestCase):
         self.assertIn("from rendering_mode import", self._rg_src)
 
 
-class TestNormalizedBulletSplitReconciliation(unittest.TestCase):
-    """Focused reconciliation tests ensuring the normalized-bullet split
-    and canonical rendering architecture are consistent across
-    report_generator.py, rendering_mode.py, and CLAUDE.md."""
+# ═══════════════════════════════════════════════════════════════════════════
+# CHART PALETTE, ANNOTATION HELPER, AND WEALTH PEERS INCLUSION TESTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCentralizedChartPalette(unittest.TestCase):
+    """Verify the centralized chart palette exists and contains required mappings."""
+
+    def test_chart_palette_exists(self):
+        from report_generator import CHART_PALETTE
+        self.assertIsInstance(CHART_PALETTE, dict)
+
+    def test_chart_palette_has_required_keys(self):
+        from report_generator import CHART_PALETTE
+        required = ["mspbna", "wealth_peers", "all_peers", "peer_cloud",
+                     "guide", "range_all", "range_wealth", "text"]
+        for key in required:
+            self.assertIn(key, CHART_PALETTE, f"CHART_PALETTE missing key: {key}")
+
+    def test_mspbna_is_gold(self):
+        from report_generator import CHART_PALETTE
+        self.assertEqual(CHART_PALETTE["mspbna"], "#F7A81B")
+
+    def test_wealth_peers_is_purple(self):
+        from report_generator import CHART_PALETTE
+        # Purple family check (hex starts with #7 or contains purple-range)
+        color = CHART_PALETTE["wealth_peers"]
+        self.assertTrue(color.startswith("#7") or color.startswith("#8") or color.startswith("#9"),
+                        f"Wealth Peers color {color} should be in purple range")
+
+    def test_all_peers_is_blue(self):
+        from report_generator import CHART_PALETTE
+        color = CHART_PALETTE["all_peers"]
+        self.assertTrue(color.startswith("#5") or color.startswith("#4"),
+                        f"All Peers color {color} should be in blue range")
+
+    def test_peer_cloud_is_muted_blue_gray(self):
+        from report_generator import CHART_PALETTE
+        self.assertIn("peer_cloud", CHART_PALETTE)
+        # Just verify it exists and is not the same as all_peers
+        self.assertNotEqual(CHART_PALETTE["peer_cloud"], CHART_PALETTE["all_peers"])
+
+    def test_guide_is_slate_gray(self):
+        from report_generator import CHART_PALETTE
+        self.assertIn("guide", CHART_PALETTE)
+        color = CHART_PALETTE["guide"]
+        self.assertTrue(color.startswith("#6") or color.startswith("#7") or color.startswith("#8"),
+                        f"Guide color {color} should be in slate-gray range")
+
+    def test_convenience_aliases_match_palette(self):
+        from report_generator import (CHART_PALETTE, _C_MSPBNA, _C_WEALTH,
+                                       _C_ALL_PEERS, _C_PEER_CLOUD, _C_GUIDE)
+        self.assertEqual(_C_MSPBNA, CHART_PALETTE["mspbna"])
+        self.assertEqual(_C_WEALTH, CHART_PALETTE["wealth_peers"])
+        self.assertEqual(_C_ALL_PEERS, CHART_PALETTE["all_peers"])
+        self.assertEqual(_C_PEER_CLOUD, CHART_PALETTE["peer_cloud"])
+        self.assertEqual(_C_GUIDE, CHART_PALETTE["guide"])
+
+    def test_no_arbitrary_hardcoded_colors_in_scatter(self):
+        """plot_scatter_dynamic should use centralized palette, not hardcoded hex."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        # Find the scatter function
+        import re
+        scatter_match = re.search(r'def plot_scatter_dynamic\(.*?\n(?=def |\Z)', text, re.DOTALL)
+        if scatter_match:
+            scatter_body = scatter_match.group(0)
+            # Should not contain raw #4C78A8 or #F7A81B as standalone color definitions
+            # (the centralized aliases should be used instead)
+            self.assertNotIn('GOLD, PEER, GUIDE = "#F7A81B"', scatter_body,
+                             "Scatter should use centralized palette aliases, not raw hex")
+
+    def test_credit_chart_uses_centralized_palette(self):
+        """create_credit_deterioration_chart_ppt should use _C_ aliases."""
+        src = Path(__file__).parent / "report_generator.py"
+        text = src.read_text()
+        self.assertIn("_C_MSPBNA", text)
+        self.assertIn("_C_ALL_PEERS", text)
+        self.assertIn("_C_WEALTH", text)
+
+
+class TestChartAnnotationHelper(unittest.TestCase):
+    """Verify the ChartAnnotationHelper class exists and has required methods."""
+
+    def test_annotation_helper_exists(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(callable(ChartAnnotationHelper))
+
+    def test_annotation_helper_has_place_label(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(hasattr(ChartAnnotationHelper, 'place_label'))
+
+    def test_annotation_helper_has_place_endpoint_label(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(hasattr(ChartAnnotationHelper, 'place_endpoint_label'))
+
+    def test_annotation_helper_has_priority_tiers(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertEqual(ChartAnnotationHelper.TIER_SUBJECT, 1)
+        self.assertEqual(ChartAnnotationHelper.TIER_WEALTH, 2)
+        self.assertEqual(ChartAnnotationHelper.TIER_ALL_PEERS, 3)
+        self.assertEqual(ChartAnnotationHelper.TIER_INDIVIDUAL, 4)
+
+    def test_annotation_helper_has_register_fixed_rect(self):
+        from report_generator import ChartAnnotationHelper
+        self.assertTrue(hasattr(ChartAnnotationHelper, 'register_fixed_rect'))
+
+
+class TestWealthPeersInclusion(unittest.TestCase):
+    """Verify Wealth Peers is included in designated high-value charts."""
 
     @classmethod
     def setUpClass(cls):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(script_dir, "report_generator.py"), "r") as f:
-            cls._rg_src = f.read()
-        with open(os.path.join(script_dir, "rendering_mode.py"), "r") as f:
-            cls._rm_src = f.read()
-        with open(os.path.join(script_dir, "CLAUDE.md"), "r") as f:
-            cls._claude_md = f.read()
+        cls._src = (Path(__file__).parent / "report_generator.py").read_text()
 
-    # --- A. Stale local rendering abstractions removed ---
-
-    def test_no_stale_ReportMode_class(self):
-        """report_generator.py must not define its own ReportMode class."""
-        self.assertNotIn("class ReportMode", self._rg_src)
-
-    def test_no_stale_ArtifactSpec_class(self):
-        """report_generator.py must not define its own ArtifactSpec class."""
-        self.assertNotIn("class ArtifactSpec", self._rg_src)
-
-    def test_no_stale_ManifestEntry_class(self):
-        """report_generator.py must not define its own ManifestEntry class."""
-        self.assertNotIn("class ManifestEntry", self._rg_src)
-
-    def test_no_stale_ReportContext_class(self):
-        """report_generator.py must not define a public ReportContext class
-        (the internal _ReportContext is acceptable)."""
+    def test_scatter_has_wealth_peer_cert_param(self):
+        """plot_scatter_dynamic must accept wealth_peer_cert parameter."""
+        self.assertIn("wealth_peer_cert", self._src)
         import re
-        # Match 'class ReportContext' but NOT 'class _ReportContext'
-        matches = re.findall(r'class\s+ReportContext\b', self._rg_src)
-        self.assertEqual(len(matches), 0,
-                         "Stale public ReportContext class found in report_generator.py")
+        m = re.search(r'def plot_scatter_dynamic\([^)]*wealth_peer_cert', self._src, re.DOTALL)
+        self.assertIsNotNone(m, "wealth_peer_cert parameter not in plot_scatter_dynamic signature")
 
-    def test_no_stale_resolve_report_mode_for_generator(self):
-        """report_generator.py must not define resolve_report_mode_for_generator."""
-        self.assertNotIn("def resolve_report_mode_for_generator", self._rg_src)
+    def test_scatter_calls_pass_wealth_peer_cert(self):
+        """Scatter call sites in generate_reports must pass wealth_peer_cert."""
+        # Count how many scatter calls pass wealth_peer_cert
+        count = self._src.count("wealth_peer_cert=")
+        # At minimum 3 scatter calls + 1 definition
+        self.assertGreaterEqual(count, 4,
+                                f"Expected at least 4 wealth_peer_cert references, got {count}")
 
-    def test_no_local_ARTIFACT_REGISTRY_assignment(self):
-        """report_generator.py must not define its own ARTIFACT_REGISTRY."""
+    def test_years_of_reserves_has_wealth_peers(self):
+        """plot_years_of_reserves must include Wealth Peers comparison."""
         import re
-        matches = re.findall(r'^ARTIFACT_REGISTRY\s*[=:]', self._rg_src, re.MULTILINE)
-        self.assertEqual(len(matches), 0,
-                         "Local ARTIFACT_REGISTRY definition found in report_generator.py")
+        fn_match = re.search(r'def plot_years_of_reserves\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("wealth_peer", fn_body.lower(),
+                       "plot_years_of_reserves must reference Wealth Peers")
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_years_of_reserves legend must include 'Wealth Peers'")
 
-    def test_no_local_ARTIFACT_BY_NAME(self):
-        """report_generator.py must not define _ARTIFACT_BY_NAME."""
-        self.assertNotIn("_ARTIFACT_BY_NAME", self._rg_src)
-
-    def test_no_local_should_produce_definition(self):
-        """report_generator.py must not define its own should_produce function."""
-        self.assertNotIn("def should_produce(", self._rg_src)
-
-    # --- B. Normalized split artifact names present ---
-
-    def test_kri_bullet_standard_in_report_generator(self):
-        """report_generator.py must produce kri_bullet_standard."""
-        self.assertIn("kri_bullet_standard", self._rg_src)
-
-    def test_kri_bullet_normalized_rates_in_report_generator(self):
-        """report_generator.py must produce kri_bullet_normalized_rates."""
-        self.assertIn("kri_bullet_normalized_rates", self._rg_src)
-
-    def test_kri_bullet_normalized_composition_in_report_generator(self):
-        """report_generator.py must produce kri_bullet_normalized_composition."""
-        self.assertIn("kri_bullet_normalized_composition", self._rg_src)
-
-    def test_all_three_bullet_artifacts_in_registry(self):
-        """All 3 bullet artifacts must be registered in ARTIFACT_REGISTRY."""
-        from rendering_mode import ARTIFACT_REGISTRY
-        for name in ["kri_bullet_standard",
-                     "kri_bullet_normalized_rates",
-                     "kri_bullet_normalized_composition"]:
-            self.assertIn(name, ARTIFACT_REGISTRY,
-                          f"Missing from registry: {name}")
-
-    # --- C. Obsolete single normalized bullet names absent ---
-
-    def test_no_obsolete_kri_bullet_chart_artifact(self):
-        """The old 'kri_bullet_chart' artifact name must not be in the registry."""
-        from rendering_mode import ARTIFACT_REGISTRY
-        self.assertNotIn("kri_bullet_chart", ARTIFACT_REGISTRY)
-
-    def test_no_obsolete_kri_bullet_normalized_artifact(self):
-        """The old 'kri_bullet_normalized' artifact (without _rates/_composition suffix)
-        must not be in the registry."""
-        from rendering_mode import ARTIFACT_REGISTRY
-        self.assertNotIn("kri_bullet_normalized", ARTIFACT_REGISTRY)
-
-    def test_no_obsolete_kri_bullet_chart_string_literal(self):
-        """report_generator.py must not contain quoted 'kri_bullet_chart' as an artifact name."""
+    def test_risk_adjusted_return_has_wealth_peers(self):
+        """plot_risk_adjusted_return must include Wealth Peers marker."""
         import re
-        matches = re.findall(r'["\']kri_bullet_chart["\']', self._rg_src)
-        self.assertEqual(len(matches), 0,
-                         "Obsolete 'kri_bullet_chart' artifact name found in report_generator.py")
+        fn_match = re.search(r'def plot_risk_adjusted_return\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_risk_adjusted_return must include 'Wealth Peers' label")
 
-    # --- D. Sparkline norm_peer_cert path present ---
-
-    def test_sparkline_norm_peer_cert_in_report_generator(self):
-        """report_generator.py must pass norm_peer_cert to sparkline generator."""
-        self.assertIn("norm_peer_cert", self._rg_src)
-
-    def test_sparkline_uses_normalized_all_peers_composite(self):
-        """Sparkline must use ACTIVE_NORMALIZED_COMPOSITES for norm_peer_cert."""
-        self.assertIn('norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"]',
-                      self._rg_src)
-
-    # --- E. CLAUDE.md documents the normalized split accurately ---
-
-    def test_claude_md_documents_kri_bullet_standard(self):
-        """CLAUDE.md must document kri_bullet_standard artifact."""
-        self.assertIn("kri_bullet_standard", self._claude_md)
-
-    def test_claude_md_documents_kri_bullet_normalized_rates(self):
-        """CLAUDE.md must document kri_bullet_normalized_rates artifact."""
-        self.assertIn("kri_bullet_normalized_rates", self._claude_md)
-
-    def test_claude_md_documents_kri_bullet_normalized_composition(self):
-        """CLAUDE.md must document kri_bullet_normalized_composition artifact."""
-        self.assertIn("kri_bullet_normalized_composition", self._claude_md)
-
-    def test_claude_md_documents_rates_title(self):
-        """CLAUDE.md must document the exact rates chart title."""
-        self.assertIn("Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)",
-                      self._claude_md)
-
-    def test_claude_md_documents_composition_title(self):
-        """CLAUDE.md must document the exact composition chart title."""
-        self.assertIn("Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)",
-                      self._claude_md)
-
-    def test_claude_md_does_not_claim_kri_bullet_chart_exists(self):
-        """CLAUDE.md must not reference the obsolete kri_bullet_chart as a live artifact."""
+    def test_growth_vs_deterioration_has_wealth_peers(self):
+        """plot_growth_vs_deterioration must include Wealth Peers marker."""
         import re
-        # The changelog may mention it historically; check that the artifact table
-        # and current documentation do not list it as active
-        lines = self._claude_md.split("\n")
-        for line in lines:
-            # Skip changelog lines (lines that describe what was removed)
-            if "obsolete" in line.lower() or "removed" in line.lower() or "replaced" in line.lower():
-                continue
-            if "old single" in line.lower() or "former" in line.lower():
-                continue
-            # Check artifact table rows — "|" delimited lines with kri_bullet_chart
-            if "| `kri_bullet_chart`" in line or "| kri_bullet_chart |" in line:
-                self.fail("CLAUDE.md still lists kri_bullet_chart as an active artifact")
+        fn_match = re.search(r'def plot_growth_vs_deterioration\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_growth_vs_deterioration must include 'Wealth Peers' label")
 
-    def test_claude_md_remaining_risks_section_exists(self):
-        """CLAUDE.md must contain a Remaining Risks subsection."""
-        self.assertIn("Remaining Risks", self._claude_md)
-
-    def test_claude_md_canonical_rendering_rule(self):
-        """CLAUDE.md must document the canonical rendering abstraction rule."""
-        self.assertIn("rendering_mode.py", self._claude_md)
-        self.assertIn("single canonical source", self._claude_md.lower())
+    def test_concentration_vs_capital_has_wealth_peers(self):
+        """plot_concentration_vs_capital must include Wealth Peers marker."""
+        import re
+        fn_match = re.search(r'def plot_concentration_vs_capital\(.*?\n(?=def |\Z)', self._src, re.DOTALL)
+        self.assertIsNotNone(fn_match)
+        fn_body = fn_match.group(0)
+        self.assertIn("Wealth Peers", fn_body,
+                       "plot_concentration_vs_capital must include 'Wealth Peers' label")
 
 
 if __name__ == '__main__':

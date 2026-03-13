@@ -481,25 +481,51 @@ Every ratio-component row label **must** match its denominator type:
 
 Dict-style access (`config["key"]`, `config.get("key")`) will raise `TypeError` on `DashboardConfig` and is forbidden.
 
-### CHARTING STYLES — Centralized Color System
+### CENTRALIZED CHART PALETTE (CHART_PALETTE)
 
-All charts must use the centralized `CHART_COLORS` dict and `_build_cert_color_map()` from `report_generator.py`. **No inline hex color strings** in chart functions.
+All charts **must** use the centralized `CHART_PALETTE` dict and its convenience aliases (`_C_MSPBNA`, `_C_WEALTH`, `_C_ALL_PEERS`, `_C_PEER_CLOUD`, `_C_GUIDE`, etc.) defined at the top of `report_generator.py`. No chart should use arbitrary per-chart color choices.
 
-| Entity | Key | Hex Color | Description |
-|---|---|---|---|
-| **MSPBNA (Subject Bank)** | `subject` | `#F7A81B` | Gold |
-| **Wealth Peers (Core PB)** | `wealth_peers` | `#9C6FB6` | Purple |
-| **All Peers** | `all_peers` | `#5B9BD5` | Blue |
-| **Peer Cloud (scatter dots)** | `peer_cloud` | `#A8B8C8` | Muted blue-gray |
-| **Guide Lines** | `guide` | `#6B7B8D` | Slate-gray |
+| Key | Hex Color | Entity / Usage |
+|---|---|---|
+| `mspbna` | `#F7A81B` | Gold — Subject bank (MSPBNA) |
+| `wealth_peers` | `#7B2D8E` | Purple — Wealth Peers / Core PB composite |
+| `all_peers` | `#5B9BD5` | Blue — All Peers composite |
+| `peer_cloud` | `#8FA8C8` | Muted blue-gray — individual peer dots in scatter |
+| `guide` | `#6B7B8D` | Slate-gray — averages, crosshair guides, reference lines |
+| `range_all` | `#D0D0D0` | Light gray — range bands (All Peers) |
+| `range_wealth` | `#B8A0C8` | Muted purple-gray — range bands (Wealth Peers) |
+| `text` | `#2B2B2B` | Dark — titles, axis labels |
+| `grid` | `#D0D0D0` | Grid lines |
 
-**`_build_cert_color_map(subject_cert)`** returns a CERT→color dict for entity-iteration in chart functions.
+### CHART ANNOTATION / ANTI-OVERLAP POLICY
 
-**Wealth Peers** are plotted as purple diamonds in scatter/lollipop charts. All Peers are plotted as blue squares. Both use the centralized color map.
+`ChartAnnotationHelper` in `report_generator.py` provides a shared label placement engine:
 
-**Label collision avoidance**: The `LabelPlacer` class in `report_generator.py` provides pixel-coordinate overlap detection for chart annotations. All scatter and comparator charts must use `LabelPlacer` instead of inline `pick_offset()` helpers. Labels are placed in priority order (lower number = better position). The `_INLINE_CANDIDATES` variant prefers horizontal-only offsets for guide-line labels.
+**Priority tiers:**
+1. **MSPBNA** — always labeled (TIER_SUBJECT = 1)
+2. **Wealth Peers** — always labeled when plotted (TIER_WEALTH = 2)
+3. **All Peers** — labeled only when explicitly plotted (TIER_ALL_PEERS = 3)
+4. **Individual peers** — labeled only for outliers, edge-of-range, or specifically selected (TIER_INDIVIDUAL = 4)
 
-**Normalized credit chart label strategy**: The subject bank gets value labels at every Q4 + latest period. Peer entities get labels only at the latest period to reduce visual clutter.
+**Rules:**
+- Use ticker abbreviations only: MSPBNA, GS, UBS, C, JPM, BAC, WFC, MS
+- Endpoint labels preferred over many internal labels on time-series charts
+- Value labels on bar/line combos should be sparse and strategic (latest quarter, major inflection points only)
+- Leader lines allowed on scatter plots for displaced labels
+- Directional nudges used to avoid collisions; higher-priority labels get first placement
+
+### WEALTH PEERS COMPARATOR INCLUSION POLICY
+
+Wealth Peers must appear as an explicit styled point/line/marker (not implied in the peer cloud) in these charts:
+- `scatter_nco_vs_npl` — triangle marker, purple
+- `scatter_pd_vs_npl` — triangle marker, purple
+- `scatter_norm_nco_vs_nonaccrual` — triangle marker, purple
+- `risk_adjusted_return` — bubble marker, purple
+- `years_of_reserves` — triangle marker, purple
+- `growth_vs_deterioration` — triangle marker, purple
+- `concentration_vs_capital` — triangle marker, purple
+
+All Peers remains as a reference marker/crosshair where appropriate. Do NOT clutter charts that are intentionally subject-only operational overlays (e.g., `portfolio_mix`, `liquidity_overlay`).
 
 ### CSS CLASS NAMING
 
@@ -779,24 +805,37 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
-### 2026-03-13 — Normalized Bullet Split Follow-Up & Report-Generator Reconciliation
+### 2026-03-13 — Centralized Chart Palette, Annotation Engine, and Wealth Peers Inclusion
 
-**Objective**: Final verification that the normalized-bullet split and report-generator rendering architecture are fully reconciled. Fix remaining test and documentation gaps.
+**Objective**: Establish a professional, board-ready charting foundation by enforcing a single color system, building a robust label anti-overlap engine, and adding Wealth Peers to high-value charts.
 
-**Verification results:**
+**6-part implementation:**
 
-1. **No stale local rendering abstractions in report_generator.py** — confirmed zero instances of: `ReportMode` class, `ArtifactStatus` class (local), `ArtifactSpec`, `ManifestEntry`, `ArtifactManifest` (local), `ReportContext` (public), `resolve_report_mode_for_generator`, local `ARTIFACT_REGISTRY`, local `_ARTIFACT_BY_NAME`, local `should_produce()`. All abstractions are imported from `rendering_mode.py`.
-2. **Normalized bullet split intact** — report_generator.py produces exactly: `kri_bullet_standard`, `kri_bullet_normalized_rates`, `kri_bullet_normalized_composition`. No obsolete `kri_bullet_chart` or `kri_bullet_normalized` artifact names present.
-3. **Sparkline norm_peer_cert path present** — `norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"]` confirmed in sparkline call.
-4. **Comparator fallback behavior unchanged** — both/single/neither logic intact.
+1. **Centralized chart palette (`CHART_PALETTE`)**: Created a single dict in `report_generator.py` with 9 color mappings (mspbna=gold, wealth_peers=purple, all_peers=blue, peer_cloud=muted blue-gray, guide=slate-gray, range bands, text, grid). All chart functions now use `_C_*` convenience aliases instead of per-chart hardcoded hex colors. Affected functions: `plot_scatter_dynamic`, `create_credit_deterioration_chart_ppt`, `plot_portfolio_mix`, `plot_years_of_reserves`, `plot_growth_vs_deterioration`, `plot_risk_adjusted_return`, `plot_concentration_vs_capital`, `plot_migration_ladder`, `plot_reserve_risk_allocation`, `plot_liquidity_overlay`.
 
-**Fixes applied:**
+2. **Chart annotation helper (`ChartAnnotationHelper`)**: New class with priority-tiered label placement. Tier 1 (MSPBNA) always labeled, Tier 2 (Wealth Peers) always labeled when plotted, Tier 3 (All Peers) labeled only when explicit, Tier 4 (individuals) outlier/edge only. Includes `place_label()` with collision detection, `place_endpoint_label()` for time-series endpoints, and `register_fixed_rect()` for pre-placed elements.
 
-1. **test_regression.py** — Fixed `TestDocumentationCoherence.test_heatmap_saves_to_file`: test referenced `self._make_df()` which did not exist on the class, causing `AttributeError`. Replaced with inline DataFrame construction providing two quarters of data for YoY comparison.
-2. **test_regression.py** — Added `TestNormalizedBulletSplitReconciliation` class (25 tests): 8 stale-abstraction-absent checks, 3 artifact-name-present checks, 1 registry coverage check, 3 obsolete-name-absent checks, 2 sparkline norm_peer_cert checks, 7 CLAUDE.md accuracy checks (artifact names, exact titles, no false claims, Remaining Risks section, canonical rendering rule).
-3. **CLAUDE.md** — Fixed abbreviated composition chart title from `"(Normalized Composition)"` to full `"Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)"`. Updated Remaining Risks subsection to reflect actual post-fix state (6 items). Added this changelog entry.
+3. **Wealth Peers added to high-value charts**: `plot_scatter_dynamic` now accepts `wealth_peer_cert` parameter — plots Wealth Peers as a distinct purple triangle marker. All 3 scatter call sites pass `wealth_peer_cert`. `plot_years_of_reserves` now shows MSPBNA, Wealth Peers, and All Peers side-by-side. `plot_risk_adjusted_return`, `plot_growth_vs_deterioration`, and `plot_concentration_vs_capital` all add Wealth Peers (triangle) and All Peers (square) markers alongside the MSPBNA diamond.
 
-**Files changed:** `test_regression.py`, `CLAUDE.md`
+4. **Credit chart polish**: `create_credit_deterioration_chart_ppt` uses centralized palette for GOLD/BLUE/PURPLE. Low-coverage series suppression already in place. Strategic sparse labels (latest quarter, Q4 only) already enforced by `idx_to_label` logic.
+
+5. **Years of reserves update**: Title now clearly shows "Years of Reserves by Segment". Both Wealth Peers (triangle, purple) and All Peers (diamond, blue) plotted alongside MSPBNA (circle, gold).
+
+6. **Tests and documentation**: Added 3 test classes (24 tests): `TestCentralizedChartPalette` (11 tests: palette keys, color ranges, aliases, no hardcoded hex), `TestChartAnnotationHelper` (5 tests: class exists, methods, priority tiers), `TestWealthPeersInclusion` (8 tests: scatter param, call sites, years_of_reserves, risk_adjusted_return, growth_vs_deterioration, concentration_vs_capital). Updated CLAUDE.md with centralized palette table, annotation policy, and Wealth Peers inclusion policy.
+
+**Functions updated:**
+- `plot_scatter_dynamic` — new `wealth_peer_cert` param, centralized colors, Wealth Peers marker
+- `create_credit_deterioration_chart_ppt` — centralized palette aliases
+- `plot_portfolio_mix` — centralized palette
+- `plot_years_of_reserves` — Wealth Peers + All Peers markers, centralized colors
+- `plot_growth_vs_deterioration` — Wealth Peers + All Peers markers, centralized colors
+- `plot_risk_adjusted_return` — Wealth Peers + All Peers markers, centralized colors
+- `plot_concentration_vs_capital` — Wealth Peers + All Peers markers, centralized colors
+- `plot_migration_ladder` — centralized metric colors
+- `plot_reserve_risk_allocation` — centralized colors
+- `plot_liquidity_overlay` — centralized colors
+
+**Files changed:** `report_generator.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-12 — Normalized KRI Bullet Chart Split (Rates vs Composition)
 
