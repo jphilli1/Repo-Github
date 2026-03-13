@@ -856,6 +856,18 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-13 — Capital Concentration Ratios & Cumulative Growth Base-Period Fix
+
+**3-item change set:**
+
+1. **Capital concentration ratios** (`CRE_Concentration_Capital_Risk`, `CI_to_Capital_Risk`): Computed in the derived-metrics section of `MSPBNA_CR_Normalized.py` using `RBCT1J` (Tier 1 Capital). `CRE_Concentration_Capital_Risk = RIC_CRE_Cost / RBCT1J`, `CI_to_Capital_Risk = LNCI / RBCT1J`. Both guarded by column-existence checks. Added `MetricSpec` entries in `metric_registry.py` (unit=multiple, consumer=concentration_vs_capital). Added `MetricSemantic` entries in `metric_semantics.py` (Polarity.ADVERSE, DisplayFormat.MULTIPLE, group=Coverage).
+
+2. **Cumulative growth base-period auto-advance** (`executive_charts.py`): When the default Q4 2015 anchor has zero CRE balance or zero CRE ACL (as happens for MSPBNA which had no CRE exposure at that date), `prepare_cumulative_growth_data()` now auto-advances to the first subsequent quarter where both Target Loans and Target ACL are nonzero. Previously this returned `None`, causing both `cumul_growth_loans_vs_acl_wealth` and `cumul_growth_loans_vs_acl_allpeers` charts to skip entirely.
+
+3. **RBCT1J confirmed present** in `FDIC_FIELDS_TO_FETCH` — no action needed.
+
+**Files changed:** `MSPBNA_CR_Normalized.py`, `metric_registry.py`, `metric_semantics.py`, `executive_charts.py`, `CLAUDE.md`
+
 ### 2026-03-13 — Cross-Regime NaN-Out for Peer Composites
 
 **Problem**: Standard composites (90001, 90003) carried non-null `Norm_*` values and normalized composites (90004, 90006) carried non-null standard rate values, triggering 5 OutputContamination preflight warnings in `report_generator.py`.

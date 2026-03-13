@@ -199,6 +199,15 @@ _sem("Norm_Gross_Loans", "Norm Gross Loans", Polarity.NEUTRAL,
      display_format=DisplayFormat.DOLLARS_B, delta_format=DisplayFormat.DOLLARS_B,
      group="Size")
 
+# ── Capital Concentration ───────────────────────────────────────────
+
+_sem("CRE_Concentration_Capital_Risk", "CRE / Tier 1 Capital", Polarity.ADVERSE,
+     display_format=DisplayFormat.MULTIPLE, delta_format=DisplayFormat.MULTIPLE,
+     group="Coverage")
+_sem("CI_to_Capital_Risk", "C&I / Tier 1 Capital", Polarity.ADVERSE,
+     display_format=DisplayFormat.MULTIPLE, delta_format=DisplayFormat.MULTIPLE,
+     group="Coverage")
+
 
 # =====================================================================
 # Convenience: lookup with fallback

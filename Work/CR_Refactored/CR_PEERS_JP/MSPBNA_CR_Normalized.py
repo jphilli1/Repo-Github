@@ -3175,6 +3175,18 @@ class BankMetricsProcessor:
         new_cols['SBL_Composition'] = safe_div(df_processed['SBL_Balance'], df_processed['Gross_Loans'])
         new_cols['Fund_Finance_Composition'] = safe_div(df_processed['Fund_Finance_Balance'], df_processed['Gross_Loans'])
 
+        # --- Capital Concentration Ratios ---
+        if 'RBCT1J' in df_processed.columns:
+            t1_cap = pd.to_numeric(df_processed['RBCT1J'], errors='coerce')
+            if 'RIC_CRE_Cost' in df_processed.columns:
+                new_cols['CRE_Concentration_Capital_Risk'] = safe_div(
+                    pd.to_numeric(df_processed['RIC_CRE_Cost'], errors='coerce'), t1_cap
+                )
+            if 'LNCI' in df_processed.columns:
+                new_cols['CI_to_Capital_Risk'] = safe_div(
+                    pd.to_numeric(df_processed['LNCI'], errors='coerce'), t1_cap
+                )
+
         # --- A.2 LIQUIDITY RATIOS (RESTORED) ---
         total_assets = df_processed['Total_Assets_Raw']
         total_assets = np.where(total_assets > 0, total_assets, df_processed.get('ASSET', 1))

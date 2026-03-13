@@ -928,8 +928,19 @@ def prepare_cumulative_growth_data(
     anchor_loans = ent.loc[anchor_idx, "_target_loans"]
     anchor_acl = ent.loc[anchor_idx, "_target_acl"]
 
+    # Auto-advance base period if anchor has zero values
     if anchor_loans == 0 or anchor_acl == 0:
-        return None
+        anchor_date = ent.loc[anchor_idx, "REPDTE"]
+        candidates = ent[
+            (ent["REPDTE"] > anchor_date)
+            & (ent["_target_loans"] > 0)
+            & (ent["_target_acl"] > 0)
+        ]
+        if candidates.empty:
+            return None
+        anchor_idx = candidates.index[0]
+        anchor_loans = ent.loc[anchor_idx, "_target_loans"]
+        anchor_acl = ent.loc[anchor_idx, "_target_acl"]
 
     # Filter to dates >= anchor
     anchor_date = ent.loc[anchor_idx, "REPDTE"]

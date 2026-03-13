@@ -381,6 +381,30 @@ DERIVED_METRIC_SPECS: Dict[str, MetricSpec] = {
         consumers=[],
         severity="medium",
     ),
+    "CRE_Concentration_Capital_Risk": MetricSpec(
+        code="CRE_Concentration_Capital_Risk",
+        dependencies=["RIC_CRE_Cost", "RBCT1J"],
+        compute=lambda df: _safe_div(
+            pd.to_numeric(df.get("RIC_CRE_Cost", np.nan), errors="coerce"),
+            pd.to_numeric(df.get("RBCT1J", np.nan), errors="coerce"),
+        ),
+        unit="multiple",
+        min_value=0.0,
+        consumers=["concentration_vs_capital"],
+        severity="medium",
+    ),
+    "CI_to_Capital_Risk": MetricSpec(
+        code="CI_to_Capital_Risk",
+        dependencies=["LNCI", "RBCT1J"],
+        compute=lambda df: _safe_div(
+            pd.to_numeric(df.get("LNCI", np.nan), errors="coerce"),
+            pd.to_numeric(df.get("RBCT1J", np.nan), errors="coerce"),
+        ),
+        unit="multiple",
+        min_value=0.0,
+        consumers=["concentration_vs_capital"],
+        severity="medium",
+    ),
 }
 
 
