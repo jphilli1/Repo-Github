@@ -156,19 +156,26 @@ report_generator.py
   - `{stem}_scatter_nco_vs_npl.png`
   - `{stem}_scatter_pd_vs_npl.png`
   - `{stem}_scatter_norm_nco_vs_nonaccrual.png`
+  - `{stem}_scatter_cre_nco_vs_nonaccrual.png`
+  - `{stem}_scatter_norm_acl_vs_delinquency.png`
   - `{stem}_years_of_reserves.png`
   - `{stem}_growth_vs_deterioration.png`
   - `{stem}_growth_vs_deterioration_bookwide.png`
   - `{stem}_risk_adjusted_return.png`
   - `{stem}_concentration_vs_capital.png`
   - `{stem}_liquidity_overlay.png`
-  - `{stem}_yoy_heatmap_standard.html`
-  - `{stem}_yoy_heatmap_normalized.html`
+  - `{stem}_yoy_heatmap_standard_wealth.html`
+  - `{stem}_yoy_heatmap_standard_allpeers.html`
+  - `{stem}_yoy_heatmap_normalized_wealth.html`
+  - `{stem}_yoy_heatmap_normalized_allpeers.html`
   - `{stem}_kri_bullet_standard.png`
   - `{stem}_kri_bullet_standard_coverage.png`
   - `{stem}_kri_bullet_normalized_rates.png`
   - `{stem}_kri_bullet_normalized_composition.png`
-  - `{stem}_sparkline_summary.html`
+  - `{stem}_sparkline_standard_wealth.html`
+  - `{stem}_sparkline_standard_allpeers.html`
+  - `{stem}_sparkline_normalized_wealth.html`
+  - `{stem}_sparkline_normalized_allpeers.html`
   - `{stem}_macro_corr_heatmap_lag1.html`
   - `{stem}_macro_overlay_credit_stress.png`
   - `{stem}_macro_overlay_rates_housing.png`
@@ -333,28 +340,37 @@ python report_generator.py
 
 All of these must be imported from `rendering_mode.py`. The `_ReportContext` dataclass in `report_generator.py` is a lightweight internal carrier and is NOT a duplicate of any rendering-mode type.
 
-### Executive Chart Artifacts (8 Artifacts)
+### Executive Chart Artifacts (14 Artifacts)
 
 Implemented in `executive_charts.py`, integrated into `report_generator.py` Phase 8.
 
 | Artifact | File | Mode | Type |
 |---|---|---|---|
-| `yoy_heatmap_standard` | `{stem}_yoy_heatmap_standard.html` | BOTH | HTML |
-| `yoy_heatmap_normalized` | `{stem}_yoy_heatmap_normalized.html` | BOTH | HTML |
+| `yoy_heatmap_standard_wealth` | `{stem}_yoy_heatmap_standard_wealth.html` | BOTH | HTML |
+| `yoy_heatmap_standard_allpeers` | `{stem}_yoy_heatmap_standard_allpeers.html` | BOTH | HTML |
+| `yoy_heatmap_normalized_wealth` | `{stem}_yoy_heatmap_normalized_wealth.html` | BOTH | HTML |
+| `yoy_heatmap_normalized_allpeers` | `{stem}_yoy_heatmap_normalized_allpeers.html` | BOTH | HTML |
 | `kri_bullet_standard` | `{stem}_kri_bullet_standard.png` | FULL_LOCAL_ONLY | PNG |
 | `kri_bullet_standard_coverage` | `{stem}_kri_bullet_standard_coverage.png` | FULL_LOCAL_ONLY | PNG |
 | `kri_bullet_normalized_rates` | `{stem}_kri_bullet_normalized_rates.png` | FULL_LOCAL_ONLY | PNG |
 | `kri_bullet_normalized_composition` | `{stem}_kri_bullet_normalized_composition.png` | FULL_LOCAL_ONLY | PNG |
-| `sparkline_summary` | `{stem}_sparkline_summary.html` | BOTH | HTML |
+| `sparkline_standard_wealth` | `{stem}_sparkline_standard_wealth.html` | BOTH | HTML |
+| `sparkline_standard_allpeers` | `{stem}_sparkline_standard_allpeers.html` | BOTH | HTML |
+| `sparkline_normalized_wealth` | `{stem}_sparkline_normalized_wealth.html` | BOTH | HTML |
+| `sparkline_normalized_allpeers` | `{stem}_sparkline_normalized_allpeers.html` | BOTH | HTML |
 | `growth_vs_deterioration_bookwide` | `{stem}_growth_vs_deterioration_bookwide.png` | FULL_LOCAL_ONLY | PNG |
 
 **Integration pattern:**
-- Heatmaps loop over `[False, True]` for standard/normalized variants
-- KRI bullet charts are now **football-field** style with nested peer range bands
+- Heatmaps: 4 variants via `_heatmap_specs` loop — Standard/Normalized × Wealth Peers/All Peers. Each uses the appropriate composite CERT: Wealth = core_pb (90001/90004), All = all_peers (90003/90006). Title and column headers dynamically include peer group name.
+- Sparklines: 4 variants via `_sparkline_specs` loop — Standard/Normalized × Wealth Peers/All Peers. Standard sparklines use `SPARKLINE_METRICS_STANDARD` (7 metrics), normalized use `SPARKLINE_METRICS_NORMALIZED` (5 metrics). Title and "vs Peers" column header show the peer group name.
+- KRI bullet charts are **football-field** style with nested peer range bands
 - All 4 KRI bullet charts use `_bullet_specs` loop with per-spec metric list, title, and composite CERTs
 - Bullet charts pass `wealth_member_certs` and `all_peers_member_certs` for actual min/max range computation
-- Sparkline passes `norm_peer_cert=90006` for Norm_ metric rows, `peer_cert=90003` for standard rows
-- The obsolete single artifact names `kri_bullet_chart` and `kri_bullet_normalized` are removed from the registry
+- The obsolete single artifact names `yoy_heatmap_standard`, `yoy_heatmap_normalized`, `sparkline_summary`, `kri_bullet_chart`, `kri_bullet_normalized` are removed from the registry
+
+**Sparkline metric lists:**
+- `SPARKLINE_METRICS_STANDARD` (7): TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, Past_Due_Rate, RIC_CRE_Nonaccrual_Rate, RIC_CRE_ACL_Coverage
+- `SPARKLINE_METRICS_NORMALIZED` (5): Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, Norm_Delinquency_Rate
 
 **Football-field KRI chart design (nested bands):**
 - **Outer lighter band (light gray #D0D0D0)**: All Peers min–max range across individual member CERTs
@@ -825,6 +841,40 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — Comprehensive Formatting, Bug-Fix, and Feature Expansion Sweep
+
+**Objective**: Standardize HTML table styling, fix chart generation bugs, expand views to cover both Standard and Normalized cuts, and split heatmaps/sparklines by peer group.
+
+**6-part implementation:**
+
+1. **PART 1 — Python bug fixes**:
+   - **YoY heatmap RESI math fix**: Composition/share metrics (containing "Composition", "Loan_Share", "ACL_Share" in code name) now use percent-change `(cur/prior - 1)` for YoY instead of simple subtraction. This fixes the false 10% shrinkage display for RESI share metrics. Added `is_composition` flag to heatmap data rows and conditional formatting in `render_yoy_heatmap_html()`.
+   - **Citi label bug (`_cc`/`CC`)**: Exhaustive search found zero instances — the bug does not exist in the current codebase. Documented as already resolved.
+
+2. **PART 2 — HTML table formatting**:
+   - **Thousands separators**: Dollar amounts formatted with `,` separator (e.g., `$3,752.7B`) in `_build_dynamic_peer_html()`.
+   - **Norm→asterisk convention**: `_normalize_display_name()` helper replaces "Norm " prefix with trailing asterisk `*`. Applied across `generate_credit_metrics_email_table`, `generate_ratio_components_table`, `_build_dynamic_peer_html`, and `generate_html_email_table_dynamic`.
+   - **Normalized footnote**: All normalized tables include `<p style="font-size: 10px; color: #555;">* Normalized for comparison</p>`.
+   - **MSPBNA column highlight**: Already existed via `.subject-value` CSS class with `background-color: #E6F3FF`.
+
+3. **PART 3 — Dual views verified**: `generate_reports()` already loops `for is_norm in [False, True]` for all table types. No changes needed.
+
+4. **PART 4 — Heatmap and sparkline peer group split** (4 outputs each):
+   - **Heatmaps**: Split from 2 to 4 outputs — Standard/Normalized × Wealth Peers/All Peers. New artifact names: `yoy_heatmap_standard_wealth`, `yoy_heatmap_standard_allpeers`, `yoy_heatmap_normalized_wealth`, `yoy_heatmap_normalized_allpeers`. Added `peer_label` parameter to `generate_yoy_heatmap()` and `render_yoy_heatmap_html()`. Column headers dynamically show peer group name (e.g., "Wealth Peers Current" instead of generic "Peers Current").
+   - **Sparklines**: Split from 1 to 4 outputs — Standard/Normalized × Wealth Peers/All Peers. New artifact names: `sparkline_standard_wealth`, `sparkline_standard_allpeers`, `sparkline_normalized_wealth`, `sparkline_normalized_allpeers`. Added `SPARKLINE_METRICS_STANDARD` (7 metrics) and `SPARKLINE_METRICS_NORMALIZED` (5 metrics) lists. Added `peer_label` parameter to `generate_sparkline_table()`. Title includes peer group name.
+   - Old artifact registrations removed: `yoy_heatmap_standard`, `yoy_heatmap_normalized`, `sparkline_summary`.
+   - Phase 8 in `generate_reports()` now uses `_heatmap_specs` and `_sparkline_specs` loops.
+
+5. **PART 5 — Expanded scatter plots**:
+   - **CRE family**: `scatter_cre_nco_vs_nonaccrual` — X: RIC_CRE_Nonaccrual_Rate, Y: RIC_CRE_NCO_Rate (8Q avg, standard composites).
+   - **Normalized bankwide**: `scatter_norm_acl_vs_delinquency` — X: Norm_Delinquency_Rate, Y: Norm_ACL_Coverage (8Q avg, normalized composites).
+   - Both registered in `rendering_mode.py` as FULL_LOCAL_ONLY scatter artifacts.
+   - Uses existing `plot_scatter_dynamic()` with Wealth Peers marker.
+
+6. **PART 6 — CLAUDE.md**: Updated Executive Chart Artifacts table (8→14), output filenames, sparkline metric lists, scatter plot families, and this changelog.
+
+**Files changed:** `executive_charts.py`, `report_generator.py`, `rendering_mode.py`, `CLAUDE.md`
 
 ### 2026-03-13 — Chart Package Expansion (Bookwide, Football-Field, MSA Panel)
 

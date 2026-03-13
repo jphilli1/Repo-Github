@@ -76,6 +76,8 @@ try:
         BULLET_METRICS_NORMALIZED_COMPOSITION,
         BULLET_METRICS_STANDARD_RATES,
         BULLET_METRICS_STANDARD_COVERAGE,
+        SPARKLINE_METRICS_STANDARD,
+        SPARKLINE_METRICS_NORMALIZED,
     )
     _HAS_EXECUTIVE_CHARTS = True
 except ImportError:
@@ -1015,7 +1017,8 @@ def _fmt_call_report_date(d) -> str:
 
 
 def generate_html_email_table_dynamic(df: pd.DataFrame, report_date: datetime,
-                                      table_type: str, title: Optional[str] = None) -> str:
+                                      table_type: str, title: Optional[str] = None,
+                                      is_normalized: bool = False) -> str:
     cols = df.columns.tolist()
     date_str = _fmt_call_report_date(report_date)
 
@@ -1081,7 +1084,11 @@ def generate_html_email_table_dynamic(df: pd.DataFrame, report_date: datetime,
             html += f"<td {cls}>{val}</td>"
         html += "</tr>"
 
-    html += """</tbody></table>
+    norm_footnote = ""
+    if is_normalized:
+        norm_footnote = '<p style="font-size: 10px; color: #555; text-align: left;">* Normalized for comparison</p>'
+    html += f"""</tbody></table>
+    {norm_footnote}
     <div class="footnote">
         <p><b>Methodology:</b></p>
         <p><b>Risk-Adj ACL Ratio:</b> Total ACL / (Gross Loans - SBL). Removes low-risk SBL to show coverage on core credit.</p>
@@ -1107,20 +1114,20 @@ def generate_credit_metrics_email_table(
     if is_normalized:
         metric_map = {
             "ASSET": ("Total Assets ($B)", 'B'),
-            "Norm_Gross_Loans": ("Norm Gross Loans ($B)", 'B'),
-            "Norm_Risk_Adj_Allowance_Coverage": ("Risk-Adj ACL Ratio (%)", '%'),
-            "Norm_ACL_Coverage": ("ACL Ratio (%)", '%'),
-            "Norm_Nonaccrual_Rate": ("Nonaccrual Rate (%)", '%'),
-            "Norm_NCO_Rate": ("NCO Rate (%)", '%'),
-            "Norm_Delinquency_Rate": ("Delinquency Rate (%)", '%'),
-            "Norm_SBL_Composition": ("SBL % of Loans", '%'),
-            "Norm_Wealth_Resi_Composition": ("Wealth Resi %", '%'),
-            "Norm_CRE_Investment_Composition": ("CRE % of Loans", '%'),
-            "Norm_CRE_ACL_Share": ("CRE % of ACL", '%'),
-            "Norm_CRE_ACL_Coverage": ("CRE ACL Ratio (%)", '%'),
-            "Norm_Exclusion_Pct": ("Excluded Loans (%)", '%'),
-            "Norm_Loan_Yield": ("Loan Yield (%)", '%'),
-            "Norm_Loss_Adj_Yield": ("Loss-Adj Yield (%)", '%'),
+            "Norm_Gross_Loans": ("Gross Loans ($B)*", 'B'),
+            "Norm_Risk_Adj_Allowance_Coverage": ("Risk-Adj ACL Ratio (%)*", '%'),
+            "Norm_ACL_Coverage": ("ACL Ratio (%)*", '%'),
+            "Norm_Nonaccrual_Rate": ("Nonaccrual Rate (%)*", '%'),
+            "Norm_NCO_Rate": ("NCO Rate (%)*", '%'),
+            "Norm_Delinquency_Rate": ("Delinquency Rate (%)*", '%'),
+            "Norm_SBL_Composition": ("SBL % of Loans*", '%'),
+            "Norm_Wealth_Resi_Composition": ("Wealth Resi %*", '%'),
+            "Norm_CRE_Investment_Composition": ("CRE % of Loans*", '%'),
+            "Norm_CRE_ACL_Share": ("CRE % of ACL*", '%'),
+            "Norm_CRE_ACL_Coverage": ("CRE ACL Ratio (%)*", '%'),
+            "Norm_Exclusion_Pct": ("Excluded Loans (%)*", '%'),
+            "Norm_Loan_Yield": ("Loan Yield (%)*", '%'),
+            "Norm_Loss_Adj_Yield": ("Loss-Adj Yield (%)*", '%'),
         }
     else:
         metric_map = {
@@ -1222,7 +1229,8 @@ def generate_credit_metrics_email_table(
     df = pd.DataFrame(rows)
     norm_str = "Normalized" if is_normalized else "Standard"
     html = generate_html_email_table_dynamic(df, latest_date, table_type="summary",
-                                             title=f"Executive Summary ({norm_str})")
+                                             title=f"Executive Summary ({norm_str})",
+                                             is_normalized=is_normalized)
     return html, df
 
 
@@ -1464,6 +1472,7 @@ def generate_detailed_peer_table(
     return _build_dynamic_peer_html(
         title, ordered_certs, col_mapping, metrics,
         latest_data, subject_bank_cert, peer_avg_cert, latest_date,
+        is_normalized=is_normalized,
     )
 
 
@@ -1535,11 +1544,20 @@ def generate_core_pb_peer_table(
     return _build_dynamic_peer_html(
         title, ordered_certs, col_mapping, metrics,
         latest_data, subject_bank_cert, peer_avg_cert, latest_date,
+        is_normalized=is_normalized,
     )
 
 
+def _normalize_display_name(disp: str) -> str:
+    """Replace 'Norm ' prefix with trailing asterisk for normalized metrics."""
+    if disp.startswith("Norm "):
+        return disp[5:] + "*"
+    return disp
+
+
 def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
-                             latest_data, subject_cert, avg_cert, latest_date):
+                             latest_data, subject_cert, avg_cert, latest_date,
+                             is_normalized: bool = False):
     """Shared HTML builder for detailed peer and core PB tables."""
     html = f"""<html><head><style>
         body {{ font-family: Arial, sans-serif; background-color: transparent; }}
@@ -1566,7 +1584,9 @@ def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
     html += f"<th>Diff Vs {col_mapping[avg_cert]}</th></tr></thead><tbody>"
 
     for disp, code, fmt in metrics:
-        html += f'<tr><td class="metric-name"><b>{disp}</b></td>'
+        # Normalize display: Norm prefix → trailing asterisk
+        disp_clean = _normalize_display_name(disp) if is_normalized else disp
+        html += f'<tr><td class="metric-name"><b>{disp_clean}</b></td>'
         subj_val, avg_val = np.nan, np.nan
 
         for c in ordered_certs:
@@ -1582,7 +1602,7 @@ def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
             elif fmt == "x":
                 f_v = f"{val:.2f}x"
             elif fmt == "B":
-                f_v = f"${val / 1e6:.1f}B"
+                f_v = f"${val / 1e6:,.1f}B"
             else:
                 f_v = f"{val * 100:.2f}%" if abs(val) < 1.0 else f"{val:.2f}%"
 
@@ -1597,7 +1617,7 @@ def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
             if fmt == "x":
                 f_diff = f"{diff:+.2f}x"
             elif fmt == "B":
-                f_diff = f"{diff / 1e6:+.1f}B"
+                f_diff = f"{diff / 1e6:+,.1f}B"
             else:
                 f_diff = f"{diff * 100:+.2f}%" if abs(diff) < 1.0 else f"{diff:+.2f}%"
 
@@ -1615,7 +1635,10 @@ def _build_dynamic_peer_html(title, ordered_certs, col_mapping, metrics,
 
         html += f'<td class="{diff_cls}">{f_diff}</td></tr>'
 
-    html += "</tbody></table></div></body></html>"
+    footnote = ""
+    if is_normalized:
+        footnote = '<p style="font-size: 10px; color: #555; text-align: left;">* Normalized for comparison</p>'
+    html += f"</tbody></table>{footnote}</div></body></html>"
     return html
 
 
@@ -1713,19 +1736,19 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
     if is_normalized:
         title = "Ratio Components Analysis (Normalized)"
         metrics = [
-            ("Norm NCO Rate", "Norm Total NCO", "Norm_Total_NCO", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_NCO_Rate"),
-            ("Norm Nonaccrual Rate", "Norm Total Nonaccrual", "Norm_Total_Nonaccrual", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
-            ("Norm ACL Ratio", "Norm ACL Balance", "Norm_ACL_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_ACL_Coverage"),
-            ("Norm Risk-Adj ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm Gross Loans - SBL Balance", "Norm_Risk_Adj_Gross_Loans", "Norm_Risk_Adj_Allowance_Coverage"),
-            ("Norm Delinquency Rate", "Norm PD30 + Norm PD90", "_Norm_Total_Past_Due", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Delinquency_Rate"),
-            ("Norm SBL %", "SBL Balance", "SBL_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_SBL_Composition"),
-            ("Norm Wealth Resi %", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_Wealth_Resi_Composition"),
-            ("Norm CRE % (Ex-ADC)", "CRE Investment Pure Balance", "CRE_Investment_Pure_Balance", "Norm Gross Loans", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
-            ("Norm CRE % of ACL", "CRE ACL", "RIC_CRE_ACL", "Norm ACL Balance", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
-            ("Norm Resi ACL Coverage", "Resi ACL", "RIC_Resi_ACL", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm_Resi_ACL_Coverage"),
-            ("Excluded % of Total", "Excluded Balance", "Excluded_Balance", "Gross Loans", "LNLS", "Norm_Exclusion_Pct")
+            ("NCO Rate*", "Total NCO*", "Norm_Total_NCO", "Gross Loans*", "Norm_Gross_Loans", "Norm_NCO_Rate"),
+            ("Nonaccrual Rate*", "Total Nonaccrual*", "Norm_Total_Nonaccrual", "Gross Loans*", "Norm_Gross_Loans", "Norm_Nonaccrual_Rate"),
+            ("ACL Ratio*", "ACL Balance*", "Norm_ACL_Balance", "Gross Loans*", "Norm_Gross_Loans", "Norm_ACL_Coverage"),
+            ("Risk-Adj ACL*", "ACL Balance*", "Norm_ACL_Balance", "Gross Loans* - SBL", "Norm_Risk_Adj_Gross_Loans", "Norm_Risk_Adj_Allowance_Coverage"),
+            ("Delinquency Rate*", "PD30 + PD90*", "_Norm_Total_Past_Due", "Gross Loans*", "Norm_Gross_Loans", "Norm_Delinquency_Rate"),
+            ("SBL %*", "SBL Balance", "SBL_Balance", "Gross Loans*", "Norm_Gross_Loans", "Norm_SBL_Composition"),
+            ("Wealth Resi %*", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Gross Loans*", "Norm_Gross_Loans", "Norm_Wealth_Resi_Composition"),
+            ("CRE % (Ex-ADC)*", "CRE Inv. Pure Bal.", "CRE_Investment_Pure_Balance", "Gross Loans*", "Norm_Gross_Loans", "Norm_CRE_Investment_Composition"),
+            ("CRE % of ACL*", "CRE ACL", "RIC_CRE_ACL", "ACL Balance*", "Norm_ACL_Balance", "Norm_CRE_ACL_Share"),
+            ("Resi ACL Coverage*", "Resi ACL", "RIC_Resi_ACL", "Wealth Resi Bal.", "Wealth_Resi_Balance", "Norm_Resi_ACL_Coverage"),
+            ("Excluded % of Total*", "Excluded Balance", "Excluded_Balance", "Gross Loans", "LNLS", "Norm_Exclusion_Pct")
         ]
-        footnote = "<p><b>Normalized Metrics:</b> Exclude C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag loans.</p>"
+        footnote = '<p style="font-size: 10px; color: #555; text-align: left;">* Normalized for comparison</p><p><b>Normalized Metrics:</b> Exclude C&I, NDFI (Fund Finance), ADC (Construction), Credit Cards, Auto, Ag loans.</p>'
     else:
         title = "Ratio Components Analysis (Standard)"
         metrics = [
@@ -2737,6 +2760,32 @@ def generate_reports(
                        use_alt_peer_avg=False,
                        **scatter_common)
 
+        # CRE segment scatter — NCO Rate vs Nonaccrual Rate
+        _produce_chart(ctx, "scatter_cre_nco_vs_nonaccrual", csv_log,
+                       plot_scatter_dynamic, scatter_dir,
+                       df=rolling8q_df,
+                       x_col="RIC_CRE_Nonaccrual_Rate",
+                       y_col="RIC_CRE_NCO_Rate",
+                       subject_cert=subject_bank_cert,
+                       peer_avg_cert_primary=ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                       peer_avg_cert_alt=ACTIVE_STANDARD_COMPOSITES["core_pb"],
+                       wealth_peer_cert=ACTIVE_STANDARD_COMPOSITES["core_pb"],
+                       use_alt_peer_avg=False,
+                       **scatter_common)
+
+        # Normalized bankwide — ACL Coverage vs Delinquency Rate
+        _produce_chart(ctx, "scatter_norm_acl_vs_delinquency", csv_log,
+                       plot_scatter_dynamic, scatter_dir,
+                       df=rolling8q_df,
+                       x_col="Norm_Delinquency_Rate",
+                       y_col="Norm_ACL_Coverage",
+                       subject_cert=subject_bank_cert,
+                       peer_avg_cert_primary=ACTIVE_NORMALIZED_COMPOSITES["all_peers"],
+                       peer_avg_cert_alt=ACTIVE_NORMALIZED_COMPOSITES["core_pb"],
+                       wealth_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["core_pb"],
+                       use_alt_peer_avg=False,
+                       **scatter_common)
+
         # ------------------------------------------------------------------
         # PHASE 6: SEGMENT & ROADMAP CHARTS (full_local only)
         # ------------------------------------------------------------------
@@ -2898,18 +2947,23 @@ def generate_reports(
             print("GENERATING EXECUTIVE CHARTS")
             print("-" * 60)
 
-            # YoY Heatmap — standard and normalized (HTML — both modes)
-            for is_norm in [False, True]:
+            # YoY Heatmap — 4 variants: Standard/Normalized × Wealth/All Peers
+            _heatmap_specs = [
+                (False, "wealth",   ACTIVE_STANDARD_COMPOSITES["core_pb"],   "Wealth Peers"),
+                (False, "allpeers", ACTIVE_STANDARD_COMPOSITES["all_peers"], "All Peers"),
+                (True,  "wealth",   ACTIVE_NORMALIZED_COMPOSITES["core_pb"], "Wealth Peers"),
+                (True,  "allpeers", ACTIVE_NORMALIZED_COMPOSITES["all_peers"], "All Peers"),
+            ]
+            for is_norm, pg_suffix, peer_cert, peer_label in _heatmap_specs:
                 norm_str = "normalized" if is_norm else "standard"
-                art_name = f"yoy_heatmap_{norm_str}"
+                art_name = f"yoy_heatmap_{norm_str}_{pg_suffix}"
                 if should_produce(art_name, mode, manifest, suppressed_charts):
                     try:
-                        peer_cert = (ACTIVE_NORMALIZED_COMPOSITES["all_peers"]
-                                     if is_norm else ACTIVE_STANDARD_COMPOSITES["all_peers"])
-                        save = str(tables_dir / f"{base}_yoy_heatmap_{norm_str}.html")
+                        save = str(tables_dir / f"{base}_{art_name}.html")
                         html = generate_yoy_heatmap(
                             proc_df_with_peers, subject_bank_cert, peer_cert,
                             is_normalized=is_norm, save_path=save,
+                            peer_label=peer_label,
                         )
                         if html:
                             manifest.record_generated(art_name, save)
@@ -2967,27 +3021,44 @@ def generate_reports(
                         manifest.record_failed(art_name, str(exc))
                         print(f"  Failed {art_name}: {exc}")
 
-            # Sparkline Summary Table (HTML — both modes)
-            art_name = "sparkline_summary"
-            if should_produce(art_name, mode, manifest, suppressed_charts):
-                try:
-                    save = str(tables_dir / f"{base}_sparkline_summary.html")
-                    html = generate_sparkline_table(
-                        proc_df_with_peers, subject_bank_cert,
-                        peer_cert=ACTIVE_STANDARD_COMPOSITES["all_peers"],
-                        norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"],
-                        save_path=save,
-                    )
-                    if html:
-                        manifest.record_generated(art_name, save)
-                        print(f"  Generated: {art_name}")
-                        csv_log.log_file_written(save, phase="executive_charts",
-                                                 component=art_name)
-                    else:
-                        manifest.record_failed(art_name, "insufficient data")
-                except Exception as exc:
-                    manifest.record_failed(art_name, str(exc))
-                    print(f"  Failed {art_name}: {exc}")
+            # Sparkline Summary Tables — 4 variants: Standard/Normalized × Wealth/All Peers
+            _sparkline_specs = [
+                ("standard", "wealth",   SPARKLINE_METRICS_STANDARD,
+                 ACTIVE_STANDARD_COMPOSITES["core_pb"],
+                 ACTIVE_NORMALIZED_COMPOSITES["core_pb"], "Wealth Peers"),
+                ("standard", "allpeers", SPARKLINE_METRICS_STANDARD,
+                 ACTIVE_STANDARD_COMPOSITES["all_peers"],
+                 ACTIVE_NORMALIZED_COMPOSITES["all_peers"], "All Peers"),
+                ("normalized", "wealth", SPARKLINE_METRICS_NORMALIZED,
+                 ACTIVE_NORMALIZED_COMPOSITES["core_pb"],
+                 ACTIVE_NORMALIZED_COMPOSITES["core_pb"], "Wealth Peers"),
+                ("normalized", "allpeers", SPARKLINE_METRICS_NORMALIZED,
+                 ACTIVE_NORMALIZED_COMPOSITES["all_peers"],
+                 ACTIVE_NORMALIZED_COMPOSITES["all_peers"], "All Peers"),
+            ]
+            for norm_str, pg_suffix, metric_list, p_cert, np_cert, p_label in _sparkline_specs:
+                art_name = f"sparkline_{norm_str}_{pg_suffix}"
+                if should_produce(art_name, mode, manifest, suppressed_charts):
+                    try:
+                        save = str(tables_dir / f"{base}_{art_name}.html")
+                        html = generate_sparkline_table(
+                            proc_df_with_peers, subject_bank_cert,
+                            peer_cert=p_cert,
+                            norm_peer_cert=np_cert,
+                            metrics=metric_list,
+                            save_path=save,
+                            peer_label=p_label,
+                        )
+                        if html:
+                            manifest.record_generated(art_name, save)
+                            print(f"  Generated: {art_name}")
+                            csv_log.log_file_written(save, phase="executive_charts",
+                                                     component=art_name)
+                        else:
+                            manifest.record_failed(art_name, "insufficient data")
+                    except Exception as exc:
+                        manifest.record_failed(art_name, str(exc))
+                        print(f"  Failed {art_name}: {exc}")
         else:
             print("\n  Executive charts module not available — skipping")
         print("\n" + "=" * 80)
