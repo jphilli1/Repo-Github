@@ -239,6 +239,11 @@ _reg("sparkline_normalized_wealth", ArtifactAvailability.BOTH, "table",
      "Sparkline summary (normalized metrics, Wealth Peers)")
 _reg("sparkline_normalized_allpeers", ArtifactAvailability.BOTH, "table",
      "Sparkline summary (normalized metrics, All Peers)")
+# Cumulative Growth: Target Loans vs CRE ACL
+_reg("cumul_growth_loans_vs_acl_wealth", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "Cumulative growth: Target Loans vs CRE ACL (MSPBNA vs Wealth Peers)")
+_reg("cumul_growth_loans_vs_acl_allpeers", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",
+     "Cumulative growth: Target Loans vs CRE ACL (MSPBNA vs All Peers)")
 
 # --- Corp Overlay Artifacts (separate workflow: corp_overlay_runner.py) ---
 _reg("loan_balance_by_product", ArtifactAvailability.FULL_LOCAL_ONLY, "chart",

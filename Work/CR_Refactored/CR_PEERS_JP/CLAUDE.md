@@ -179,6 +179,8 @@ report_generator.py
   - `{stem}_macro_corr_heatmap_lag1.html`
   - `{stem}_macro_overlay_credit_stress.png`
   - `{stem}_macro_overlay_rates_housing.png`
+  - `{stem}_cumul_growth_loans_vs_acl_wealth.png`
+  - `{stem}_cumul_growth_loans_vs_acl_allpeers.png`
 
 Where `{stem}` = `Bank_Performance_Dashboard_YYYYMMDD`
 
@@ -340,7 +342,7 @@ python report_generator.py
 
 All of these must be imported from `rendering_mode.py`. The `_ReportContext` dataclass in `report_generator.py` is a lightweight internal carrier and is NOT a duplicate of any rendering-mode type.
 
-### Executive Chart Artifacts (14 Artifacts)
+### Executive Chart Artifacts (16 Artifacts)
 
 Implemented in `executive_charts.py`, integrated into `report_generator.py` Phase 8.
 
@@ -359,6 +361,8 @@ Implemented in `executive_charts.py`, integrated into `report_generator.py` Phas
 | `sparkline_normalized_wealth` | `{stem}_sparkline_normalized_wealth.html` | BOTH | HTML |
 | `sparkline_normalized_allpeers` | `{stem}_sparkline_normalized_allpeers.html` | BOTH | HTML |
 | `growth_vs_deterioration_bookwide` | `{stem}_growth_vs_deterioration_bookwide.png` | FULL_LOCAL_ONLY | PNG |
+| `cumul_growth_loans_vs_acl_wealth` | `{stem}_cumul_growth_loans_vs_acl_wealth.png` | FULL_LOCAL_ONLY | PNG |
+| `cumul_growth_loans_vs_acl_allpeers` | `{stem}_cumul_growth_loans_vs_acl_allpeers.png` | FULL_LOCAL_ONLY | PNG |
 
 **Integration pattern:**
 - Heatmaps: 4 variants via `_heatmap_specs` loop — Standard/Normalized × Wealth Peers/All Peers. Each uses the appropriate composite CERT: Wealth = core_pb (90001/90004), All = all_peers (90003/90006). Title and column headers dynamically include peer group name.
@@ -391,6 +395,16 @@ Implemented in `executive_charts.py`, integrated into `report_generator.py` Phas
 - Uses the pre-computed growth column directly — does NOT compute growth inline. The data engine creates `Total_Loans_Growth_TTM` via the `growth_targets` dict (key `'Total_Loans'` → column `'LNLS'`) and exports it automatically via the `*_Growth_TTM` wildcard capture at snapshot construction.
 - Complementary to the existing CRE-focused `growth_vs_deterioration` chart.
 - Same visual style: quadrant scatter with median crosshair lines, MSPBNA diamond, Wealth Peers triangle, All Peers square.
+
+**Cumulative growth: Target Loans vs CRE ACL:**
+- 2 variants via `_cumul_specs` loop: MSPBNA vs Wealth Peers, MSPBNA vs All Peers
+- **Target Loans** = CRE Balance (`RIC_CRE_Cost`) + RESI Balance (`Wealth_Resi_Balance` / `RIC_Resi_Cost` / `LNRERES` fallback)
+- **Target ACL** = CRE ACL Balance (`RIC_CRE_ACL`)
+- Indexed to Q4 2015 (2015-12-31): cumulative % growth = `(Current - Base) / Base`
+- 4 lines per chart: MSPBNA Loans (solid gold), MSPBNA ACL (dashed gold), Peer Loans (solid peer color), Peer ACL (dashed peer color)
+- Endpoint CAGR annotations: `(Final / Base)^(1/years) - 1`, with horizontal dashed reference lines
+- Anti-overlap via `_nudge_cagr_labels()` (min_gap=3pp) ensures labels don't collide
+- Entity colors: MSPBNA=#F7A81B (gold), Wealth Peers=#7B2D8E (purple), All Peers=#5B9BD5 (blue)
 
 **Comparator fallback behavior:**
 - Both peer groups have data → nested bands (outer All Peers + inner Wealth Peers)
@@ -841,6 +855,33 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — Cumulative Growth Chart Family (Target Loans vs CRE ACL)
+
+**Objective**: Add a new chart family tracking cumulative growth of CRE+RESI balances against CRE ACL growth, indexed to zero at Q4 2015, with endpoint CAGR annotations.
+
+**2 new artifacts:**
+
+| Artifact | File | Mode | Type |
+|---|---|---|---|
+| `cumul_growth_loans_vs_acl_wealth` | `{stem}_cumul_growth_loans_vs_acl_wealth.png` | FULL_LOCAL_ONLY | PNG |
+| `cumul_growth_loans_vs_acl_allpeers` | `{stem}_cumul_growth_loans_vs_acl_allpeers.png` | FULL_LOCAL_ONLY | PNG |
+
+**Implementation:**
+
+1. **Data preparation** (`prepare_cumulative_growth_data()`): Computes cumulative % growth from Q4 2015 anchor for Target Loans (CRE + RESI balance) and Target ACL (CRE ACL). Also computes running CAGR at each quarter.
+
+2. **Chart output** (`plot_cumulative_growth_loans_vs_acl()`): 4 lines — MSPBNA Loans (solid gold), MSPBNA ACL (dashed gold), Peer Loans (solid peer color), Peer ACL (dashed peer color). Chart 1: MSPBNA vs Wealth Peers. Chart 2: MSPBNA vs All Peers.
+
+3. **CAGR annotations**: Endpoint labels with `(Final/Base)^(1/years) - 1`. Horizontal dashed reference lines match parent series color. Anti-overlap via `_nudge_cagr_labels()` ensures min 3pp gap between adjacent labels.
+
+4. **Helper functions in `executive_charts.py`**: `_find_col()` (column resolution), `prepare_cumulative_growth_data()`, `_nudge_cagr_labels()`, `plot_cumulative_growth_loans_vs_acl()`.
+
+5. **Integration**: 2 artifacts registered in `rendering_mode.py` (FULL_LOCAL_ONLY). Wired into `report_generator.py` Phase 8 via `_cumul_specs` loop using standard composite CERTs (90001 Wealth, 90003 All Peers).
+
+6. **Tests**: 12 new tests in `TestCumulativeGrowthChart`: artifact registration, mode availability, function existence, missing-cert returns None, zero growth at start date, anti-overlap prevention, import verification, Phase 8 wiring, color constants, start date constant.
+
+**Files changed:** `executive_charts.py`, `rendering_mode.py`, `report_generator.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-13 — Comprehensive Formatting, Bug-Fix, and Feature Expansion Sweep
 

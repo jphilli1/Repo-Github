@@ -866,3 +866,235 @@ def generate_sparkline_table(
         with open(save_path, "w", encoding="utf-8") as f:
             f.write(html)
     return html
+
+
+# =====================================================================
+# 4. CUMULATIVE GROWTH: TARGET LOANS vs TARGET ACL (matplotlib)
+# =====================================================================
+
+_CRE_BAL_COLS = ["RIC_CRE_Cost"]
+_RESI_BAL_COLS = ["Wealth_Resi_Balance", "RIC_Resi_Cost", "LNRERES"]
+_CRE_ACL_COLS = ["RIC_CRE_ACL"]
+_GROWTH_START_DATE = pd.Timestamp("2015-12-31")
+
+# Entity colors — mirror CHART_PALETTE in report_generator.py
+_COLOR_MSPBNA = "#F7A81B"
+_COLOR_WEALTH = "#7B2D8E"
+_COLOR_ALL_PEERS = "#5B9BD5"
+
+
+def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """Return the first column from *candidates* that exists in *df*."""
+    return next((c for c in candidates if c in df.columns), None)
+
+
+def prepare_cumulative_growth_data(
+    df: pd.DataFrame,
+    cert: int,
+    start_date: pd.Timestamp = _GROWTH_START_DATE,
+) -> Optional[pd.DataFrame]:
+    """Build cumulative % growth from *start_date* for Target Loans and ACL.
+
+    Target Loans = CRE Balance + RESI Balance
+    Target ACL   = CRE ACL Balance
+
+    Returns a DataFrame with columns:
+        REPDTE, target_loans_growth, target_acl_growth,
+        target_loans_cagr, target_acl_cagr
+    or None if required columns are missing.
+    """
+    ent = df[df["CERT"] == cert].copy()
+    if ent.empty:
+        return None
+
+    ent["REPDTE"] = pd.to_datetime(ent["REPDTE"])
+    ent = ent.sort_values("REPDTE")
+
+    # Resolve column names
+    cre_col = _find_col(ent, _CRE_BAL_COLS)
+    resi_col = _find_col(ent, _RESI_BAL_COLS)
+    acl_col = _find_col(ent, _CRE_ACL_COLS)
+
+    if cre_col is None or resi_col is None or acl_col is None:
+        return None
+
+    # Compute target balances
+    ent["_target_loans"] = ent[cre_col].fillna(0) + ent[resi_col].fillna(0)
+    ent["_target_acl"] = ent[acl_col].fillna(0)
+
+    # Find anchor: closest date to start_date
+    date_diffs = (ent["REPDTE"] - start_date).abs()
+    anchor_idx = date_diffs.idxmin()
+    anchor_loans = ent.loc[anchor_idx, "_target_loans"]
+    anchor_acl = ent.loc[anchor_idx, "_target_acl"]
+
+    if anchor_loans == 0 or anchor_acl == 0:
+        return None
+
+    # Filter to dates >= anchor
+    anchor_date = ent.loc[anchor_idx, "REPDTE"]
+    ent = ent[ent["REPDTE"] >= anchor_date].copy()
+
+    # Cumulative % growth: (Current - Base) / Base
+    ent["target_loans_growth"] = (ent["_target_loans"] - anchor_loans) / anchor_loans
+    ent["target_acl_growth"] = (ent["_target_acl"] - anchor_acl) / anchor_acl
+
+    # CAGR at each point: (Current / Base)^(1/years) - 1
+    ent["_years"] = (ent["REPDTE"] - anchor_date).dt.days / 365.25
+    ent["target_loans_cagr"] = np.where(
+        ent["_years"] > 0,
+        (ent["_target_loans"] / anchor_loans) ** (1.0 / ent["_years"]) - 1,
+        0.0,
+    )
+    ent["target_acl_cagr"] = np.where(
+        ent["_years"] > 0,
+        (ent["_target_acl"] / anchor_acl) ** (1.0 / ent["_years"]) - 1,
+        0.0,
+    )
+
+    return ent[["REPDTE", "target_loans_growth", "target_acl_growth",
+                "target_loans_cagr", "target_acl_cagr"]].reset_index(drop=True)
+
+
+def _nudge_cagr_labels(
+    positions: List[Tuple[float, str, str]],
+    min_gap: float = 0.03,
+) -> List[Tuple[float, str, str]]:
+    """Sort CAGR label positions by y-value and nudge to avoid overlap.
+
+    Each entry is (y_value, label_text, color).
+    Returns the list with y_values adjusted so adjacent labels are at
+    least *min_gap* apart.
+    """
+    if not positions:
+        return positions
+    # Sort by y
+    items = sorted(positions, key=lambda x: x[0])
+    adjusted = [items[0]]
+    for i in range(1, len(items)):
+        y, txt, col = items[i]
+        prev_y = adjusted[-1][0]
+        if y - prev_y < min_gap:
+            y = prev_y + min_gap
+        adjusted.append((y, txt, col))
+    return adjusted
+
+
+def plot_cumulative_growth_loans_vs_acl(
+    df: pd.DataFrame,
+    subject_cert: int,
+    peer_cert: int,
+    peer_label: str = "Peers",
+    save_path: Optional[str] = None,
+) -> Optional[str]:
+    """Plot cumulative % growth of Target Loans vs Target ACL.
+
+    Produces 4 lines:
+      - MSPBNA Loans (solid, gold)
+      - MSPBNA ACL (dashed, gold)
+      - Peer Loans (solid, peer color)
+      - Peer ACL (dashed, peer color)
+
+    CAGR annotations at the endpoint with anti-overlap.
+    Returns the save_path on success, None on failure.
+    """
+    _ensure_mpl()
+    if plt is None:
+        return None
+
+    from matplotlib.lines import Line2D
+
+    subj_data = prepare_cumulative_growth_data(df, subject_cert)
+    peer_data = prepare_cumulative_growth_data(df, peer_cert)
+
+    if subj_data is None or peer_data is None:
+        return None
+
+    # Determine peer color
+    peer_color = _COLOR_WEALTH if "Wealth" in peer_label else _COLOR_ALL_PEERS
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # --- Plot lines ---
+    ax.plot(subj_data["REPDTE"], subj_data["target_loans_growth"],
+            color=_COLOR_MSPBNA, linewidth=2, linestyle="-",
+            label="MSPBNA Loans")
+    ax.plot(subj_data["REPDTE"], subj_data["target_acl_growth"],
+            color=_COLOR_MSPBNA, linewidth=2, linestyle="--",
+            label="MSPBNA ACL")
+    ax.plot(peer_data["REPDTE"], peer_data["target_loans_growth"],
+            color=peer_color, linewidth=2, linestyle="-",
+            label=f"{peer_label} Loans")
+    ax.plot(peer_data["REPDTE"], peer_data["target_acl_growth"],
+            color=peer_color, linewidth=2, linestyle="--",
+            label=f"{peer_label} ACL")
+
+    # --- CAGR annotations at endpoints ---
+    cagr_labels = []
+    for data, color, entity in [
+        (subj_data, _COLOR_MSPBNA, "MSPBNA"),
+        (peer_data, peer_color, peer_label),
+    ]:
+        last = data.iloc[-1]
+        for metric, style_label in [
+            ("target_loans_cagr", "Loans"),
+            ("target_acl_cagr", "ACL"),
+        ]:
+            cagr_val = last[metric]
+            growth_col = metric.replace("_cagr", "_growth")
+            y_pos = last[growth_col]
+            label_txt = f"{entity} {style_label} CAGR: {cagr_val:.1%}"
+            cagr_labels.append((y_pos, label_txt, color))
+
+    # Anti-overlap nudge
+    cagr_labels = _nudge_cagr_labels(cagr_labels)
+
+    # Draw CAGR reference lines and labels
+    last_date = max(subj_data["REPDTE"].iloc[-1], peer_data["REPDTE"].iloc[-1])
+    for y_pos, label_txt, color in cagr_labels:
+        ax.axhline(y=y_pos, color=color, linewidth=0.7, linestyle=":",
+                    alpha=0.5, zorder=1)
+        ax.annotate(
+            label_txt,
+            xy=(last_date, y_pos),
+            xytext=(10, 0),
+            textcoords="offset points",
+            fontsize=8,
+            color=color,
+            va="center",
+            fontweight="bold",
+        )
+
+    # --- Formatting ---
+    ax.set_title(
+        f"Cumulative Growth: Target Loans vs CRE ACL — MSPBNA vs {peer_label}\n"
+        f"(Indexed to Q4 2015 = 0%)",
+        fontsize=12, fontweight="bold", color="#2B2B2B",
+    )
+    ax.set_ylabel("Cumulative % Growth from Q4 2015", fontsize=10)
+    ax.set_xlabel("")
+    ax.yaxis.set_major_formatter(
+        plt.FuncFormatter(lambda v, _: f"{v:.0%}")
+    )
+    ax.axhline(y=0, color="#888888", linewidth=0.8, linestyle="-", alpha=0.4)
+    ax.grid(axis="y", alpha=0.3)
+    ax.tick_params(axis="x", rotation=45)
+
+    # Legend
+    handles = [
+        Line2D([0], [0], color=_COLOR_MSPBNA, lw=2, ls="-", label="MSPBNA Loans"),
+        Line2D([0], [0], color=_COLOR_MSPBNA, lw=2, ls="--", label="MSPBNA ACL"),
+        Line2D([0], [0], color=peer_color, lw=2, ls="-", label=f"{peer_label} Loans"),
+        Line2D([0], [0], color=peer_color, lw=2, ls="--", label=f"{peer_label} ACL"),
+    ]
+    ax.legend(handles=handles, loc="upper left", fontsize=9, framealpha=0.9)
+
+    fig.subplots_adjust(right=0.82)
+    fig.tight_layout(rect=[0, 0, 0.82, 1])
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+    return save_path
