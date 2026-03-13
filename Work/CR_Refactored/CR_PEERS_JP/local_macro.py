@@ -781,6 +781,384 @@ def _empty_macro_df(value_col: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+#  Transformation Policy Registry
+# ---------------------------------------------------------------------------
+#  Each local macro series has a declared policy controlling how it is
+#  aggregated to quarterly frequency and what derived metrics are valid.
+#  This replaces the one-size-fits-all "last observation of quarter" pattern.
+
+@dataclass
+class TransformPolicy:
+    """Metadata-driven transformation policy for a local macro series."""
+    series_family: str          # e.g. "gdp", "unemployment", "population", "hpi"
+    transform_type: str         # "level", "rate", "flow", "index"
+    aggregation_rule: str       # "mean", "last", "sum", "point_in_time"
+    date_basis: str             # "period_end", "period_start", "midpoint"
+    quarter_offset: int = 0     # 0 = standard, positive = forward lag
+    units: str = ""             # "dollars", "pct", "pp", "persons", "index"
+    yoy_lag_quarters: int = 4   # Quarters for YoY computation
+    per_capita_eligible: bool = False  # Can be divided by population
+    notes: str = ""
+
+
+# Canonical transformation policies — one per series family.
+TRANSFORM_POLICIES: Dict[str, TransformPolicy] = {
+    "gdp": TransformPolicy(
+        series_family="gdp",
+        transform_type="level",
+        aggregation_rule="sum",           # GDP is a flow — sum within quarter
+        date_basis="period_end",
+        units="dollars",
+        per_capita_eligible=True,         # GDP / population is valid
+        notes="BEA annual GDP; aggregate by sum for sub-annual, "
+              "normalize to per-capita BEFORE computing growth",
+    ),
+    "unemployment": TransformPolicy(
+        series_family="unemployment",
+        transform_type="rate",
+        aggregation_rule="mean",          # Average monthly rates in quarter
+        date_basis="period_end",
+        units="pct",
+        per_capita_eligible=False,        # Rate — dividing by pop is meaningless
+        notes="BLS LAUS monthly rate; quarterly = mean of 3 months; "
+              "changes are in pp (percentage points), not pct",
+    ),
+    "population": TransformPolicy(
+        series_family="population",
+        transform_type="level",
+        aggregation_rule="point_in_time", # Stock variable — use latest estimate
+        date_basis="midpoint",            # Census mid-year estimate
+        units="persons",
+        per_capita_eligible=False,        # Population / population is 1
+        notes="Census PEP annual; point-in-time stock, not a flow",
+    ),
+    "hpi": TransformPolicy(
+        series_family="hpi",
+        transform_type="index",
+        aggregation_rule="last",          # End-of-quarter index value
+        date_basis="period_end",
+        units="index",
+        per_capita_eligible=False,        # Index / population is meaningless
+        notes="Case-Shiller or FHFA HPI; last value per quarter; "
+              "YoY from index levels, never divide index by population",
+    ),
+}
+
+
+def get_transform_policy(series_family: str) -> TransformPolicy:
+    """Look up the transformation policy for a series family.
+
+    Raises KeyError if the family is not registered.
+    """
+    return TRANSFORM_POLICIES[series_family]
+
+
+# ---------------------------------------------------------------------------
+#  Math Helpers — Per-Capita Normalization & YoY
+# ---------------------------------------------------------------------------
+#  HARD RULES (enforced by these functions):
+#    1. Never divide a growth rate by population.
+#    2. Normalize levels first, then compute growth from the normalized level.
+#    3. GDP growth stays in %.
+#    4. Unemployment changes are in pp (percentage points), not %.
+
+def validate_population(population: pd.Series) -> pd.Series:
+    """Validate population series: zero/negative values hard-fail.
+
+    Returns the validated series unchanged. Raises ValueError on bad data.
+    NaN values are preserved (they propagate as NaN in downstream math).
+    """
+    non_null = population.dropna()
+    if (non_null <= 0).any():
+        bad = non_null[non_null <= 0]
+        raise ValueError(
+            f"Population contains zero or negative values at indices: "
+            f"{bad.index.tolist()[:5]}. This is invalid — cannot normalize."
+        )
+    return population
+
+
+def compute_real_gdp_per_capita(
+    gdp_level: pd.Series,
+    population: pd.Series,
+) -> pd.Series:
+    """Compute real GDP per capita from level data.
+
+    Formula: real_gdp_per_capita = real_gdp_level / population
+
+    Both inputs must be aligned (same index). Population is validated:
+    zero/negative → ValueError, NaN → propagates as NaN (flagged, not zero-filled).
+    """
+    validate_population(population)
+    # NaN population → NaN result (not zero-fill)
+    return gdp_level / population
+
+
+def compute_real_gdp_per_100k(
+    gdp_level: pd.Series,
+    population: pd.Series,
+) -> pd.Series:
+    """Compute real GDP per 100,000 population from level data.
+
+    Formula: real_gdp_per_100k = real_gdp_level / population * 100_000
+
+    Equivalent to compute_real_gdp_per_capita() * 100_000.
+    """
+    return compute_real_gdp_per_capita(gdp_level, population) * 100_000
+
+
+def compute_yoy_from_level(
+    series: pd.Series,
+    lag_periods: int = 4,
+) -> pd.Series:
+    """Compute year-over-year percent change from a LEVEL series.
+
+    Formula: yoy_pct = series / lag(series, lag_periods) - 1
+
+    Uses lag_periods=4 for quarterly data (4 quarters = 1 year).
+    Returns result in decimal form (0.05 = 5%). Multiply by 100 for %.
+
+    This function must ONLY be applied to levels (GDP, GDP-per-capita,
+    population), NEVER to rates or growth rates.
+    """
+    lagged = series.shift(lag_periods)
+    return series / lagged - 1
+
+
+def compute_unemployment_change_pp(
+    unemployment_rate: pd.Series,
+    lag_periods: int = 4,
+) -> pd.Series:
+    """Compute unemployment rate change in percentage points (pp).
+
+    Formula: change_pp = current_rate - lagged_rate
+
+    NOT a percent change — this is the arithmetic difference.
+    A move from 4.0% to 4.5% is +0.5 pp, NOT +12.5%.
+    """
+    return unemployment_rate - unemployment_rate.shift(lag_periods)
+
+
+def aggregate_to_quarter(
+    series: pd.Series,
+    aggregation_rule: str,
+) -> pd.Series:
+    """Aggregate a time series to quarterly frequency using the declared rule.
+
+    Aggregation rules:
+      - "mean":          Average of observations within the quarter
+                         (correct for rates like unemployment)
+      - "last":          Last observation of the quarter
+                         (correct for indices like HPI)
+      - "sum":           Sum of observations within the quarter
+                         (correct for flows like GDP components)
+      - "point_in_time": Same as "last" — use the latest available estimate
+                         (correct for stock variables like population)
+
+    Input series must have a DatetimeIndex. Output is quarter-end indexed.
+    """
+    if series.empty:
+        return series
+    if not isinstance(series.index, pd.DatetimeIndex):
+        raise TypeError(
+            f"aggregate_to_quarter requires DatetimeIndex, got {type(series.index)}"
+        )
+
+    if aggregation_rule == "mean":
+        return series.resample("QE").mean().dropna()
+    elif aggregation_rule == "sum":
+        return series.resample("QE").sum().dropna()
+    elif aggregation_rule in ("last", "point_in_time"):
+        return series.resample("QE").last().dropna()
+    else:
+        raise ValueError(f"Unknown aggregation_rule: {aggregation_rule!r}")
+
+
+# ---------------------------------------------------------------------------
+#  Derived Metrics Builder
+# ---------------------------------------------------------------------------
+def build_derived_metrics(
+    gdp_df: pd.DataFrame,
+    unemp_df: pd.DataFrame,
+    pop_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build derived per-capita metrics and aligned quarterly transforms.
+
+    Applies the transformation policy registry to produce:
+      - real_gdp_per_capita, real_gdp_per_100k
+      - real_gdp_per_100k_yoy_pct (YoY from normalized level, NOT rate/pop)
+      - unemployment_rate_quarterly (mean of monthly rates)
+      - unemployment_change_pp (arithmetic difference, NOT percent change)
+
+    Returns a DataFrame with cbsa_code, date, and derived metric columns.
+    Empty inputs → empty output (no synthetic data).
+    """
+    if gdp_df.empty and unemp_df.empty:
+        return pd.DataFrame(columns=[
+            "cbsa_code", "date", "metric_name", "value", "units",
+            "transform_type", "aggregation_rule",
+        ])
+
+    derived_rows: List[Dict[str, Any]] = []
+    load_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # --- GDP per-capita normalization ---
+    gdp_policy = TRANSFORM_POLICIES["gdp"]
+    pop_policy = TRANSFORM_POLICIES["population"]
+
+    if not gdp_df.empty and not pop_df.empty:
+        # Join GDP and population by cbsa_code
+        # Population may have fewer years — forward-fill within each CBSA
+        for cbsa in gdp_df["cbsa_code"].unique():
+            gdp_slice = gdp_df[gdp_df["cbsa_code"] == cbsa].copy()
+            pop_slice = pop_df[pop_df["cbsa_code"] == cbsa].copy()
+            if pop_slice.empty:
+                # Missing population → flagged NaN, not zero-fill
+                for _, row in gdp_slice.iterrows():
+                    derived_rows.append({
+                        "cbsa_code": cbsa,
+                        "date": row.get("date", ""),
+                        "metric_name": "real_gdp_per_capita",
+                        "value": np.nan,
+                        "units": "dollars_per_person",
+                        "transform_type": gdp_policy.transform_type,
+                        "aggregation_rule": gdp_policy.aggregation_rule,
+                        "population_flag": "missing",
+                        "load_timestamp": load_ts,
+                    })
+                    derived_rows.append({
+                        "cbsa_code": cbsa,
+                        "date": row.get("date", ""),
+                        "metric_name": "real_gdp_per_100k",
+                        "value": np.nan,
+                        "units": "dollars_per_100k",
+                        "transform_type": gdp_policy.transform_type,
+                        "aggregation_rule": gdp_policy.aggregation_rule,
+                        "population_flag": "missing",
+                        "load_timestamp": load_ts,
+                    })
+                continue
+
+            # Build aligned series for per-capita computation
+            gdp_vals = pd.Series(
+                gdp_slice["gdp_value"].values if "gdp_value" in gdp_slice.columns
+                else gdp_slice["value"].values,
+                index=range(len(gdp_slice)),
+                dtype=float,
+            )
+            # Use the latest available population for each GDP year
+            # (population is annual stock — forward-fill for missing years)
+            latest_pop = pop_slice["population"].values[-1] if "population" in pop_slice.columns else pop_slice["value"].values[-1]
+
+            try:
+                pop_series = pd.Series(
+                    [float(latest_pop)] * len(gdp_slice), dtype=float
+                )
+                validate_population(pop_series)
+                per_cap = compute_real_gdp_per_capita(gdp_vals, pop_series)
+                per_100k = compute_real_gdp_per_100k(gdp_vals, pop_series)
+            except ValueError as e:
+                logging.warning(f"[local_macro] Population validation failed for {cbsa}: {e}")
+                per_cap = pd.Series([np.nan] * len(gdp_slice))
+                per_100k = pd.Series([np.nan] * len(gdp_slice))
+
+            dates = gdp_slice["date"].tolist()
+            for i, dt in enumerate(dates):
+                derived_rows.append({
+                    "cbsa_code": cbsa,
+                    "date": dt,
+                    "metric_name": "real_gdp_per_capita",
+                    "value": per_cap.iloc[i] if i < len(per_cap) else np.nan,
+                    "units": "dollars_per_person",
+                    "transform_type": gdp_policy.transform_type,
+                    "aggregation_rule": gdp_policy.aggregation_rule,
+                    "population_flag": "ok",
+                    "load_timestamp": load_ts,
+                })
+                derived_rows.append({
+                    "cbsa_code": cbsa,
+                    "date": dt,
+                    "metric_name": "real_gdp_per_100k",
+                    "value": per_100k.iloc[i] if i < len(per_100k) else np.nan,
+                    "units": "dollars_per_100k",
+                    "transform_type": gdp_policy.transform_type,
+                    "aggregation_rule": gdp_policy.aggregation_rule,
+                    "population_flag": "ok",
+                    "load_timestamp": load_ts,
+                })
+
+            # YoY from normalized level (NOT from raw growth rate)
+            if len(per_100k) >= 2:
+                yoy = compute_yoy_from_level(per_100k, lag_periods=1)
+                # lag_periods=1 because BEA GDP is annual; each row is 1 year apart
+                for i, dt in enumerate(dates):
+                    yoy_val = yoy.iloc[i] if i < len(yoy) else np.nan
+                    derived_rows.append({
+                        "cbsa_code": cbsa,
+                        "date": dt,
+                        "metric_name": "real_gdp_per_100k_yoy_pct",
+                        "value": yoy_val * 100 if pd.notna(yoy_val) else np.nan,
+                        "units": "pct",
+                        "transform_type": gdp_policy.transform_type,
+                        "aggregation_rule": gdp_policy.aggregation_rule,
+                        "population_flag": "ok",
+                        "load_timestamp": load_ts,
+                    })
+
+    # --- Unemployment: quarterly mean and pp change ---
+    unemp_policy = TRANSFORM_POLICIES["unemployment"]
+    if not unemp_df.empty:
+        rate_col = "unemployment_rate" if "unemployment_rate" in unemp_df.columns else "value"
+        for cbsa in unemp_df["cbsa_code"].unique():
+            u_slice = unemp_df[unemp_df["cbsa_code"] == cbsa].copy()
+            u_slice["_date"] = pd.to_datetime(u_slice["date"], errors="coerce")
+            u_slice = u_slice.dropna(subset=["_date"]).sort_values("_date")
+            if u_slice.empty:
+                continue
+
+            rate_series = pd.Series(
+                u_slice[rate_col].values, index=u_slice["_date"], dtype=float
+            )
+
+            # Quarterly aggregation: mean of monthly rates (per policy)
+            q_rate = aggregate_to_quarter(rate_series, unemp_policy.aggregation_rule)
+
+            for dt, val in q_rate.items():
+                derived_rows.append({
+                    "cbsa_code": cbsa,
+                    "date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt),
+                    "metric_name": "unemployment_rate_quarterly",
+                    "value": val,
+                    "units": "pct",
+                    "transform_type": unemp_policy.transform_type,
+                    "aggregation_rule": unemp_policy.aggregation_rule,
+                    "load_timestamp": load_ts,
+                })
+
+            # Unemployment change in pp (lag 4 quarters = 1 year)
+            pp_change = compute_unemployment_change_pp(q_rate, lag_periods=4)
+            for dt, val in pp_change.items():
+                if pd.notna(val):
+                    derived_rows.append({
+                        "cbsa_code": cbsa,
+                        "date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt),
+                        "metric_name": "unemployment_change_pp",
+                        "value": val,
+                        "units": "pp",
+                        "transform_type": "derived",
+                        "aggregation_rule": unemp_policy.aggregation_rule,
+                        "load_timestamp": load_ts,
+                    })
+
+    if derived_rows:
+        return pd.DataFrame(derived_rows)
+    return pd.DataFrame(columns=[
+        "cbsa_code", "date", "metric_name", "value", "units",
+        "transform_type", "aggregation_rule",
+    ])
+
+
+# ---------------------------------------------------------------------------
 #  Orchestrator — run full local macro pipeline
 # ---------------------------------------------------------------------------
 def run_local_macro_pipeline(
@@ -855,21 +1233,35 @@ def run_local_macro_pipeline(
             "data_vintage", "load_timestamp",
         ])
 
-    # Build mapped output (join raw to spine for geography context)
-    if not raw_df.empty and not spine_df.empty:
-        mapped_df = raw_df.merge(
+    # Build derived per-capita metrics and quarterly transforms
+    logging.info("[local_macro] Computing derived metrics...")
+    derived_df = build_derived_metrics(gdp_df, unemp_df, pop_df)
+
+    # Build mapped output (join raw + derived to spine for geography context)
+    combined_raw = raw_df
+    if not derived_df.empty:
+        # Append derived metrics to raw (they have provenance metadata too)
+        raw_parts_derived = []
+        if not raw_df.empty:
+            raw_parts_derived.append(raw_df)
+        raw_parts_derived.append(derived_df)
+        combined_raw = pd.concat(raw_parts_derived, ignore_index=True)
+
+    if not combined_raw.empty and not spine_df.empty:
+        mapped_df = combined_raw.merge(
             spine_df.drop_duplicates(subset=["cbsa_code"]),
             on="cbsa_code",
             how="left",
         )
     else:
-        mapped_df = raw_df.copy()
+        mapped_df = combined_raw.copy()
         for col in SPINE_COLUMNS:
             if col not in mapped_df.columns:
                 mapped_df[col] = None
 
     result = {
         "Local_Macro_Raw": raw_df,
+        "Local_Macro_Derived": derived_df,
         "Local_Macro_Mapped": mapped_df,
         "MSA_Crosswalk_Audit": audit_df,
     }

@@ -6026,6 +6026,241 @@ class TestLocalMacroGeographySpine(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Local Macro Math & Quarterly Alignment (Prompt 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestLocalMacroMathAndAlignment(unittest.TestCase):
+    """Tests for per-capita normalization, YoY math, quarterly alignment,
+    and the transformation policy registry in local_macro.py."""
+
+    # --- Per-capita identity: constant pop ⇒ GDP YoY == GDP-per-capita YoY ---
+    def test_constant_pop_gdp_yoy_equals_per_capita_yoy(self):
+        """With constant population, GDP YoY must equal GDP-per-capita YoY."""
+        from local_macro import (compute_real_gdp_per_capita,
+                                 compute_yoy_from_level)
+        gdp = pd.Series([100.0, 110.0, 121.0, 133.1, 146.41])
+        pop = pd.Series([1000.0, 1000.0, 1000.0, 1000.0, 1000.0])
+        per_cap = compute_real_gdp_per_capita(gdp, pop)
+        gdp_yoy = compute_yoy_from_level(gdp, lag_periods=1)
+        cap_yoy = compute_yoy_from_level(per_cap, lag_periods=1)
+        # They must be identical (constant pop cancels)
+        for i in range(1, len(gdp)):
+            self.assertAlmostEqual(gdp_yoy.iloc[i], cap_yoy.iloc[i], places=10,
+                                   msg=f"Period {i}: GDP YoY != per-capita YoY with constant pop")
+
+    # --- Flat GDP + rising pop ⇒ per-capita YoY declines ---
+    def test_flat_gdp_rising_pop_per_capita_declines(self):
+        """Flat GDP with rising population → GDP-per-capita YoY must be negative."""
+        from local_macro import (compute_real_gdp_per_capita,
+                                 compute_yoy_from_level)
+        gdp = pd.Series([1000.0, 1000.0, 1000.0, 1000.0])
+        pop = pd.Series([100.0, 105.0, 110.25, 115.76])  # 5% annual pop growth
+        per_cap = compute_real_gdp_per_capita(gdp, pop)
+        yoy = compute_yoy_from_level(per_cap, lag_periods=1)
+        # All YoY values after the first must be negative
+        for i in range(1, len(yoy)):
+            self.assertLess(yoy.iloc[i], 0,
+                            f"Period {i}: per-capita YoY should be negative with flat GDP + rising pop")
+
+    # --- Per-100k == per-capita * 100,000 ---
+    def test_per_100k_equals_per_capita_times_100000(self):
+        """real_gdp_per_100k must equal real_gdp_per_capita * 100,000."""
+        from local_macro import (compute_real_gdp_per_capita,
+                                 compute_real_gdp_per_100k)
+        gdp = pd.Series([5_000_000_000.0, 5_500_000_000.0])  # $5B, $5.5B
+        pop = pd.Series([2_000_000.0, 2_100_000.0])
+        per_cap = compute_real_gdp_per_capita(gdp, pop)
+        per_100k = compute_real_gdp_per_100k(gdp, pop)
+        for i in range(len(gdp)):
+            self.assertAlmostEqual(per_100k.iloc[i], per_cap.iloc[i] * 100_000,
+                                   places=5,
+                                   msg=f"per_100k != per_capita * 100000 at index {i}")
+
+    # --- Unemployment change is pp, not pct ---
+    def test_unemployment_change_is_pp_not_pct(self):
+        """Unemployment change must be in percentage points (arithmetic diff)."""
+        from local_macro import compute_unemployment_change_pp
+        # Rate goes from 4.0% to 4.5%: change should be +0.5 pp, NOT +12.5%
+        rates = pd.Series([4.0, 4.2, 4.4, 4.5, 4.5])
+        change = compute_unemployment_change_pp(rates, lag_periods=1)
+        # Period 1: 4.2 - 4.0 = 0.2 pp
+        self.assertAlmostEqual(change.iloc[1], 0.2, places=10)
+        # Period 3: 4.5 - 4.4 = 0.1 pp
+        self.assertAlmostEqual(change.iloc[3], 0.1, places=10)
+        # Verify it is NOT percent: 4.5/4.0 - 1 = 0.125 (12.5% — this would be wrong)
+        self.assertNotAlmostEqual(change.iloc[4], (4.5 / 4.0 - 1), places=5,
+                                  msg="Unemployment change must be pp, not pct change")
+
+    # --- Zero population hard-fails ---
+    def test_zero_population_hard_fails(self):
+        """Zero population must raise ValueError, not return inf."""
+        from local_macro import validate_population
+        pop = pd.Series([1000.0, 0.0, 2000.0])
+        with self.assertRaises(ValueError):
+            validate_population(pop)
+
+    # --- Negative population hard-fails ---
+    def test_negative_population_hard_fails(self):
+        """Negative population must raise ValueError."""
+        from local_macro import validate_population
+        pop = pd.Series([1000.0, -500.0, 2000.0])
+        with self.assertRaises(ValueError):
+            validate_population(pop)
+
+    # --- Missing population yields NaN, not zero-fill ---
+    def test_missing_population_yields_nan_not_zero(self):
+        """NaN population must propagate as NaN in per-capita, not zero-fill."""
+        from local_macro import compute_real_gdp_per_capita
+        gdp = pd.Series([1000.0, 2000.0, 3000.0])
+        pop = pd.Series([100.0, np.nan, 300.0])
+        result = compute_real_gdp_per_capita(gdp, pop)
+        self.assertAlmostEqual(result.iloc[0], 10.0, places=5)
+        self.assertTrue(pd.isna(result.iloc[1]),
+                        "NaN population must yield NaN, not zero-fill")
+        self.assertAlmostEqual(result.iloc[2], 10.0, places=5)
+
+    # --- Quarterly YoY uses lag 4, not lag 1 ---
+    def test_quarterly_yoy_uses_lag_4(self):
+        """compute_yoy_from_level with lag_periods=4 compares to 4 periods back."""
+        from local_macro import compute_yoy_from_level
+        # Quarterly: Q1=100, Q2=102, Q3=104, Q4=106, Q5=110 (10% YoY from Q1)
+        levels = pd.Series([100.0, 102.0, 104.0, 106.0, 110.0])
+        yoy = compute_yoy_from_level(levels, lag_periods=4)
+        self.assertTrue(pd.isna(yoy.iloc[0]))
+        self.assertTrue(pd.isna(yoy.iloc[1]))
+        self.assertTrue(pd.isna(yoy.iloc[2]))
+        self.assertTrue(pd.isna(yoy.iloc[3]))
+        # Q5 vs Q1: 110/100 - 1 = 0.10 (10%)
+        self.assertAlmostEqual(yoy.iloc[4], 0.10, places=10)
+
+    # --- Aggregation rules differ by series family ---
+    def test_aggregation_rules_differ_by_family(self):
+        """Each series family must have its own aggregation rule in the registry."""
+        from local_macro import TRANSFORM_POLICIES
+        rules = {k: v.aggregation_rule for k, v in TRANSFORM_POLICIES.items()}
+        # Unemployment = mean (average monthly rates), GDP = sum (flow),
+        # Population = point_in_time (stock), HPI = last (end-of-period index)
+        self.assertEqual(rules["unemployment"], "mean")
+        self.assertEqual(rules["gdp"], "sum")
+        self.assertEqual(rules["population"], "point_in_time")
+        self.assertEqual(rules["hpi"], "last")
+
+    # --- Transformation policy registry exists with required fields ---
+    def test_transform_policy_registry_has_required_fields(self):
+        """TransformPolicy must have all metadata fields per spec."""
+        from local_macro import TransformPolicy, TRANSFORM_POLICIES
+        required_fields = {"series_family", "transform_type", "aggregation_rule",
+                           "date_basis", "quarter_offset", "units"}
+        for family, policy in TRANSFORM_POLICIES.items():
+            for field in required_fields:
+                self.assertTrue(hasattr(policy, field),
+                                f"Policy '{family}' missing field '{field}'")
+
+    # --- aggregate_to_quarter: mean for unemployment ---
+    def test_aggregate_to_quarter_mean(self):
+        """Quarterly aggregation with 'mean' must average monthly values."""
+        from local_macro import aggregate_to_quarter
+        dates = pd.date_range("2024-01-01", periods=6, freq="MS")
+        vals = pd.Series([3.0, 3.2, 3.4, 3.6, 3.8, 4.0], index=dates)
+        q = aggregate_to_quarter(vals, "mean")
+        # Q1: mean(3.0, 3.2, 3.4) = 3.2; Q2: mean(3.6, 3.8, 4.0) = 3.8
+        self.assertEqual(len(q), 2)
+        self.assertAlmostEqual(q.iloc[0], 3.2, places=5)
+        self.assertAlmostEqual(q.iloc[1], 3.8, places=5)
+
+    # --- aggregate_to_quarter: last for HPI ---
+    def test_aggregate_to_quarter_last(self):
+        """Quarterly aggregation with 'last' must take end-of-quarter value."""
+        from local_macro import aggregate_to_quarter
+        dates = pd.date_range("2024-01-01", periods=6, freq="MS")
+        vals = pd.Series([200.0, 201.0, 202.0, 203.0, 204.0, 205.0], index=dates)
+        q = aggregate_to_quarter(vals, "last")
+        # Q1: last = 202 (March), Q2: last = 205 (June)
+        self.assertEqual(len(q), 2)
+        self.assertAlmostEqual(q.iloc[0], 202.0, places=5)
+        self.assertAlmostEqual(q.iloc[1], 205.0, places=5)
+
+    # --- Never divide a growth rate by population ---
+    def test_gdp_policy_normalizes_levels_not_rates(self):
+        """GDP policy must be transform_type='level' (normalize before growth)."""
+        from local_macro import TRANSFORM_POLICIES
+        gdp = TRANSFORM_POLICIES["gdp"]
+        self.assertEqual(gdp.transform_type, "level",
+                         "GDP must be 'level' — normalize levels first, then compute growth")
+        self.assertTrue(gdp.per_capita_eligible,
+                        "GDP levels are per-capita eligible")
+
+    # --- Unemployment rate is not per-capita eligible ---
+    def test_unemployment_not_per_capita_eligible(self):
+        """Unemployment rate must NOT be marked as per_capita_eligible."""
+        from local_macro import TRANSFORM_POLICIES
+        unemp = TRANSFORM_POLICIES["unemployment"]
+        self.assertFalse(unemp.per_capita_eligible,
+                         "Dividing a rate by population is meaningless")
+
+    # --- HPI is not per-capita eligible ---
+    def test_hpi_not_per_capita_eligible(self):
+        """HPI index must NOT be per-capita eligible."""
+        from local_macro import TRANSFORM_POLICIES
+        hpi = TRANSFORM_POLICIES["hpi"]
+        self.assertFalse(hpi.per_capita_eligible)
+
+    # --- Units are correctly declared ---
+    def test_units_declared_correctly(self):
+        """Each policy must have correct units declared."""
+        from local_macro import TRANSFORM_POLICIES
+        self.assertEqual(TRANSFORM_POLICIES["gdp"].units, "dollars")
+        self.assertEqual(TRANSFORM_POLICIES["unemployment"].units, "pct")
+        self.assertEqual(TRANSFORM_POLICIES["population"].units, "persons")
+        self.assertEqual(TRANSFORM_POLICIES["hpi"].units, "index")
+
+    # --- build_derived_metrics produces expected metrics ---
+    def test_build_derived_metrics_produces_per_capita(self):
+        """build_derived_metrics must produce real_gdp_per_capita rows."""
+        from local_macro import build_derived_metrics
+        gdp_df = pd.DataFrame({
+            "cbsa_code": ["35620", "35620"],
+            "date": ["2022-01-01", "2023-01-01"],
+            "gdp_value": [800_000_000_000.0, 840_000_000_000.0],
+            "source_dataset": ["BEA", "BEA"],
+            "source_series_id": ["X", "X"],
+            "source_frequency": ["annual", "annual"],
+            "data_vintage": ["", ""],
+            "load_timestamp": ["", ""],
+        })
+        pop_df = pd.DataFrame({
+            "cbsa_code": ["35620"],
+            "date": ["2023-07-01"],
+            "population": [20_000_000],
+            "source_dataset": ["Census"],
+            "source_series_id": ["X"],
+            "source_frequency": ["annual"],
+            "data_vintage": [""],
+            "load_timestamp": [""],
+        })
+        unemp_df = pd.DataFrame(columns=["cbsa_code", "date", "unemployment_rate"])
+        derived = build_derived_metrics(gdp_df, unemp_df, pop_df)
+        metric_names = derived["metric_name"].unique().tolist()
+        self.assertIn("real_gdp_per_capita", metric_names)
+        self.assertIn("real_gdp_per_100k", metric_names)
+        # Verify the math: 800B / 20M = 40,000 per capita
+        per_cap_rows = derived[derived["metric_name"] == "real_gdp_per_capita"]
+        self.assertAlmostEqual(per_cap_rows.iloc[0]["value"], 40_000.0, places=0)
+
+    # --- CLAUDE.md documents transformation policy ---
+    def test_claude_md_documents_transform_policy(self):
+        """CLAUDE.md must document the transformation policy and formulas."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("TransformPolicy", content)
+        self.assertIn("real_gdp_per_capita", content)
+        self.assertIn("aggregate_to_quarter", content)
+        self.assertIn("percentage points", content)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # HUD HTTP Failure Diagnostics & Hardening (Parts 1-9)
 # ═══════════════════════════════════════════════════════════════════════════
 

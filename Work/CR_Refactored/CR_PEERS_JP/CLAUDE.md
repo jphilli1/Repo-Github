@@ -867,6 +867,30 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-13 — Math Correctness & Quarterly Alignment (Prompt 2)
+
+**Objective:** Add mathematically correct per-capita/per-100k GDP normalization and metadata-driven quarterly transformation policy to the local macro pipeline.
+
+**Changes:**
+
+1. **Transformation policy registry** (`local_macro.py`) — Added `TransformPolicy` dataclass and `TRANSFORM_POLICIES` dict with per-family metadata: `transform_type`, `aggregation_rule`, `date_basis`, `quarter_offset`, `units`, `per_capita_eligible`. Four families registered: gdp (sum/level), unemployment (mean/rate), population (point_in_time/level), hpi (last/index).
+
+2. **Per-capita math helpers** (`local_macro.py`) — Six new functions:
+   - `validate_population()` — zero/negative hard-fails, NaN preserves
+   - `compute_real_gdp_per_capita()` — GDP level / population
+   - `compute_real_gdp_per_100k()` — per-capita × 100,000
+   - `compute_yoy_from_level()` — `series / lag(series) - 1` (levels only)
+   - `compute_unemployment_change_pp()` — arithmetic diff in pp (NOT pct change)
+   - `aggregate_to_quarter()` — dispatches to mean/last/sum/point_in_time per policy
+
+3. **Derived metrics builder** (`local_macro.py`) — `build_derived_metrics()` orchestrates per-CBSA: GDP per-capita, per-100k, per-100k YoY%; quarterly unemployment mean, unemployment change pp. Integrated into `run_local_macro_pipeline()` — new `Local_Macro_Derived` output sheet.
+
+4. **Regression tests** (`test_regression.py`) — `TestLocalMacroMathAndAlignment` class (18 tests): constant-pop identity, flat-GDP-rising-pop decline, per-100k equivalence, pp-not-pct, zero/negative pop fail, NaN pop propagation, lag-4 quarterly YoY, aggregation rules per family, policy field completeness, units correctness, derived metrics output, CLAUDE.md documentation check.
+
+5. **CLAUDE.md** — Updated Section 13 with transformation policy registry table, per-capita formulas, hard rules, identity checks, helper function reference.
+
+**Files changed:** `local_macro.py`, `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-13 — Canonical Geography Spine & Local Macro Pipeline
 
 **Objective:** Build a real local/state/MSA macro pipeline with canonical geography spine and explicit mapping audit trail, replacing the placeholder MSA macro panel path removed during architecture reconciliation.
@@ -2787,3 +2811,56 @@ lm_sheets = run_local_macro_pipeline(
 - `ImportError` → pipeline skipped silently (module not available)
 - Any other exception → logged as warning, non-fatal, dashboard produced without local macro sheets
 - Missing API keys → empty DataFrames returned, audit sheet still produced
+
+### Transformation Policy Registry
+
+Each local macro series has a declared `TransformPolicy` controlling quarterly aggregation and valid derived metrics. This replaces a one-size-fits-all "last observation of quarter" pattern.
+
+| Series Family | `transform_type` | `aggregation_rule` | `units` | `per_capita_eligible` |
+|---|---|---|---|---|
+| `gdp` | level | sum | dollars | Yes |
+| `unemployment` | rate | mean | pct | No |
+| `population` | level | point_in_time | persons | No |
+| `hpi` | index | last | index | No |
+
+**Aggregation rules (for `aggregate_to_quarter()`):**
+- `mean` — Average of observations within the quarter (correct for rates like unemployment)
+- `last` — Last observation of the quarter (correct for indices like HPI)
+- `sum` — Sum of observations within the quarter (correct for flows like GDP)
+- `point_in_time` — Same as `last`; use the latest available estimate (correct for stock variables like population)
+
+### Per-Capita Normalization Formulas
+
+**Hard rules:**
+1. **Never divide a growth rate by population.** Normalize levels first, then compute growth.
+2. GDP growth stays in **%**.
+3. Unemployment changes are in **percentage points (pp)**, not %. A move from 4.0% to 4.5% is +0.5 pp, NOT +12.5%.
+4. Zero or negative population → hard-fail (`ValueError`). Missing population → `NaN` (flagged, not zero-filled).
+
+**Formulas:**
+```
+real_gdp_per_capita      = real_gdp_level / population
+real_gdp_per_100k        = real_gdp_level / population × 100,000
+real_gdp_per_100k_yoy_pct = real_gdp_per_100k(t) / real_gdp_per_100k(t-4) - 1
+                            (lag 4 quarters for quarterly, lag 1 for annual)
+
+unemployment_rate_quarterly = mean(monthly rates in quarter)
+unemployment_change_pp      = unemployment_rate(t) - unemployment_rate(t-4)
+```
+
+**Identity checks (used in tests):**
+- Constant population ⇒ GDP YoY == GDP-per-capita YoY
+- Flat GDP + rising population ⇒ GDP-per-capita YoY < 0
+- `real_gdp_per_100k == real_gdp_per_capita × 100,000` (exact)
+
+### Helper Functions
+
+| Function | Purpose | Key Constraint |
+|---|---|---|
+| `compute_real_gdp_per_capita(gdp, pop)` | GDP level / population | Validates population > 0 |
+| `compute_real_gdp_per_100k(gdp, pop)` | Per-capita × 100,000 | Same validation |
+| `compute_yoy_from_level(series, lag)` | `series / lag(series) - 1` | Apply to LEVELS only, never rates |
+| `compute_unemployment_change_pp(rate, lag)` | `rate - lag(rate)` | Arithmetic diff (pp), not pct change |
+| `aggregate_to_quarter(series, rule)` | Resample to QE per declared rule | Requires DatetimeIndex |
+| `validate_population(pop)` | Rejects ≤0; preserves NaN | Raises ValueError on bad data |
+| `build_derived_metrics(gdp, unemp, pop)` | Orchestrates all derived computations | Empty inputs → empty output |
