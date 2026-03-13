@@ -110,7 +110,7 @@ HEATMAP_METRICS_NORMALIZED = [
     "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
     "Norm_SBL_Composition", "Norm_Wealth_Resi_Composition",
     "Norm_CRE_Investment_Composition",
-    "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+    "Norm_CRE_ACL_Share",
 ]
 
 
@@ -365,7 +365,7 @@ BULLET_METRICS_STANDARD_COVERAGE = [
 BULLET_METRICS_NORMALIZED = [
     "Norm_NCO_Rate", "Norm_Nonaccrual_Rate", "Norm_Delinquency_Rate",
     "Norm_ACL_Coverage", "Norm_Risk_Adj_Allowance_Coverage",
-    "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+    "Norm_CRE_ACL_Share",
 ]
 
 # Split normalized metrics into rates vs composition for separate charts
@@ -377,7 +377,7 @@ BULLET_METRICS_NORMALIZED_RATES = [
 BULLET_METRICS_NORMALIZED_COMPOSITION = [
     "Norm_SBL_Composition", "Norm_Wealth_Resi_Composition",
     "Norm_CRE_Investment_Composition",
-    "Norm_CRE_ACL_Share", "Norm_Resi_ACL_Share",
+    "Norm_CRE_ACL_Share",
 ]
 
 # Backward-compatible alias (points to standard list)
