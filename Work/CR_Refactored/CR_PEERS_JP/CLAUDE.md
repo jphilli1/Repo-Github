@@ -25,6 +25,7 @@ The two core scripts are:
 | `case_shiller_zip_mapper.py` | HUD USPS ZIP Crosswalk enrichment for Case-Shiller metros |
 | `corp_overlay.py` | Corp-safe overlay: loan-file ingestion, schema contracts, peer-vs-internal join, 4 artifacts |
 | `corp_overlay_runner.py` | Standalone CLI entrypoint for corp overlay workflow (not in report_generator.py) |
+| `run_pipeline.py` | Unified pipeline runner — runs Step 1 + Step 2 sequentially via subprocess |
 
 ---
 
@@ -44,6 +45,12 @@ python MSPBNA_CR_Normalized.py
 
 # Step 2 — Report Generation (produces charts, scatters, HTML tables)
 python report_generator.py
+
+# Or run both steps with the unified pipeline runner:
+python run_pipeline.py                    # Both steps, full_local mode
+python run_pipeline.py --mode corp_safe   # Both steps, corp_safe mode
+python run_pipeline.py --step 2           # Step 2 only (assumes Step 1 already ran)
+python run_pipeline.py --force            # Continue Step 2 even if Step 1 fails
 ```
 
 ### Required Environment Variables
@@ -858,6 +865,21 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — Final Production Fixes & Pipeline Runner
+
+**4-item change set (Prompt 6):**
+
+1. **Capital risk metric computation** (`MSPBNA_CR_Normalized.py`): Added `CRE_Concentration_Capital_Risk` and `CI_to_Capital_Risk` computation in the derived-metrics section before `return df_final.copy()`. Uses `safe_div(RIC_CRE_Cost / RBCT1J)` and `safe_div(LNCI / RBCT1J)` respectively, guarded by column-existence checks. These metrics had `MetricSpec` and `MetricSemantic` entries but the actual computation was missing, causing the `concentration_vs_capital` chart to fail.
+
+2. **CHART_COLORS unified with CHART_PALETTE** (`report_generator.py`): Replaced the legacy `CHART_COLORS` dict (which had divergent hex values for purple `#9C6FB6` and peer_cloud `#A8B8C8`) with a derived view that references `CHART_PALETTE` directly. Purple is now consistently `#7B2D8E` and peer_cloud is `#8FA8C8` everywhere.
+
+3. **Dead code removed** (`report_generator.py`): Deleted unreachable `return manifest` after the `try/except/finally` block in `generate_reports()`. The `try` and `except` blocks both have their own `return manifest`; the `finally` block always executes; the line after `finally` was dead code.
+
+4. **Pipeline runner** (`run_pipeline.py`): New unified CLI script that runs Step 1 (`MSPBNA_CR_Normalized.py`) and Step 2 (`report_generator.py`) sequentially via subprocess (not import, per CLAUDE.md Section 4 "IMPORT SAFETY"). Features: `--mode` (full_local/corp_safe), `--step` (1/2/both), `--force` (continue on Step 1 failure), `.env` auto-loading, combined timing summary.
+
+**Files changed:** `MSPBNA_CR_Normalized.py`, `report_generator.py`, `CLAUDE.md`
+**Files created:** `run_pipeline.py`
 
 ### 2026-03-13 — FRED Series Audit & Fetch Resilience
 

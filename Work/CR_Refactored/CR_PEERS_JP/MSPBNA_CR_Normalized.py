@@ -3665,6 +3665,16 @@ class BankMetricsProcessor:
         df_final['Total_Assets'] = df_final.get('ASSET', np.nan)
         df_final['Net_Charge_Off_Rate'] = df_final.get('TTM_NCO_Rate', np.nan)
 
+        # Capital concentration ratios (regulatory)
+        if 'RBCT1J' in df_final.columns:
+            t1_cap = pd.to_numeric(df_final['RBCT1J'], errors='coerce')
+            if 'RIC_CRE_Cost' in df_final.columns:
+                df_final['CRE_Concentration_Capital_Risk'] = safe_div(
+                    pd.to_numeric(df_final['RIC_CRE_Cost'], errors='coerce'), t1_cap)
+            if 'LNCI' in df_final.columns:
+                df_final['CI_to_Capital_Risk'] = safe_div(
+                    pd.to_numeric(df_final['LNCI'], errors='coerce'), t1_cap)
+
         return df_final.copy()
 
 

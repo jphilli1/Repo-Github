@@ -402,11 +402,11 @@ _MSBNA_CERT = int(os.getenv("MSBNA_CERT", "32992"))
 # reference these constants instead of defining inline hex strings.
 
 CHART_COLORS = {
-    "subject":       "#F7A81B",   # MSPBNA — gold
-    "wealth_peers":  "#9C6FB6",   # Wealth Peers (Core PB) — purple
-    "all_peers":     "#5B9BD5",   # All Peers composite — blue
-    "peer_cloud":    "#A8B8C8",   # Individual peer dots in scatters — muted blue-gray
-    "guide":         "#6B7B8D",   # Reference / guide lines — slate-gray
+    "subject":       CHART_PALETTE["mspbna"],        # MSPBNA — gold
+    "wealth_peers":  CHART_PALETTE["wealth_peers"],   # Wealth Peers (Core PB) — purple
+    "all_peers":     CHART_PALETTE["all_peers"],      # All Peers composite — blue
+    "peer_cloud":    CHART_PALETTE["peer_cloud"],     # Individual peer dots in scatters — muted blue-gray
+    "guide":         CHART_PALETTE["guide"],          # Reference / guide lines — slate-gray
 }
 
 # Convenience aliases keyed by CERT number (for chart functions that iterate entities)
@@ -3136,8 +3136,6 @@ def generate_reports(
     finally:
         plt.close("all")
         csv_log.shutdown()
-
-    return manifest
 
 
 def create_credit_deterioration_chart_ppt(
