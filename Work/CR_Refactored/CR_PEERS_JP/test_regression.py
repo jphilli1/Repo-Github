@@ -4888,7 +4888,14 @@ class TestDocumentationCoherence(unittest.TestCase):
     def test_heatmap_saves_to_file(self):
         import tempfile
         from executive_charts import generate_yoy_heatmap
-        df = self._make_df()
+        # Build minimal DataFrame with two quarters for YoY comparison
+        rows = []
+        for cert in [34221, 90003]:
+            for q in ["2024-06-30", "2025-06-30"]:
+                rows.append({"CERT": cert, "REPDTE": q,
+                             "TTM_NCO_Rate": 0.01, "Nonaccrual_to_Gross_Loans_Rate": 0.02})
+        df = pd.DataFrame(rows)
+        df["REPDTE"] = pd.to_datetime(df["REPDTE"])
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             path = f.name
         try:
@@ -6062,6 +6069,167 @@ class TestRenderingReconciliation(unittest.TestCase):
     def test_report_generator_imports_from_rendering_mode(self):
         """report_generator.py must import from rendering_mode, not define locally."""
         self.assertIn("from rendering_mode import", self._rg_src)
+
+
+class TestNormalizedBulletSplitReconciliation(unittest.TestCase):
+    """Focused reconciliation tests ensuring the normalized-bullet split
+    and canonical rendering architecture are consistent across
+    report_generator.py, rendering_mode.py, and CLAUDE.md."""
+
+    @classmethod
+    def setUpClass(cls):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(script_dir, "report_generator.py"), "r") as f:
+            cls._rg_src = f.read()
+        with open(os.path.join(script_dir, "rendering_mode.py"), "r") as f:
+            cls._rm_src = f.read()
+        with open(os.path.join(script_dir, "CLAUDE.md"), "r") as f:
+            cls._claude_md = f.read()
+
+    # --- A. Stale local rendering abstractions removed ---
+
+    def test_no_stale_ReportMode_class(self):
+        """report_generator.py must not define its own ReportMode class."""
+        self.assertNotIn("class ReportMode", self._rg_src)
+
+    def test_no_stale_ArtifactSpec_class(self):
+        """report_generator.py must not define its own ArtifactSpec class."""
+        self.assertNotIn("class ArtifactSpec", self._rg_src)
+
+    def test_no_stale_ManifestEntry_class(self):
+        """report_generator.py must not define its own ManifestEntry class."""
+        self.assertNotIn("class ManifestEntry", self._rg_src)
+
+    def test_no_stale_ReportContext_class(self):
+        """report_generator.py must not define a public ReportContext class
+        (the internal _ReportContext is acceptable)."""
+        import re
+        # Match 'class ReportContext' but NOT 'class _ReportContext'
+        matches = re.findall(r'class\s+ReportContext\b', self._rg_src)
+        self.assertEqual(len(matches), 0,
+                         "Stale public ReportContext class found in report_generator.py")
+
+    def test_no_stale_resolve_report_mode_for_generator(self):
+        """report_generator.py must not define resolve_report_mode_for_generator."""
+        self.assertNotIn("def resolve_report_mode_for_generator", self._rg_src)
+
+    def test_no_local_ARTIFACT_REGISTRY_assignment(self):
+        """report_generator.py must not define its own ARTIFACT_REGISTRY."""
+        import re
+        matches = re.findall(r'^ARTIFACT_REGISTRY\s*[=:]', self._rg_src, re.MULTILINE)
+        self.assertEqual(len(matches), 0,
+                         "Local ARTIFACT_REGISTRY definition found in report_generator.py")
+
+    def test_no_local_ARTIFACT_BY_NAME(self):
+        """report_generator.py must not define _ARTIFACT_BY_NAME."""
+        self.assertNotIn("_ARTIFACT_BY_NAME", self._rg_src)
+
+    def test_no_local_should_produce_definition(self):
+        """report_generator.py must not define its own should_produce function."""
+        self.assertNotIn("def should_produce(", self._rg_src)
+
+    # --- B. Normalized split artifact names present ---
+
+    def test_kri_bullet_standard_in_report_generator(self):
+        """report_generator.py must produce kri_bullet_standard."""
+        self.assertIn("kri_bullet_standard", self._rg_src)
+
+    def test_kri_bullet_normalized_rates_in_report_generator(self):
+        """report_generator.py must produce kri_bullet_normalized_rates."""
+        self.assertIn("kri_bullet_normalized_rates", self._rg_src)
+
+    def test_kri_bullet_normalized_composition_in_report_generator(self):
+        """report_generator.py must produce kri_bullet_normalized_composition."""
+        self.assertIn("kri_bullet_normalized_composition", self._rg_src)
+
+    def test_all_three_bullet_artifacts_in_registry(self):
+        """All 3 bullet artifacts must be registered in ARTIFACT_REGISTRY."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        for name in ["kri_bullet_standard",
+                     "kri_bullet_normalized_rates",
+                     "kri_bullet_normalized_composition"]:
+            self.assertIn(name, ARTIFACT_REGISTRY,
+                          f"Missing from registry: {name}")
+
+    # --- C. Obsolete single normalized bullet names absent ---
+
+    def test_no_obsolete_kri_bullet_chart_artifact(self):
+        """The old 'kri_bullet_chart' artifact name must not be in the registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertNotIn("kri_bullet_chart", ARTIFACT_REGISTRY)
+
+    def test_no_obsolete_kri_bullet_normalized_artifact(self):
+        """The old 'kri_bullet_normalized' artifact (without _rates/_composition suffix)
+        must not be in the registry."""
+        from rendering_mode import ARTIFACT_REGISTRY
+        self.assertNotIn("kri_bullet_normalized", ARTIFACT_REGISTRY)
+
+    def test_no_obsolete_kri_bullet_chart_string_literal(self):
+        """report_generator.py must not contain quoted 'kri_bullet_chart' as an artifact name."""
+        import re
+        matches = re.findall(r'["\']kri_bullet_chart["\']', self._rg_src)
+        self.assertEqual(len(matches), 0,
+                         "Obsolete 'kri_bullet_chart' artifact name found in report_generator.py")
+
+    # --- D. Sparkline norm_peer_cert path present ---
+
+    def test_sparkline_norm_peer_cert_in_report_generator(self):
+        """report_generator.py must pass norm_peer_cert to sparkline generator."""
+        self.assertIn("norm_peer_cert", self._rg_src)
+
+    def test_sparkline_uses_normalized_all_peers_composite(self):
+        """Sparkline must use ACTIVE_NORMALIZED_COMPOSITES for norm_peer_cert."""
+        self.assertIn('norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"]',
+                      self._rg_src)
+
+    # --- E. CLAUDE.md documents the normalized split accurately ---
+
+    def test_claude_md_documents_kri_bullet_standard(self):
+        """CLAUDE.md must document kri_bullet_standard artifact."""
+        self.assertIn("kri_bullet_standard", self._claude_md)
+
+    def test_claude_md_documents_kri_bullet_normalized_rates(self):
+        """CLAUDE.md must document kri_bullet_normalized_rates artifact."""
+        self.assertIn("kri_bullet_normalized_rates", self._claude_md)
+
+    def test_claude_md_documents_kri_bullet_normalized_composition(self):
+        """CLAUDE.md must document kri_bullet_normalized_composition artifact."""
+        self.assertIn("kri_bullet_normalized_composition", self._claude_md)
+
+    def test_claude_md_documents_rates_title(self):
+        """CLAUDE.md must document the exact rates chart title."""
+        self.assertIn("Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)",
+                      self._claude_md)
+
+    def test_claude_md_documents_composition_title(self):
+        """CLAUDE.md must document the exact composition chart title."""
+        self.assertIn("Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)",
+                      self._claude_md)
+
+    def test_claude_md_does_not_claim_kri_bullet_chart_exists(self):
+        """CLAUDE.md must not reference the obsolete kri_bullet_chart as a live artifact."""
+        import re
+        # The changelog may mention it historically; check that the artifact table
+        # and current documentation do not list it as active
+        lines = self._claude_md.split("\n")
+        for line in lines:
+            # Skip changelog lines (lines that describe what was removed)
+            if "obsolete" in line.lower() or "removed" in line.lower() or "replaced" in line.lower():
+                continue
+            if "old single" in line.lower() or "former" in line.lower():
+                continue
+            # Check artifact table rows — "|" delimited lines with kri_bullet_chart
+            if "| `kri_bullet_chart`" in line or "| kri_bullet_chart |" in line:
+                self.fail("CLAUDE.md still lists kri_bullet_chart as an active artifact")
+
+    def test_claude_md_remaining_risks_section_exists(self):
+        """CLAUDE.md must contain a Remaining Risks subsection."""
+        self.assertIn("Remaining Risks", self._claude_md)
+
+    def test_claude_md_canonical_rendering_rule(self):
+        """CLAUDE.md must document the canonical rendering abstraction rule."""
+        self.assertIn("rendering_mode.py", self._claude_md)
+        self.assertIn("single canonical source", self._claude_md.lower())
 
 
 if __name__ == '__main__':

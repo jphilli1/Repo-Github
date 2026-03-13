@@ -378,10 +378,12 @@ The old heuristic `plot_macro_overlay()` that picked "Fed Funds", "Unemployment"
 
 ### Remaining Risks
 
-1. **Executive charts import guard**: `_HAS_EXECUTIVE_CHARTS` flag means if `executive_charts.py` fails to import (e.g., `metric_semantics.py` missing), all 5 executive artifacts silently skip. No manifest entry is recorded for the skip.
+1. **Executive charts import guard**: `_HAS_EXECUTIVE_CHARTS` flag means if `executive_charts.py` fails to import (e.g., `metric_semantics.py` missing), all 6 executive artifacts silently skip. No manifest entry is recorded for the import-level skip.
 2. **FRED data dependency**: Macro chart artifacts depend on FRED_Data sheet being present in the workbook. If `MSPBNA_CR_Normalized.py` was run without FRED_API_KEY, macro charts silently return None.
 3. **matplotlib tight_layout warning**: The `warnings.filterwarnings` suppression in `report_generator.py` masks a real twinx() incompatibility in macro overlay charts. The charts render correctly but may have suboptimal spacing.
 4. **Normalized metric coverage**: Macro correlation heatmap rows use normalized metrics that may be NaN for some banks due to over-exclusion. N/A cells are shown correctly but reduce information density.
+5. **fred_case_shiller_discovery import dependency**: Tests referencing `fred_case_shiller_discovery` module error when `aiohttp` is not installed. These are pre-existing and do not affect report generation.
+6. **HUD crosswalk fetch_hud_crosswalk return contract**: One pre-existing test (`test_fetch_hud_crosswalk_returns_failed_parse_status_for_wrapper_only_output`) asserts a `"dataframe"` key in the source that may use a different return format. This is a test-vs-source contract mismatch in `case_shiller_zip_mapper.py`, not in report_generator or rendering_mode.
 
 ---
 
@@ -763,6 +765,25 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-13 — Normalized Bullet Split Follow-Up & Report-Generator Reconciliation
+
+**Objective**: Final verification that the normalized-bullet split and report-generator rendering architecture are fully reconciled. Fix remaining test and documentation gaps.
+
+**Verification results:**
+
+1. **No stale local rendering abstractions in report_generator.py** — confirmed zero instances of: `ReportMode` class, `ArtifactStatus` class (local), `ArtifactSpec`, `ManifestEntry`, `ArtifactManifest` (local), `ReportContext` (public), `resolve_report_mode_for_generator`, local `ARTIFACT_REGISTRY`, local `_ARTIFACT_BY_NAME`, local `should_produce()`. All abstractions are imported from `rendering_mode.py`.
+2. **Normalized bullet split intact** — report_generator.py produces exactly: `kri_bullet_standard`, `kri_bullet_normalized_rates`, `kri_bullet_normalized_composition`. No obsolete `kri_bullet_chart` or `kri_bullet_normalized` artifact names present.
+3. **Sparkline norm_peer_cert path present** — `norm_peer_cert=ACTIVE_NORMALIZED_COMPOSITES["all_peers"]` confirmed in sparkline call.
+4. **Comparator fallback behavior unchanged** — both/single/neither logic intact.
+
+**Fixes applied:**
+
+1. **test_regression.py** — Fixed `TestDocumentationCoherence.test_heatmap_saves_to_file`: test referenced `self._make_df()` which did not exist on the class, causing `AttributeError`. Replaced with inline DataFrame construction providing two quarters of data for YoY comparison.
+2. **test_regression.py** — Added `TestNormalizedBulletSplitReconciliation` class (25 tests): 8 stale-abstraction-absent checks, 3 artifact-name-present checks, 1 registry coverage check, 3 obsolete-name-absent checks, 2 sparkline norm_peer_cert checks, 7 CLAUDE.md accuracy checks (artifact names, exact titles, no false claims, Remaining Risks section, canonical rendering rule).
+3. **CLAUDE.md** — Fixed abbreviated composition chart title from `"(Normalized Composition)"` to full `"Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)"`. Updated Remaining Risks subsection to reflect actual post-fix state (6 items). Added this changelog entry.
+
+**Files changed:** `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-12 — Normalized KRI Bullet Chart Split (Rates vs Composition)
 
 **Problem**: The single `kri_bullet_normalized` artifact mixed rate metrics (0.xx% scale) and composition metrics (xx% scale) on a shared x-axis, making the chart unreadable. Additionally, the comparator fallback collapsed the gray band to the subject value when both peer composites were NaN, which was visually misleading.
@@ -773,7 +794,7 @@ the precision available.
    - `kri_bullet_normalized_rates` — 5 rate metrics (Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_Delinquency_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage)
    - `kri_bullet_normalized_composition` — 5 composition metrics (Norm_SBL_Composition, Norm_Wealth_Resi_Composition, Norm_CRE_Investment_Composition, Norm_CRE_ACL_Share, Norm_Resi_ACL_Share)
    - Each gets its own axes, avoiding the mixed-scale problem
-   - Exact titles: "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)" and "(Normalized Composition)"
+   - Exact titles: "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Rates)" and "Key Risk Indicators — MSPBNA vs Peer Range (Normalized Composition)"
 
 2. **Comparator fallback fix** in `generate_kri_bullet_chart()`:
    - Both comparators available → gray band between min and max (unchanged)
