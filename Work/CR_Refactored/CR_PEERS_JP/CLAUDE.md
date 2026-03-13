@@ -6,7 +6,7 @@ This repository is an **automated Credit Risk Performance reporting engine** for
 
 1. **Fetches** raw call-report data from the FDIC API and macroeconomic time-series from the FRED API.
 2. **Processes** the data into standard and normalized credit-quality metrics, computes peer-group composites, and builds rolling 8-quarter averages.
-3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (Summary_Dashboard, Normalized_Comparison, Latest_Peer_Snapshot, Averages_8Q_All_Metrics, FDIC_Metric_Descriptions, Macro_Analysis, FDIC_Data, FRED_Data, FRED_Metadata, FRED_Descriptions, Data_Validation_Report, Normalization_Diagnostics, Peer_Group_Definitions, Exclusion_Component_Audit, Composite_Coverage_Audit, Metric_Validation_Audit, Normalization_Reconciliation_Sample, and optional Case-Shiller ZIP sheets).
+3. **Outputs** a consolidated Excel dashboard (`Bank_Performance_Dashboard_*.xlsx`) containing multiple sheets (Summary_Dashboard, Normalized_Comparison, Latest_Peer_Snapshot, Averages_8Q_All_Metrics, FDIC_Metric_Descriptions, Macro_Analysis, FDIC_Data, FRED_Data, FRED_Metadata, FRED_Descriptions, Data_Validation_Report, Normalization_Diagnostics, Peer_Group_Definitions, Exclusion_Component_Audit, Composite_Coverage_Audit, Metric_Validation_Audit, Normalization_Reconciliation_Sample, optional Case-Shiller ZIP sheets, and optional local macro sheets: Local_Macro_Raw, Local_Macro_Derived, Local_Macro_Mapped, Local_Macro_Latest, MSA_Board_Panel, MSA_Crosswalk_Audit).
 4. **Generates reports**: PNG credit-deterioration charts, PNG scatter plots, and HTML comparison tables — all routed to structured subdirectories under `output/Peers/`.
 
 The two core scripts are:
@@ -866,6 +866,31 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — Board-Ready Workbook Output Persistence (Prompt 3)
+
+**Objective:** Write canonical local macro sheets into the dashboard workbook so reporting artifacts can consume real geography-aware macro context.
+
+**Changes:**
+
+1. **Board-ready sheet builders** (`local_macro.py`) — Three new functions:
+   - `build_local_macro_latest()` — One row per CBSA with all 30 BOARD_COLUMNS, latest-period values, macro_stress_flag (OK/WATCH/STRESS), geo_level classification, mapping quality persistence
+   - `build_msa_board_panel()` — Compact presentation panel sorted by GDP level descending, subset of key columns for executive consumption
+   - `build_skip_audit()` — Single-row audit explaining why pipeline was skipped (reason + context + timestamp)
+
+2. **Pipeline output expansion** (`local_macro.py`) — `run_local_macro_pipeline()` now returns 6 sheets: Local_Macro_Raw, Local_Macro_Derived, Local_Macro_Mapped, Local_Macro_Latest, MSA_Board_Panel, MSA_Crosswalk_Audit.
+
+3. **Skip-audit persistence** (`MSPBNA_CR_Normalized.py`) — Updated local macro integration block to write `Local_Macro_Skip_Audit` sheet when:
+   - Pipeline returns no data (API keys missing)
+   - `local_macro` module not importable
+   - Pipeline raises an exception
+   This ensures downstream consumers see an explicit skip reason rather than silent omission.
+
+4. **Regression tests** (`test_regression.py`) — `TestLocalMacroWorkbookOutput` class (12 tests): pipeline returns all 6 keys, board columns present, skip audit structure, mapping quality persists, source metadata persists, geo_level classification, macro_stress_flag values, existing sheets not broken, CLAUDE.md documentation.
+
+5. **CLAUDE.md** — Updated Section 13 output sheets table (7 sheets), added BOARD_COLUMNS specification (30 columns), added skip-audit documentation.
+
+**Files changed:** `local_macro.py`, `MSPBNA_CR_Normalized.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-13 — Math Correctness & Quarterly Alignment (Prompt 2)
 
@@ -2775,11 +2800,47 @@ All API calls are **optional**. If keys are missing or APIs are unavailable, the
 
 | Sheet | Contents | Key Columns |
 |---|---|---|
-| `Local_Macro_Raw` | Raw API responses with source provenance metadata | `cbsa_code`, `indicator`, `value`, `date`, `source_dataset`, `source_series_id`, `source_frequency`, `data_vintage`, `load_timestamp` |
-| `Local_Macro_Mapped` | Macro data joined to geography spine | All spine columns + indicator columns |
-| `MSA_Crosswalk_Audit` | Full audit trail of every geography resolution | `input_geo`, `cbsa_code`, `msa_name`, `mapping_method`, `quality`, `notes` |
+| `Local_Macro_Raw` | Raw API responses with source provenance metadata | `cbsa_code`, `date`, `value`, `metric_name`, `source_dataset`, `source_series_id`, `source_frequency`, `data_vintage`, `load_timestamp` |
+| `Local_Macro_Derived` | Per-capita, YoY, quarterly transforms | `cbsa_code`, `date`, `metric_name`, `value`, `units`, `transform_type`, `aggregation_rule` |
+| `Local_Macro_Mapped` | Raw + derived data joined to geography spine | All spine columns + all raw/derived columns |
+| `Local_Macro_Latest` | One row per CBSA, latest-period values, board-ready | All `BOARD_COLUMNS` (30 columns — see below) |
+| `MSA_Board_Panel` | Compact board-presentation panel sorted by GDP | Key subset of Latest columns for executive consumption |
+| `MSA_Crosswalk_Audit` | Full audit trail of every geography resolution | `source_geo_type`, `source_geo_value`, `target_cbsa_code`, `mapping_method`, `quality_flag` |
+| `Local_Macro_Skip_Audit` | Written when pipeline has no data — explains skip reason | `sheet_name`, `skip_reason`, `context`, `timestamp` |
 
 **The `MSA_Crosswalk_Audit` sheet is always produced**, even if all API calls fail. It documents every resolution attempt including unmatched geographies.
+
+**The `Local_Macro_Skip_Audit` sheet** is written when the pipeline runs but produces no data (e.g., no API keys configured). This ensures downstream consumers see an explicit reason rather than silent omission.
+
+### Board/Risk Column Specification (`BOARD_COLUMNS`)
+
+The `Local_Macro_Latest` sheet uses a fixed 30-column schema for board/risk consumption:
+
+| Column | Description |
+|---|---|
+| `as_of_date` | Date the pipeline ran |
+| `geo_level` | Classification: `msa`, `county`, `state`, or `unknown` |
+| `msa_name` | MSA name from spine |
+| `cbsa_code` | CBSA code |
+| `state_abbrev`, `state_fips` | State identifiers |
+| `county_fips`, `zip_code` | Sub-state geography (if available) |
+| `mapping_method` | How the geography was resolved (direct_cbsa, zip_to_cbsa, etc.) |
+| `mapping_weight`, `coverage_pct` | Quality metrics from crosswalk |
+| `source_dataset`, `source_series_id`, `source_frequency` | Data provenance |
+| `real_gdp_level` | Latest GDP level (dollars) |
+| `real_gdp_yoy_pct` | GDP YoY % (from levels) |
+| `population` | Latest population count |
+| `population_yoy_pct` | Population YoY % |
+| `real_gdp_per_capita` | GDP / population (dollars per person) |
+| `real_gdp_per_100k` | GDP per 100k population |
+| `real_gdp_per_100k_yoy_pct` | Per-100k YoY % (from normalized level) |
+| `unemployment_rate` | Latest quarterly mean unemployment rate (%) |
+| `unemployment_yoy_pp` | Unemployment change YoY in pp |
+| `unemployment_qoq_pp` | Unemployment change QoQ in pp |
+| `hpi_yoy_pct`, `hpi_qoq_pct` | House price index changes (when available) |
+| `portfolio_balance`, `portfolio_share` | Loan portfolio context (when available) |
+| `macro_stress_flag` | `OK`, `WATCH`, or `STRESS` based on unemployment + GDP signals |
+| `data_vintage`, `load_timestamp` | Data currency metadata |
 
 ### Source Metadata Policy
 

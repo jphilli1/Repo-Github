@@ -1159,6 +1159,249 @@ def build_derived_metrics(
 
 
 # ---------------------------------------------------------------------------
+#  Board-Ready Output Sheets
+# ---------------------------------------------------------------------------
+#  Required columns for board/risk consumption (per spec):
+#    as_of_date, geo_level, msa_name, cbsa_code, state_abbrev, state_fips,
+#    county_fips, zip_code, mapping_method, mapping_weight, coverage_pct,
+#    source_dataset, source_series_id, source_frequency, real_gdp_level,
+#    real_gdp_yoy_pct, population, population_yoy_pct, real_gdp_per_capita,
+#    real_gdp_per_100k, real_gdp_per_100k_yoy_pct, unemployment_rate,
+#    unemployment_yoy_pp, unemployment_qoq_pp, hpi_yoy_pct, hpi_qoq_pct,
+#    portfolio_balance, portfolio_share, macro_stress_flag,
+#    data_vintage, load_timestamp
+
+BOARD_COLUMNS = [
+    "as_of_date", "geo_level", "msa_name", "cbsa_code", "state_abbrev",
+    "state_fips", "county_fips", "zip_code", "mapping_method",
+    "mapping_weight", "coverage_pct", "source_dataset", "source_series_id",
+    "source_frequency", "real_gdp_level", "real_gdp_yoy_pct", "population",
+    "population_yoy_pct", "real_gdp_per_capita", "real_gdp_per_100k",
+    "real_gdp_per_100k_yoy_pct", "unemployment_rate", "unemployment_yoy_pp",
+    "unemployment_qoq_pp", "hpi_yoy_pct", "hpi_qoq_pct",
+    "portfolio_balance", "portfolio_share", "macro_stress_flag",
+    "data_vintage", "load_timestamp",
+]
+
+
+def _build_board_row_template(
+    spine_row: Dict[str, Any],
+    audit_row: Optional[Dict[str, Any]] = None,
+    load_ts: str = "",
+) -> Dict[str, Any]:
+    """Create a board-column template from spine + audit data."""
+    row: Dict[str, Any] = {col: None for col in BOARD_COLUMNS}
+    row["as_of_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    row["load_timestamp"] = load_ts or datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    # Geography from spine
+    row["cbsa_code"] = spine_row.get("cbsa_code")
+    row["msa_name"] = spine_row.get("msa_name")
+    row["state_abbrev"] = spine_row.get("state_abbrev")
+    row["state_fips"] = spine_row.get("state_fips")
+    row["county_fips"] = spine_row.get("county_fips")
+    row["zip_code"] = spine_row.get("zip_code")
+    # Geo level classification
+    if spine_row.get("cbsa_code"):
+        row["geo_level"] = "msa"
+    elif spine_row.get("county_fips"):
+        row["geo_level"] = "county"
+    elif spine_row.get("state_fips"):
+        row["geo_level"] = "state"
+    else:
+        row["geo_level"] = "unknown"
+    # Audit trail
+    if audit_row:
+        row["mapping_method"] = audit_row.get("mapping_method")
+        row["mapping_weight"] = audit_row.get("mapping_weight")
+        row["coverage_pct"] = audit_row.get("coverage_pct")
+    return row
+
+
+def build_local_macro_latest(
+    gdp_df: pd.DataFrame,
+    unemp_df: pd.DataFrame,
+    pop_df: pd.DataFrame,
+    derived_df: pd.DataFrame,
+    spine_df: pd.DataFrame,
+    audit_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build Local_Macro_Latest: one row per CBSA with latest-period values.
+
+    Pivots the derived metrics into wide format with board-ready columns.
+    Only includes the most recent observation per metric per CBSA.
+    """
+    load_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Build audit lookup: cbsa_code → first audit row
+    audit_lookup: Dict[str, Dict] = {}
+    if not audit_df.empty and "target_cbsa_code" in audit_df.columns:
+        for _, arow in audit_df.iterrows():
+            cbsa = arow.get("target_cbsa_code")
+            if cbsa and cbsa not in audit_lookup:
+                audit_lookup[cbsa] = arow.to_dict()
+
+    board_rows: List[Dict[str, Any]] = []
+
+    # Process each CBSA in spine
+    for _, spine_row in spine_df.drop_duplicates(subset=["cbsa_code"]).iterrows():
+        cbsa = spine_row.get("cbsa_code")
+        if not cbsa:
+            continue
+
+        row = _build_board_row_template(
+            spine_row.to_dict(),
+            audit_lookup.get(cbsa),
+            load_ts,
+        )
+
+        # Pull latest GDP level
+        if not gdp_df.empty:
+            g = gdp_df[gdp_df["cbsa_code"] == cbsa]
+            if not g.empty:
+                val_col = "gdp_value" if "gdp_value" in g.columns else "value"
+                latest = g.sort_values("date").iloc[-1]
+                row["real_gdp_level"] = latest.get(val_col)
+                row["source_dataset"] = latest.get("source_dataset")
+                row["source_series_id"] = latest.get("source_series_id")
+                row["source_frequency"] = latest.get("source_frequency")
+                row["data_vintage"] = latest.get("data_vintage")
+
+        # Pull latest population
+        if not pop_df.empty:
+            p = pop_df[pop_df["cbsa_code"] == cbsa]
+            if not p.empty:
+                val_col = "population" if "population" in p.columns else "value"
+                latest = p.sort_values("date").iloc[-1]
+                row["population"] = latest.get(val_col)
+
+        # Pull derived metrics (already computed per-capita, YoY, etc.)
+        if not derived_df.empty:
+            d = derived_df[derived_df["cbsa_code"] == cbsa]
+            _fill_from_derived(row, d, "real_gdp_per_capita", "real_gdp_per_capita")
+            _fill_from_derived(row, d, "real_gdp_per_100k", "real_gdp_per_100k")
+            _fill_from_derived(row, d, "real_gdp_per_100k_yoy_pct",
+                               "real_gdp_per_100k_yoy_pct")
+            _fill_from_derived(row, d, "unemployment_rate_quarterly",
+                               "unemployment_rate")
+            _fill_from_derived(row, d, "unemployment_change_pp",
+                               "unemployment_yoy_pp")
+
+        # Compute GDP YoY from raw levels if available
+        if not gdp_df.empty:
+            g = gdp_df[gdp_df["cbsa_code"] == cbsa].sort_values("date")
+            if len(g) >= 2:
+                val_col = "gdp_value" if "gdp_value" in g.columns else "value"
+                vals = g[val_col].astype(float)
+                yoy = compute_yoy_from_level(vals.reset_index(drop=True),
+                                             lag_periods=1)
+                last_yoy = yoy.iloc[-1]
+                if pd.notna(last_yoy):
+                    row["real_gdp_yoy_pct"] = last_yoy * 100
+
+        # Population YoY — compute from raw levels
+        if not pop_df.empty:
+            p = pop_df[pop_df["cbsa_code"] == cbsa].sort_values("date")
+            if len(p) >= 2:
+                val_col = "population" if "population" in p.columns else "value"
+                vals = p[val_col].astype(float)
+                yoy = compute_yoy_from_level(vals.reset_index(drop=True),
+                                             lag_periods=1)
+                last_yoy = yoy.iloc[-1]
+                if pd.notna(last_yoy):
+                    row["population_yoy_pct"] = last_yoy * 100
+
+        # Macro stress flag: flag if unemployment rising AND GDP declining
+        unemp_rising = (row.get("unemployment_yoy_pp") or 0) > 0.5
+        gdp_declining = (row.get("real_gdp_yoy_pct") or 0) < 0
+        if unemp_rising and gdp_declining:
+            row["macro_stress_flag"] = "STRESS"
+        elif unemp_rising or gdp_declining:
+            row["macro_stress_flag"] = "WATCH"
+        else:
+            row["macro_stress_flag"] = "OK"
+
+        board_rows.append(row)
+
+    if board_rows:
+        return pd.DataFrame(board_rows, columns=BOARD_COLUMNS)
+    return pd.DataFrame(columns=BOARD_COLUMNS)
+
+
+def _fill_from_derived(
+    row: Dict[str, Any],
+    derived_slice: pd.DataFrame,
+    metric_name: str,
+    target_col: str,
+) -> None:
+    """Fill a board row column from the latest derived metric value."""
+    if derived_slice.empty:
+        return
+    match = derived_slice[derived_slice["metric_name"] == metric_name]
+    if match.empty:
+        return
+    latest = match.sort_values("date").iloc[-1]
+    val = latest.get("value")
+    if pd.notna(val):
+        row[target_col] = val
+
+
+def build_msa_board_panel(
+    latest_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build MSA_Board_Panel: compact summary for board presentations.
+
+    Takes the Local_Macro_Latest DataFrame and produces a presentation-ready
+    panel with key columns, sorted by GDP level descending.
+    """
+    if latest_df.empty:
+        return pd.DataFrame(columns=[
+            "msa_name", "cbsa_code", "state_abbrev", "geo_level",
+            "real_gdp_level", "real_gdp_yoy_pct", "real_gdp_per_100k",
+            "real_gdp_per_100k_yoy_pct", "population", "population_yoy_pct",
+            "unemployment_rate", "unemployment_yoy_pp",
+            "macro_stress_flag", "mapping_method", "as_of_date",
+        ])
+
+    panel_cols = [
+        "msa_name", "cbsa_code", "state_abbrev", "geo_level",
+        "real_gdp_level", "real_gdp_yoy_pct", "real_gdp_per_100k",
+        "real_gdp_per_100k_yoy_pct", "population", "population_yoy_pct",
+        "unemployment_rate", "unemployment_yoy_pp",
+        "macro_stress_flag", "mapping_method", "as_of_date",
+    ]
+
+    # Select only columns that exist
+    available = [c for c in panel_cols if c in latest_df.columns]
+    panel = latest_df[available].copy()
+
+    # Sort by GDP level descending (largest MSAs first)
+    if "real_gdp_level" in panel.columns:
+        panel = panel.sort_values("real_gdp_level", ascending=False,
+                                  na_position="last")
+
+    return panel.reset_index(drop=True)
+
+
+def build_skip_audit(
+    reason: str,
+    context: str = "",
+) -> pd.DataFrame:
+    """Build a single-row audit DataFrame explaining why local macro was skipped.
+
+    Written to the workbook so downstream consumers know the omission was
+    intentional, not a silent failure.
+    """
+    return pd.DataFrame([{
+        "sheet_name": "Local_Macro_Skip_Audit",
+        "skip_reason": reason,
+        "context": context,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }])
+
+
+# ---------------------------------------------------------------------------
 #  Orchestrator — run full local macro pipeline
 # ---------------------------------------------------------------------------
 def run_local_macro_pipeline(
@@ -1178,7 +1421,10 @@ def run_local_macro_pipeline(
     Returns dict suitable for unpacking into write_excel_output(**kwargs):
       {
         "Local_Macro_Raw":       raw API responses with provenance
+        "Local_Macro_Derived":   per-capita, YoY, quarterly transforms
         "Local_Macro_Mapped":    spine-joined data with geography context
+        "Local_Macro_Latest":    one row per CBSA, latest values, board columns
+        "MSA_Board_Panel":       compact board-presentation panel
         "MSA_Crosswalk_Audit":   full mapping audit trail
       }
     """
@@ -1259,10 +1505,19 @@ def run_local_macro_pipeline(
             if col not in mapped_df.columns:
                 mapped_df[col] = None
 
+    # Build board-ready output sheets
+    logging.info("[local_macro] Building board-ready sheets...")
+    latest_df = build_local_macro_latest(
+        gdp_df, unemp_df, pop_df, derived_df, spine_df, audit_df,
+    )
+    board_panel_df = build_msa_board_panel(latest_df)
+
     result = {
         "Local_Macro_Raw": raw_df,
         "Local_Macro_Derived": derived_df,
         "Local_Macro_Mapped": mapped_df,
+        "Local_Macro_Latest": latest_df,
+        "MSA_Board_Panel": board_panel_df,
         "MSA_Crosswalk_Audit": audit_df,
     }
 

@@ -6261,6 +6261,191 @@ class TestLocalMacroMathAndAlignment(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Local Macro Workbook Output Persistence (Prompt 3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestLocalMacroWorkbookOutput(unittest.TestCase):
+    """Tests for board-ready local macro sheet persistence in the workbook."""
+
+    def test_pipeline_returns_all_required_sheets(self):
+        """run_local_macro_pipeline must return all 6 required sheet keys."""
+        from local_macro import run_local_macro_pipeline
+        result = run_local_macro_pipeline()
+        required_keys = {
+            "Local_Macro_Raw", "Local_Macro_Derived", "Local_Macro_Mapped",
+            "Local_Macro_Latest", "MSA_Board_Panel", "MSA_Crosswalk_Audit",
+        }
+        self.assertTrue(required_keys.issubset(set(result.keys())),
+                        f"Missing sheet keys: {required_keys - set(result.keys())}")
+        for key in required_keys:
+            self.assertIsInstance(result[key], pd.DataFrame,
+                                 f"{key} must be a DataFrame")
+
+    def test_local_macro_latest_has_board_columns(self):
+        """Local_Macro_Latest must have all required board/risk columns."""
+        from local_macro import BOARD_COLUMNS, build_local_macro_latest
+        # Build from empty inputs — columns must still be present
+        empty_gdp = pd.DataFrame(columns=["cbsa_code", "date", "gdp_value"])
+        empty_unemp = pd.DataFrame(columns=["cbsa_code", "date", "unemployment_rate"])
+        empty_pop = pd.DataFrame(columns=["cbsa_code", "date", "population"])
+        empty_derived = pd.DataFrame(columns=["cbsa_code", "date", "metric_name", "value"])
+        spine = pd.DataFrame([{
+            "cbsa_code": "35620", "msa_name": "New York", "state_fips": "36",
+            "state_abbrev": "NY", "county_fips": None, "zip_code": None,
+        }])
+        audit = pd.DataFrame([{
+            "target_cbsa_code": "35620", "mapping_method": "direct_cbsa",
+            "mapping_weight": 1.0, "coverage_pct": 100.0,
+        }])
+        latest = build_local_macro_latest(
+            empty_gdp, empty_unemp, empty_pop, empty_derived, spine, audit,
+        )
+        for col in BOARD_COLUMNS:
+            self.assertIn(col, latest.columns,
+                          f"Local_Macro_Latest missing column: {col}")
+
+    def test_msa_board_panel_columns(self):
+        """MSA_Board_Panel must have presentation-ready columns."""
+        from local_macro import build_msa_board_panel, BOARD_COLUMNS
+        latest = pd.DataFrame(columns=BOARD_COLUMNS)
+        panel = build_msa_board_panel(latest)
+        required_panel_cols = {
+            "msa_name", "cbsa_code", "state_abbrev", "macro_stress_flag",
+            "as_of_date",
+        }
+        self.assertTrue(required_panel_cols.issubset(set(panel.columns)),
+                        f"Board panel missing: {required_panel_cols - set(panel.columns)}")
+
+    def test_skip_audit_produced_on_missing_sources(self):
+        """build_skip_audit must produce an audit-visible skip reason."""
+        from local_macro import build_skip_audit
+        audit = build_skip_audit(
+            reason="No API keys configured",
+            context="bea_key=missing, census_key=missing",
+        )
+        self.assertIsInstance(audit, pd.DataFrame)
+        self.assertGreater(len(audit), 0)
+        self.assertIn("skip_reason", audit.columns)
+        self.assertIn("timestamp", audit.columns)
+        self.assertEqual(audit.iloc[0]["skip_reason"], "No API keys configured")
+
+    def test_mspbna_writes_skip_audit_on_failure(self):
+        """MSPBNA must write skip audit sheet when local macro has no data."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "MSPBNA_CR_Normalized.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("build_skip_audit", content,
+                       "MSPBNA must import and use build_skip_audit")
+        self.assertIn("Local_Macro_Skip_Audit", content,
+                       "Skip audit sheet key must be referenced")
+
+    def test_mapping_quality_persists_in_latest(self):
+        """Mapping method and quality must persist in Local_Macro_Latest."""
+        from local_macro import build_local_macro_latest
+        spine = pd.DataFrame([{
+            "cbsa_code": "35620", "msa_name": "New York", "state_fips": "36",
+            "state_abbrev": "NY", "county_fips": None, "zip_code": None,
+        }])
+        audit = pd.DataFrame([{
+            "target_cbsa_code": "35620", "mapping_method": "direct_cbsa",
+            "mapping_weight": 1.0, "coverage_pct": 100.0,
+        }])
+        latest = build_local_macro_latest(
+            pd.DataFrame(columns=["cbsa_code", "date", "gdp_value"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "unemployment_rate"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "population"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "metric_name", "value"]),
+            spine, audit,
+        )
+        self.assertGreater(len(latest), 0)
+        self.assertEqual(latest.iloc[0]["mapping_method"], "direct_cbsa")
+        self.assertEqual(latest.iloc[0]["mapping_weight"], 1.0)
+
+    def test_source_metadata_persists_in_latest(self):
+        """Source dataset and series ID must persist in Local_Macro_Latest."""
+        from local_macro import BOARD_COLUMNS
+        metadata_cols = {"source_dataset", "source_series_id", "source_frequency",
+                         "data_vintage", "load_timestamp"}
+        self.assertTrue(metadata_cols.issubset(set(BOARD_COLUMNS)),
+                        f"Board columns missing metadata: {metadata_cols - set(BOARD_COLUMNS)}")
+
+    def test_geo_level_classification(self):
+        """Latest must classify geo_level as msa/county/state based on available data."""
+        from local_macro import build_local_macro_latest
+        spine = pd.DataFrame([
+            {"cbsa_code": "35620", "msa_name": "New York", "state_fips": "36",
+             "state_abbrev": "NY", "county_fips": None, "zip_code": None},
+        ])
+        audit = pd.DataFrame(columns=["target_cbsa_code", "mapping_method",
+                                       "mapping_weight", "coverage_pct"])
+        latest = build_local_macro_latest(
+            pd.DataFrame(columns=["cbsa_code", "date", "gdp_value"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "unemployment_rate"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "population"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "metric_name", "value"]),
+            spine, audit,
+        )
+        self.assertEqual(latest.iloc[0]["geo_level"], "msa")
+
+    def test_macro_stress_flag_computed(self):
+        """macro_stress_flag must be one of OK/WATCH/STRESS."""
+        from local_macro import build_local_macro_latest
+        spine = pd.DataFrame([{
+            "cbsa_code": "35620", "msa_name": "New York", "state_fips": "36",
+            "state_abbrev": "NY", "county_fips": None, "zip_code": None,
+        }])
+        audit = pd.DataFrame(columns=["target_cbsa_code", "mapping_method",
+                                       "mapping_weight", "coverage_pct"])
+        latest = build_local_macro_latest(
+            pd.DataFrame(columns=["cbsa_code", "date", "gdp_value"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "unemployment_rate"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "population"]),
+            pd.DataFrame(columns=["cbsa_code", "date", "metric_name", "value"]),
+            spine, audit,
+        )
+        self.assertIn(latest.iloc[0]["macro_stress_flag"], {"OK", "WATCH", "STRESS"})
+
+    def test_existing_workbook_sheets_not_broken(self):
+        """Existing sheet names must still be present in write_excel_output call."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "MSPBNA_CR_Normalized.py")
+        with open(path, "r") as f:
+            content = f.read()
+        existing_sheets = [
+            "Summary_Dashboard", "Normalized_Comparison", "Latest_Peer_Snapshot",
+            "FDIC_Data", "FRED_Data", "Data_Validation_Report",
+        ]
+        for sheet in existing_sheets:
+            self.assertIn(sheet, content,
+                          f"Existing sheet '{sheet}' must not be removed")
+
+    def test_board_columns_constant_exported(self):
+        """BOARD_COLUMNS must be importable and contain all required columns."""
+        from local_macro import BOARD_COLUMNS
+        required = {
+            "as_of_date", "geo_level", "msa_name", "cbsa_code", "state_abbrev",
+            "real_gdp_level", "real_gdp_yoy_pct", "population",
+            "real_gdp_per_capita", "real_gdp_per_100k",
+            "unemployment_rate", "unemployment_yoy_pp",
+            "macro_stress_flag", "data_vintage", "load_timestamp",
+        }
+        self.assertTrue(required.issubset(set(BOARD_COLUMNS)),
+                        f"Missing board columns: {required - set(BOARD_COLUMNS)}")
+
+    def test_claude_md_documents_board_sheets(self):
+        """CLAUDE.md must document all new board-ready sheets."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        for sheet in ["Local_Macro_Latest", "MSA_Board_Panel",
+                      "Local_Macro_Skip_Audit"]:
+            self.assertIn(sheet, content,
+                          f"CLAUDE.md must document {sheet}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # HUD HTTP Failure Diagnostics & Hardening (Parts 1-9)
 # ═══════════════════════════════════════════════════════════════════════════
 

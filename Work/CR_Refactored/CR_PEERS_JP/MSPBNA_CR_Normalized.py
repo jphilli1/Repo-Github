@@ -6599,11 +6599,13 @@ class BankPerformanceDashboard:
             logging.warning(f"Case-Shiller ZIP enrichment failed (non-fatal): {e}")
 
         # --- Local Macro Pipeline (geography spine + BEA/BLS/Census) ---
-        # Produces 3 sheets: Local_Macro_Raw, Local_Macro_Mapped, MSA_Crosswalk_Audit
-        # Wrapped in try/except so API failures do not crash the pipeline.
+        # Produces up to 6 sheets: Local_Macro_Raw, Local_Macro_Derived,
+        # Local_Macro_Mapped, Local_Macro_Latest, MSA_Board_Panel, MSA_Crosswalk_Audit.
+        # If inputs are unavailable, writes a skip-audit sheet so downstream
+        # consumers see an explicit reason rather than silent omission.
         local_macro_kwargs = {}
         try:
-            from local_macro import run_local_macro_pipeline
+            from local_macro import run_local_macro_pipeline, build_skip_audit
             _hud_tok = getattr(self.config, "hud_user_token", None)
             _bea_key = getattr(self.config, "bea_api_key", None)
             _census_key = getattr(self.config, "census_api_key", None)
@@ -6620,10 +6622,32 @@ class BankPerformanceDashboard:
             else:
                 logging.info("Local macro pipeline produced no non-empty data sheets "
                              "(API keys may not be configured)")
+                local_macro_kwargs["Local_Macro_Skip_Audit"] = build_skip_audit(
+                    reason="No data returned from APIs",
+                    context=f"bea_key={'set' if _bea_key else 'missing'}, "
+                            f"census_key={'set' if _census_key else 'missing'}, "
+                            f"hud_token={'set' if _hud_tok else 'missing'}",
+                )
         except ImportError:
             logging.info("local_macro module not available — local macro pipeline skipped")
+            try:
+                from local_macro import build_skip_audit
+                local_macro_kwargs["Local_Macro_Skip_Audit"] = build_skip_audit(
+                    reason="local_macro module not importable",
+                    context="ImportError during pipeline initialization",
+                )
+            except ImportError:
+                pass  # Module truly unavailable — nothing to write
         except Exception as e:
             logging.warning(f"Local macro pipeline failed (non-fatal): {e}")
+            try:
+                from local_macro import build_skip_audit
+                local_macro_kwargs["Local_Macro_Skip_Audit"] = build_skip_audit(
+                    reason=f"Pipeline exception: {type(e).__name__}",
+                    context=str(e)[:200],
+                )
+            except Exception:
+                pass  # Don't let skip-audit creation crash the pipeline
 
         # --- Diagnostic logging: prove curated tabs match allowlists ---
         if not peer_comp_df.empty and "Metric Code" in peer_comp_df.columns:
