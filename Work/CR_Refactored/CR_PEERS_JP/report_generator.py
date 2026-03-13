@@ -2052,10 +2052,24 @@ def _load_fred_tables(xlsx_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     id_col   = next((c for c in fred.columns if c.lower().startswith("series")), None)
     date_col = next((c for c in fred.columns if "date" in c.lower()), None)
     val_col  = next((c for c in fred.columns if "value" in c.lower()), None)
-    if not all([id_col, date_col, val_col]):
-        raise ValueError("FRED Data columns not recognized. Need Series*, *date*, *value* columns.")
-    fred = fred.rename(columns={id_col:"SeriesID", date_col:"DATE", val_col:"VALUE"})
-    fred["DATE"] = pd.to_datetime(fred["DATE"], errors="coerce")
+
+    # Detect wide-format: if there's a date-like column but no Series* or value* column,
+    # the sheet is pivoted (date + one column per series).
+    if not id_col and date_col and not val_col:
+        # Wide format detected — melt to long format
+        series_cols = [c for c in fred.columns if c != date_col]
+        fred = fred.melt(id_vars=[date_col], value_vars=series_cols,
+                         var_name="SeriesID", value_name="VALUE")
+        fred = fred.rename(columns={date_col: "DATE"})
+        fred["DATE"] = pd.to_datetime(fred["DATE"], errors="coerce")
+        fred = fred.dropna(subset=["DATE"])
+    elif all([id_col, date_col, val_col]):
+        # Already in long format — rename as before
+        fred = fred.rename(columns={id_col: "SeriesID", date_col: "DATE", val_col: "VALUE"})
+        fred["DATE"] = pd.to_datetime(fred["DATE"], errors="coerce")
+    else:
+        raise ValueError("FRED Data columns not recognized. Need either wide format "
+                         "(date + series columns) or long format (Series*, *date*, *value* columns).")
     sid_col = next((c for c in desc.columns if c.lower().startswith("series")), None)
     short_col = next((c for c in desc.columns if "short" in c.lower()), None)
     if not all([sid_col, short_col]):
@@ -3147,6 +3161,7 @@ def create_credit_deterioration_chart_ppt(
     if proc_df_with_peers.empty:
         return None, None
 
+    _cc = _build_cert_color_map(subject_bank_cert)
     GOLD, BLUE, PURPLE = _C_MSPBNA, _C_ALL_PEERS, _C_WEALTH
     default_entities = [subject_bank_cert, 90003, 90001]
     bar_entities  = bar_entities  or default_entities
@@ -3456,6 +3471,7 @@ def plot_scatter_dynamic(
 ) -> Tuple[plt.Figure, plt.Axes]:
     if df.empty: raise ValueError("scatter DF is empty")
     GOLD, PEER, GUIDE = _C_MSPBNA, _C_PEER_CLOUD, _C_GUIDE
+    CC = CHART_COLORS
 
     def to_decimals_series(s: pd.Series) -> pd.Series:
         s = pd.to_numeric(s, errors="coerce")
