@@ -867,6 +867,18 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-13 — Fix 3 Post-Fix Regressions (8 → 0 Failed Artifacts)
+
+**Bug A — numpy array truth test in credit charts**: `if idx_to_label` on a numpy array raised `ValueError`. Fixed with `if len(idx_to_label) > 0`. Restored: `standard_credit_chart`, `normalized_credit_chart`.
+
+**Bug B — `placer` never instantiated in scatter plots**: `plot_scatter_dynamic()` called `placer.place()` but never created the object. Reverted annotation calls to use the existing in-scope `pick_offset()`/`tag()` helpers. Restored: all 5 scatter plot artifacts.
+
+**Bug C — `strftime("%q")` invalid on Windows**: `%q` is not a valid C strftime code. Replaced with direct f-string formatting (`f"{dt.year} Q{(dt.month - 1) // 3 + 1}"`). Restored: `macro_corr_heatmap_lag1`.
+
+**Figure cleanup**: Added `plt.close(fig)` in `_produce_chart()` after saving to prevent "More than 20 figures" RuntimeWarning during long runs.
+
+**Files changed:** `report_generator.py`, `CLAUDE.md`
+
 ### 2026-03-13 — Workbook-Driven MSA Macro Panel (Prompt 4)
 
 **Objective:** Replace the synthetic msa_macro_panel path with workbook-driven reporting. Complete the final reporting integration for geography-aware macro context.

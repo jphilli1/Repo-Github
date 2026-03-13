@@ -2471,6 +2471,10 @@ def _produce_chart(ctx: _ReportContext, artifact_name: str, csv_log,
             ctx.manifest.record_generated(artifact_name, path)
             csv_log.log_file_written(path, phase=category, component=artifact_name)
             print(f"  {artifact_name} saved: {path}")
+            # Close figures promptly to prevent matplotlib "More than 20 figures" warning
+            fig = result[0] if isinstance(result, tuple) else result
+            if hasattr(fig, 'number'):
+                plt.close(fig)
         else:
             ctx.manifest.record_failed(artifact_name, "chart function returned None")
     except Exception as exc:
@@ -3373,7 +3377,7 @@ def create_credit_deterioration_chart_ppt(
     # - Peer entities: label at latest period ONLY (avoids label overload)
     for c in line_entities:
         s = series_for(c, line_metric)
-        label_indices = idx_to_label if c == subject_bank_cert else [idx_to_label[-1]] if idx_to_label else []
+        label_indices = idx_to_label if c == subject_bank_cert else ([idx_to_label[-1]] if len(idx_to_label) > 0 else [])
         for k in label_indices:
             val = s.iloc[k]
             if pd.notna(val):
@@ -3527,13 +3531,16 @@ def plot_scatter_dynamic(
                     arrowprops=(dict(arrowstyle="->", lw=1.0, color="black") if box else None), va="center")
 
     if show_peers_avg_label and (px is not None):
-        placer.place(px, py, "All Peers", color=CC["guide"], box=False, inline=True, priority=1)
+        dx, dy = pick_offset(px, py, along_line=True)
+        tag(px, py, "All Peers", (dx, dy), color=CC["guide"], box=False)
 
     if show_mspbna_label and (xi is not None):
-        placer.place(xi, yi, "MSPBNA", color="black", box=True, priority=2)
+        dx, dy = pick_offset(xi, yi)
+        tag(xi, yi, "MSPBNA", (dx, dy), color="black", box=True)
 
     if wx is not None:
-        placer.place(wx, wy, "Wealth Peers", color=CC["wealth_peers"], box=True, priority=3)
+        dx, dy = pick_offset(wx, wy)
+        tag(wx, wy, "Wealth Peers", (dx, dy), color=CC["wealth_peers"], box=True)
 
     if identify_outliers and outliers_topn > 0:
         X_all = to_decimals_series(df[x_col]); Y_all = to_decimals_series(df[y_col])
@@ -3555,7 +3562,8 @@ def plot_scatter_dynamic(
             cert_i = int(df.loc[i, "CERT"]) if "CERT" in df.columns else None
             name_i = df.loc[i, "NAME"] if "NAME" in df.columns else None
             label = resolve_display_label(cert_i, name=name_i, subject_cert=subject_cert) if cert_i is not None else str(i)
-            placer.place(ox, oy, label, color="black", box=True, priority=10)
+            dx, dy = pick_offset(ox, oy)
+            tag(ox, oy, label, (dx, dy), color="black", box=True)
 
     _extra_x = [s for s in [xi, px, wx] if s is not None]
     _extra_y = [s for s in [yi, py, wy] if s is not None]
@@ -4421,7 +4429,8 @@ def generate_macro_corr_heatmap(
 
     # --- Build HTML ---
     fred_cols = list(fred_q_dict.keys())
-    date_str = common_idx.max().strftime("%Y Q%q").replace("Q%q", f"Q{(common_idx.max().month - 1) // 3 + 1}") if hasattr(common_idx.max(), 'strftime') else str(common_idx.max())
+    dt = common_idx.max()
+    date_str = f"{dt.year} Q{(dt.month - 1) // 3 + 1}" if hasattr(dt, 'year') else str(dt)
 
     def _corr_color(v):
         """Return background color for a correlation value."""
