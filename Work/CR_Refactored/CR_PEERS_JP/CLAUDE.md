@@ -25,6 +25,7 @@ The two core scripts are:
 | `case_shiller_zip_mapper.py` | HUD USPS ZIP Crosswalk enrichment for Case-Shiller metros |
 | `corp_overlay.py` | Corp-safe overlay: loan-file ingestion, schema contracts, peer-vs-internal join, 4 artifacts |
 | `corp_overlay_runner.py` | Standalone CLI entrypoint for corp overlay workflow (not in report_generator.py) |
+| `local_macro.py` | Canonical geography spine, BEA/BLS/Census macro fetchers, MSA crosswalk audit |
 | `run_pipeline.py` | Unified pipeline runner — runs Step 1 + Step 2 sequentially via subprocess |
 
 ---
@@ -865,6 +866,56 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-13 — Canonical Geography Spine & Local Macro Pipeline
+
+**Objective:** Build a real local/state/MSA macro pipeline with canonical geography spine and explicit mapping audit trail, replacing the placeholder MSA macro panel path removed during architecture reconciliation.
+
+**New module: `local_macro.py`**
+
+1. **Geography spine** (`build_geography_spine()`) — Resolves inputs through a 4-tier mapping hierarchy:
+   - **Tier 1 (direct CBSA):** Input CBSA code matched against canonical TOP_MSAS list → quality `high`
+   - **Tier 2 (ZIP → CBSA):** HUD USPS Crosswalk API type=4 lookup → quality `medium`
+   - **Tier 3 (county → CBSA):** Internal `_COUNTY_TO_CBSA` table (~130 county FIPS → CBSA mappings) → quality `low`
+   - **Tier 4 (state fallback):** State-level aggregation when no MSA resolution possible → quality `low`
+   - **Unmatched:** Geographies that cannot be resolved at any tier → quality `unmatched`
+
+2. **Macro source fetchers:**
+   - `fetch_bea_gdp_metro()` — BEA Regional Economic Accounts API (CAGDP2 table, metro GDP)
+   - `fetch_bls_unemployment_metro()` — BLS LAUS API (series LAUMT{sfips}{cbsa}00000003)
+   - `fetch_census_population_metro()` — Census Population Estimates Program API
+
+3. **Pipeline orchestrator** (`run_local_macro_pipeline()`) — Returns dict with three canonical output sheets:
+   - `Local_Macro_Raw` — Raw API responses with source metadata (source_dataset, source_series_id, source_frequency, data_vintage, load_timestamp)
+   - `Local_Macro_Mapped` — Geography-resolved macro data joined to spine
+   - `MSA_Crosswalk_Audit` — Full audit trail of every geography resolution attempt with mapping_method and quality flags
+
+4. **Design principles:**
+   - Case-Shiller ZIP mapper (`case_shiller_zip_mapper.py`) is NOT reused as generic spine — kept separate per distinct methodology
+   - All API calls wrapped in try/except with graceful degradation — pipeline never crashes if APIs unavailable
+   - Source provenance metadata on every row (source_dataset, source_series_id, source_frequency, data_vintage, load_timestamp)
+   - No synthetic/placeholder data — empty DataFrames returned when APIs are unavailable
+
+**Integration into `MSPBNA_CR_Normalized.py`:**
+- Added local macro pipeline call block between Case-Shiller enrichment and diagnostic logging
+- Uses same `**kwargs` pattern as Case-Shiller for `write_excel_output()` — `**local_macro_kwargs` alongside `**cs_kwargs`
+- Graceful degradation: ImportError skips silently, other exceptions logged as warnings (non-fatal)
+- API keys read from `DashboardConfig` attrs: `hud_user_token`, `bea_api_key`, `census_api_key`
+
+**Tests added** (`test_regression.py` — `TestLocalMacroGeographySpine`, 16 tests):
+- `test_direct_cbsa_mapping_works` — CBSA "35620" resolves to "New York"
+- `test_state_fallback_is_flagged` — state fallback gets quality "low"
+- `test_unmatched_cbsa_visible_in_audit` — unmatched geos appear in audit
+- `test_case_shiller_mapper_not_reused_as_generic_spine` — no import from case_shiller_zip_mapper
+- `test_msa_crosswalk_audit_always_produced` — audit always returned
+- `test_no_synthetic_data_in_local_macro` — no RandomState/synth_df
+- `test_county_fips_to_cbsa_mapping_works` — "06037" → "31080" (LA)
+- `test_pipeline_integration_in_mspbna` — verifies run_local_macro_pipeline called
+- `test_zip_without_hud_token_produces_audit_entries`
+- `test_claude_md_documents_local_macro`
+
+**Files created:** `local_macro.py`
+**Files changed:** `MSPBNA_CR_Normalized.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-13 — Architecture Reconciliation (Corp Overlay / MSA Macro Panel)
 
@@ -2641,7 +2692,9 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 - `bea_gdp_df`: columns `[msa, date, gdp_yoy_pct]`
 - `unemployment_df`: columns `[msa, date, unemp_rate_chg_pp]`
 
-**Production status:** The MSA macro panel is **not currently produced** by any script. The chart functions (`select_top_msas`, `build_msa_macro_panel`) exist in `corp_overlay.py` as utilities, but `report_generator.py` does **not** import or call them — doing so would violate the standalone architecture contract. The `msa_macro_panel` artifact is registered in `rendering_mode.py` for forward compatibility. When real BEA/Census/Case-Shiller API integrations are available, a dedicated `local_macro.py` module should own production of this artifact.
+**Production status:** The MSA macro panel chart (`msa_macro_panel` artifact) is **not currently produced** as a PNG chart. The chart functions (`select_top_msas`, `build_msa_macro_panel`) exist in `corp_overlay.py` as utilities, but `report_generator.py` does **not** import or call them — doing so would violate the standalone architecture contract. The `msa_macro_panel` artifact is registered in `rendering_mode.py` for forward compatibility.
+
+**Local macro data pipeline:** The dedicated `local_macro.py` module now provides the underlying macro data layer. It produces three Excel sheets (`Local_Macro_Raw`, `Local_Macro_Mapped`, `MSA_Crosswalk_Audit`) integrated into the Step 1 dashboard via `MSPBNA_CR_Normalized.py`. See Section 13 for full architecture details.
 
 ### Known Limitations
 
@@ -2650,3 +2703,87 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 - Dashboard auto-discovery uses the same `Bank_Performance_Dashboard_*.xlsx` glob pattern as `report_generator.py`.
 - Loan file must be CSV, TSV, or Excel (.xlsx/.xls). Other formats are rejected.
 - MSA macro panel requires pre-formatted DataFrames from external sources (Case-Shiller, BEA, Census). The data ingestion/API calls are hook points, not yet implemented.
+
+---
+
+## 13. Local Macro Pipeline Architecture (`local_macro.py`)
+
+### Overview
+
+`local_macro.py` is a **dedicated module** that builds a canonical geography spine and fetches MSA-level macroeconomic data from BEA, BLS, and Census APIs. It is called by `MSPBNA_CR_Normalized.py` (Step 1) and produces three Excel sheets in the dashboard output. It is **separate** from the Case-Shiller ZIP mapper (`case_shiller_zip_mapper.py`) and from the corp overlay (`corp_overlay.py`).
+
+### Geography Spine
+
+The spine is keyed by CBSA code and resolves geographies through a strict 4-tier hierarchy:
+
+```
+Input geography
+    │
+    ├─ Tier 1: Direct CBSA match (TOP_MSAS lookup)      → quality: high
+    │
+    ├─ Tier 2: ZIP → CBSA (HUD USPS Crosswalk type=4)   → quality: medium
+    │
+    ├─ Tier 3: County FIPS → CBSA (_COUNTY_TO_CBSA)     → quality: low
+    │
+    ├─ Tier 4: State fallback (state-level aggregation)  → quality: low
+    │
+    └─ Unmatched (no resolution possible)                → quality: unmatched
+```
+
+**Spine columns:** `cbsa_code`, `msa_name`, `state_fips`, `state_abbrev`, `county_fips`, `zip_code`, `mapping_method`, `quality`
+
+**Mapping methods:** `direct_cbsa`, `zip_to_cbsa`, `county_to_cbsa`, `state_fallback`, `unmatched`
+
+**Important:** The Case-Shiller ZIP mapper uses county-level FIPS codes per S&P CoreLogic methodology (HUD type=7). The local macro spine uses ZIP-level crosswalks (HUD type=4) and a separate internal county-to-CBSA table. These are intentionally different systems and must NOT be merged.
+
+### Data Sources
+
+| Source | API | Series/Table | Frequency | Env Var |
+|---|---|---|---|---|
+| BEA Regional GDP | `apps.bea.gov/api/data` | CAGDP2 (metro GDP) | Annual | `BEA_API_KEY` |
+| BLS LAUS | `api.bls.gov/publicAPI/v2/timeseries/data` | LAUMT{sfips}{cbsa}00000003 | Monthly | (none — public) |
+| Census Population | `api.census.gov/data/{year}/pep/population` | Metro population estimates | Annual | `CENSUS_API_KEY` |
+| HUD Crosswalk | `hudgis.hud.gov/hudapi/public/usps` | type=4 (ZIP→CBSA) | Quarterly | `HUD_USER_TOKEN` |
+
+All API calls are **optional**. If keys are missing or APIs are unavailable, the pipeline returns empty DataFrames and logs warnings. It never crashes.
+
+### Output Sheets
+
+| Sheet | Contents | Key Columns |
+|---|---|---|
+| `Local_Macro_Raw` | Raw API responses with source provenance metadata | `cbsa_code`, `indicator`, `value`, `date`, `source_dataset`, `source_series_id`, `source_frequency`, `data_vintage`, `load_timestamp` |
+| `Local_Macro_Mapped` | Macro data joined to geography spine | All spine columns + indicator columns |
+| `MSA_Crosswalk_Audit` | Full audit trail of every geography resolution | `input_geo`, `cbsa_code`, `msa_name`, `mapping_method`, `quality`, `notes` |
+
+**The `MSA_Crosswalk_Audit` sheet is always produced**, even if all API calls fail. It documents every resolution attempt including unmatched geographies.
+
+### Source Metadata Policy
+
+Every row in `Local_Macro_Raw` carries provenance fields:
+
+| Field | Description | Example |
+|---|---|---|
+| `source_dataset` | API/dataset identifier | `BEA_CAGDP2`, `BLS_LAUS`, `CENSUS_PEP` |
+| `source_series_id` | Specific series within the dataset | `LAUMT2435620000003` |
+| `source_frequency` | Reporting frequency | `annual`, `monthly` |
+| `data_vintage` | Vintage/release date of the data | `2026-03-13` |
+| `load_timestamp` | When the data was fetched | `2026-03-13T10:30:00` |
+
+### Integration Point
+
+`MSPBNA_CR_Normalized.py` calls `run_local_macro_pipeline()` after Case-Shiller enrichment:
+
+```python
+from local_macro import run_local_macro_pipeline
+lm_sheets = run_local_macro_pipeline(
+    hud_token=getattr(config, "hud_user_token", None),
+    bea_api_key=getattr(config, "bea_api_key", None),
+    census_api_key=getattr(config, "census_api_key", None),
+)
+# Sheets passed to write_excel_output() via **local_macro_kwargs
+```
+
+**Fallback rules:**
+- `ImportError` → pipeline skipped silently (module not available)
+- Any other exception → logged as warning, non-fatal, dashboard produced without local macro sheets
+- Missing API keys → empty DataFrames returned, audit sheet still produced

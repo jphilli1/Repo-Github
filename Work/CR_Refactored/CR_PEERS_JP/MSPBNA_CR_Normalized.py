@@ -6598,6 +6598,33 @@ class BankPerformanceDashboard:
         except Exception as e:
             logging.warning(f"Case-Shiller ZIP enrichment failed (non-fatal): {e}")
 
+        # --- Local Macro Pipeline (geography spine + BEA/BLS/Census) ---
+        # Produces 3 sheets: Local_Macro_Raw, Local_Macro_Mapped, MSA_Crosswalk_Audit
+        # Wrapped in try/except so API failures do not crash the pipeline.
+        local_macro_kwargs = {}
+        try:
+            from local_macro import run_local_macro_pipeline
+            _hud_tok = getattr(self.config, "hud_user_token", None)
+            _bea_key = getattr(self.config, "bea_api_key", None)
+            _census_key = getattr(self.config, "census_api_key", None)
+            lm_sheets = run_local_macro_pipeline(
+                hud_token=_hud_tok,
+                bea_api_key=_bea_key,
+                census_api_key=_census_key,
+            )
+            for sheet_name, sheet_df in lm_sheets.items():
+                if isinstance(sheet_df, pd.DataFrame) and not sheet_df.empty:
+                    local_macro_kwargs[sheet_name] = sheet_df
+            if local_macro_kwargs:
+                logging.info(f"Local macro sheets to write: {list(local_macro_kwargs.keys())}")
+            else:
+                logging.info("Local macro pipeline produced no non-empty data sheets "
+                             "(API keys may not be configured)")
+        except ImportError:
+            logging.info("local_macro module not available — local macro pipeline skipped")
+        except Exception as e:
+            logging.warning(f"Local macro pipeline failed (non-fatal): {e}")
+
         # --- Diagnostic logging: prove curated tabs match allowlists ---
         if not peer_comp_df.empty and "Metric Code" in peer_comp_df.columns:
             logging.info(
@@ -6644,6 +6671,7 @@ class BankPerformanceDashboard:
             Metric_Validation_Audit=metric_validation_df,
             Normalization_Reconciliation_Sample=recon_df,
             **cs_kwargs,
+            **local_macro_kwargs,
         )
 
 

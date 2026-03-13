@@ -5871,6 +5871,160 @@ class TestArchitectureReconciliation(unittest.TestCase):
                          "Architecture violation: report_generator.py references corp_overlay")
 
 
+class TestLocalMacroGeographySpine(unittest.TestCase):
+    """Tests for the local_macro.py geography spine and macro source layer."""
+
+    def test_local_macro_module_exists(self):
+        """local_macro.py must be importable."""
+        import local_macro
+        self.assertTrue(hasattr(local_macro, "build_geography_spine"))
+        self.assertTrue(hasattr(local_macro, "run_local_macro_pipeline"))
+
+    def test_spine_columns_defined(self):
+        """SPINE_COLUMNS must contain canonical geography fields."""
+        from local_macro import SPINE_COLUMNS
+        required = {"cbsa_code", "msa_name", "state_fips", "state_abbrev",
+                     "county_fips", "zip_code"}
+        self.assertTrue(required.issubset(set(SPINE_COLUMNS)))
+
+    def test_direct_cbsa_mapping_works(self):
+        """Direct CBSA code resolution must return spine rows."""
+        from local_macro import build_geography_spine, MAP_METHOD_DIRECT_CBSA
+        spine_df, audit_df = build_geography_spine(cbsa_codes=["35620"])
+        self.assertGreater(len(spine_df), 0, "Direct CBSA must produce spine rows")
+        self.assertEqual(spine_df.iloc[0]["cbsa_code"], "35620")
+        self.assertIn("New York", spine_df.iloc[0]["msa_name"])
+        # Audit must record direct CBSA method
+        direct = audit_df[audit_df["mapping_method"] == MAP_METHOD_DIRECT_CBSA]
+        self.assertGreater(len(direct), 0)
+
+    def test_state_fallback_is_flagged(self):
+        """State-level fallback must be flagged as low quality."""
+        from local_macro import build_geography_spine, MAP_METHOD_STATE_FALLBACK, QUALITY_LOW
+        spine_df, audit_df = build_geography_spine(state_abbrevs=["NY"])
+        self.assertGreater(len(spine_df), 0)
+        fallback = audit_df[audit_df["mapping_method"] == MAP_METHOD_STATE_FALLBACK]
+        self.assertGreater(len(fallback), 0, "State fallback must be in audit")
+        self.assertEqual(fallback.iloc[0]["quality_flag"], QUALITY_LOW)
+
+    def test_unmatched_cbsa_visible_in_audit(self):
+        """Unmatched CBSA codes must appear in audit with unmatched flag."""
+        from local_macro import build_geography_spine, MAP_METHOD_UNMATCHED
+        _, audit_df = build_geography_spine(cbsa_codes=["99999"])
+        unmatched = audit_df[audit_df["mapping_method"] == MAP_METHOD_UNMATCHED]
+        self.assertGreater(len(unmatched), 0,
+                           "Unmatched geographies must be visible in audit")
+
+    def test_case_shiller_mapper_not_reused_as_generic_spine(self):
+        """local_macro.py must NOT import from case_shiller_zip_mapper for CBSA resolution."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "local_macro.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertNotIn("from case_shiller_zip_mapper import",
+                         content,
+                         "local_macro must not reuse case_shiller_zip_mapper as generic spine")
+
+    def test_msa_crosswalk_audit_always_produced(self):
+        """MSA_Crosswalk_Audit must always be returned, even with no inputs."""
+        from local_macro import build_geography_spine
+        _, audit_df = build_geography_spine()
+        self.assertIsInstance(audit_df, pd.DataFrame)
+        # Must have expected columns
+        required_cols = {"source_geo_type", "source_geo_value", "mapping_method",
+                         "quality_flag"}
+        self.assertTrue(required_cols.issubset(set(audit_df.columns)),
+                        f"Audit missing columns: {required_cols - set(audit_df.columns)}")
+
+    def test_no_synthetic_data_in_local_macro(self):
+        """local_macro.py must not contain synthetic/placeholder data generation."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "local_macro.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertNotIn("RandomState", content)
+        self.assertNotIn("np.random.normal", content)
+        self.assertNotIn("synth_df", content)
+
+    def test_top_msas_reference_table_exists(self):
+        """TOP_MSAS reference table must have canonical entries."""
+        from local_macro import TOP_MSAS
+        self.assertGreaterEqual(len(TOP_MSAS), 15)
+        # Each must have required keys
+        for m in TOP_MSAS:
+            self.assertIn("cbsa_code", m)
+            self.assertIn("msa_name", m)
+            self.assertIn("state_abbrev", m)
+            self.assertIn("state_fips", m)
+
+    def test_source_metadata_on_macro_rows(self):
+        """Macro fetcher return frames must include source provenance columns."""
+        from local_macro import _empty_macro_df
+        df = _empty_macro_df("test_value")
+        required = {"source_dataset", "source_series_id", "source_frequency",
+                     "data_vintage", "load_timestamp"}
+        self.assertTrue(required.issubset(set(df.columns)),
+                        f"Missing provenance columns: {required - set(df.columns)}")
+
+    def test_county_to_cbsa_map_separate_from_case_shiller(self):
+        """County-to-CBSA mapping must be independent of Case-Shiller county map."""
+        from local_macro import _build_county_to_cbsa_map
+        county_map = _build_county_to_cbsa_map()
+        self.assertIsInstance(county_map, dict)
+        self.assertGreater(len(county_map), 0)
+        # Spot check: LA county (06037) → LA CBSA (31080)
+        self.assertEqual(county_map.get("06037"), "31080")
+
+    def test_county_fips_to_cbsa_mapping_works(self):
+        """County FIPS → CBSA resolution must produce spine rows."""
+        from local_macro import build_geography_spine, MAP_METHOD_COUNTY_TO_CBSA
+        spine_df, audit_df = build_geography_spine(county_fips_codes=["06037"])
+        self.assertGreater(len(spine_df), 0)
+        self.assertEqual(spine_df.iloc[0]["cbsa_code"], "31080")  # LA
+        county_match = audit_df[audit_df["mapping_method"] == MAP_METHOD_COUNTY_TO_CBSA]
+        self.assertGreater(len(county_match), 0)
+
+    def test_pipeline_integration_in_mspbna(self):
+        """MSPBNA_CR_Normalized.py must call run_local_macro_pipeline."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "MSPBNA_CR_Normalized.py")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("run_local_macro_pipeline", content,
+                       "MSPBNA_CR_Normalized.py must integrate local_macro pipeline")
+        self.assertIn("local_macro_kwargs", content,
+                       "Local macro sheets must be passed to write_excel_output")
+
+    def test_mapping_methods_are_all_defined(self):
+        """All mapping method constants must be defined."""
+        from local_macro import (MAP_METHOD_DIRECT_CBSA, MAP_METHOD_ZIP_TO_CBSA,
+                                 MAP_METHOD_COUNTY_TO_CBSA, MAP_METHOD_STATE_FALLBACK,
+                                 MAP_METHOD_UNMATCHED)
+        methods = [MAP_METHOD_DIRECT_CBSA, MAP_METHOD_ZIP_TO_CBSA,
+                   MAP_METHOD_COUNTY_TO_CBSA, MAP_METHOD_STATE_FALLBACK,
+                   MAP_METHOD_UNMATCHED]
+        for m in methods:
+            self.assertIsInstance(m, str)
+            self.assertGreater(len(m), 0)
+
+    def test_zip_without_hud_token_produces_audit_entries(self):
+        """ZIP codes without HUD token must still produce audit entries (unmatched)."""
+        from local_macro import build_geography_spine
+        _, audit_df = build_geography_spine(zip_codes=["10001", "90210"],
+                                            hud_token=None)
+        self.assertGreater(len(audit_df), 0,
+                           "ZIP without token must still produce audit rows")
+
+    def test_claude_md_documents_local_macro(self):
+        """CLAUDE.md must document local_macro.py."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "CLAUDE.md")
+        with open(path, "r") as f:
+            content = f.read()
+        self.assertIn("local_macro", content,
+                       "CLAUDE.md must document local_macro module")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # HUD HTTP Failure Diagnostics & Hardening (Parts 1-9)
 # ═══════════════════════════════════════════════════════════════════════════
