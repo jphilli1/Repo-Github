@@ -7381,5 +7381,219 @@ class TestCumulativeGrowthChart(unittest.TestCase):
         self.assertEqual(_GROWTH_START_DATE, pd.Timestamp("2015-12-31"))
 
 
+# =====================================================================
+# Final Hardening Pass Tests
+# =====================================================================
+
+class TestKRILegendRefinement(unittest.TestCase):
+    """Workstream A: KRI chart legend shows Wealth PB Avg and All Peers Avg."""
+
+    def test_range_for_group_returns_mean(self):
+        """_range_for_group dict includes 'mean' key."""
+        src = open("executive_charts.py").read()
+        self.assertIn('"mean":', src)
+        self.assertIn("np.mean(values)", src)
+
+    def test_wealth_avg_marker_plotted(self):
+        """Wealth PB Avg triangle marker is plotted."""
+        src = open("executive_charts.py").read()
+        self.assertIn('marker="^"', src)
+        self.assertIn("_COLOR_WEALTH_AVG", src)
+
+    def test_all_peers_avg_marker_plotted(self):
+        """All Peers Avg square marker is plotted."""
+        src = open("executive_charts.py").read()
+        self.assertIn('marker="s"', src)
+        self.assertIn("_COLOR_ALL_AVG", src)
+
+    def test_legend_has_wealth_pb_avg(self):
+        """Legend includes Wealth PB Avg (Mean) entry."""
+        src = open("executive_charts.py").read()
+        self.assertIn("Wealth PB Avg (Mean)", src)
+
+    def test_legend_has_all_peers_avg(self):
+        """Legend includes All Peers Avg (Mean) entry."""
+        src = open("executive_charts.py").read()
+        self.assertIn("All Peers Avg (Mean)", src)
+
+    def test_legend_has_five_potential_entries(self):
+        """Legend can have up to 5 entries: MSPBNA, Wealth PB Avg, All Peers Avg,
+        Wealth Peers Range, All Peers Range."""
+        src = open("executive_charts.py").read()
+        for label in ["MSPBNA", "Wealth PB Avg", "All Peers Avg",
+                      "Wealth Peers Range", "All Peers Range"]:
+            self.assertIn(label, src)
+
+    def test_conditional_legend_entries(self):
+        """Wealth PB Avg and All Peers Avg legend entries are conditional
+        on data availability (_has_wealth_avg, _has_all_avg)."""
+        src = open("executive_charts.py").read()
+        self.assertIn("_has_wealth_avg", src)
+        self.assertIn("_has_all_avg", src)
+
+
+class TestGeographySpineExpansion(unittest.TestCase):
+    """Workstream B: Geography spine accepts any valid CBSA code."""
+
+    def test_resolve_cbsa_exists(self):
+        """_resolve_cbsa function exists in local_macro."""
+        from local_macro import _resolve_cbsa
+        self.assertTrue(callable(_resolve_cbsa))
+
+    def test_resolve_cbsa_top_msas(self):
+        """Curated MSA codes resolve with full metadata."""
+        from local_macro import _resolve_cbsa
+        ref = _resolve_cbsa("35620")  # New York
+        self.assertIsNotNone(ref)
+        self.assertIn("New York", ref["msa_name"])
+
+    def test_resolve_cbsa_arbitrary_code(self):
+        """Non-curated 5-digit CBSA code resolves with minimal metadata."""
+        from local_macro import _resolve_cbsa
+        ref = _resolve_cbsa("99999")
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref["cbsa_code"], "99999")
+        self.assertIn("CBSA", ref["msa_name"])
+
+    def test_resolve_cbsa_invalid_code_returns_none(self):
+        """Invalid (non-5-digit) CBSA codes return None."""
+        from local_macro import _resolve_cbsa
+        self.assertIsNone(_resolve_cbsa("123"))
+        self.assertIsNone(_resolve_cbsa("abcde"))
+        self.assertIsNone(_resolve_cbsa(""))
+
+    def test_spine_tier1_accepts_any_valid_cbsa(self):
+        """build_geography_spine Tier 1 resolves arbitrary CBSA codes."""
+        from local_macro import build_geography_spine
+        spine_df, audit_df = build_geography_spine(cbsa_codes=["12345"])
+        # Should resolve (not unmatched) because 12345 is a valid 5-digit code
+        matched = audit_df[audit_df["quality_flag"] != "unmatched"]
+        self.assertGreater(len(matched), 0)
+
+    def test_county_to_cbsa_quality_is_low(self):
+        """County→CBSA mapping is flagged as low quality (partial coverage)."""
+        from local_macro import build_geography_spine
+        spine_df, audit_df = build_geography_spine(county_fips_codes=["06037"])
+        county_rows = audit_df[audit_df["source_geo_type"] == "county_fips"]
+        if not county_rows.empty:
+            self.assertEqual(county_rows.iloc[0]["quality_flag"], "low")
+
+    def test_top_msas_kept_as_convenience(self):
+        """TOP_MSAS list still exists and has 20 entries."""
+        from local_macro import TOP_MSAS
+        self.assertEqual(len(TOP_MSAS), 20)
+
+
+class TestCompletenessFlags(unittest.TestCase):
+    """Workstream C: macro_data_completeness and missing_sources fields."""
+
+    def test_board_columns_include_completeness(self):
+        """BOARD_COLUMNS includes macro_data_completeness and missing_sources."""
+        from local_macro import BOARD_COLUMNS
+        self.assertIn("macro_data_completeness", BOARD_COLUMNS)
+        self.assertIn("missing_sources", BOARD_COLUMNS)
+
+    def test_board_columns_count_is_33(self):
+        """BOARD_COLUMNS has 33 columns (31 original + 2 completeness)."""
+        from local_macro import BOARD_COLUMNS
+        self.assertEqual(len(BOARD_COLUMNS), 33)
+
+    def test_completeness_complete_when_all_present(self):
+        """When GDP, unemployment, and population are all present,
+        macro_data_completeness should be 'complete'."""
+        import pandas as pd
+        from local_macro import build_local_macro_latest
+        spine_df = pd.DataFrame([{
+            "cbsa_code": "35620", "msa_name": "New York",
+            "state_abbrev": "NY", "state_fips": "36",
+            "county_fips": None, "zip_code": None,
+        }])
+        gdp_df = pd.DataFrame([{
+            "cbsa_code": "35620", "date": "2025-01-01",
+            "gdp_value": 1e12, "source_dataset": "BEA",
+            "source_series_id": "X", "source_frequency": "annual",
+            "data_vintage": "2025",
+        }])
+        # Unemployment rate comes from derived_df, not unemp_df
+        derived_df = pd.DataFrame([{
+            "cbsa_code": "35620", "date": "2025-01-01",
+            "metric_name": "unemployment_rate_quarterly", "value": 4.2,
+        }])
+        pop_df = pd.DataFrame([{
+            "cbsa_code": "35620", "date": "2025-01-01",
+            "population": 8_000_000,
+        }])
+        audit_df = pd.DataFrame(columns=[
+            "target_cbsa_code", "mapping_method", "mapping_weight",
+            "coverage_pct", "quality_flag",
+        ])
+        result = build_local_macro_latest(
+            gdp_df, pd.DataFrame(), pop_df,
+            derived_df, spine_df, audit_df,
+        )
+        self.assertFalse(result.empty)
+        self.assertEqual(result.iloc[0]["macro_data_completeness"], "complete")
+        self.assertIsNone(result.iloc[0]["missing_sources"])
+
+    def test_completeness_partial_when_missing_gdp(self):
+        """When GDP is missing, completeness is 'partial' and
+        missing_sources includes 'gdp'."""
+        import pandas as pd
+        from local_macro import build_local_macro_latest
+        spine_df = pd.DataFrame([{
+            "cbsa_code": "35620", "msa_name": "New York",
+            "state_abbrev": "NY", "state_fips": "36",
+            "county_fips": None, "zip_code": None,
+        }])
+        derived_df = pd.DataFrame([{
+            "cbsa_code": "35620", "date": "2025-01-01",
+            "metric_name": "unemployment_rate_quarterly", "value": 4.2,
+        }])
+        pop_df = pd.DataFrame([{
+            "cbsa_code": "35620", "date": "2025-01-01",
+            "population": 8_000_000,
+        }])
+        audit_df = pd.DataFrame(columns=[
+            "target_cbsa_code", "mapping_method", "mapping_weight",
+            "coverage_pct", "quality_flag",
+        ])
+        result = build_local_macro_latest(
+            pd.DataFrame(), pd.DataFrame(), pop_df,
+            derived_df, spine_df, audit_df,
+        )
+        self.assertEqual(result.iloc[0]["macro_data_completeness"], "partial")
+        self.assertIn("gdp", result.iloc[0]["missing_sources"])
+
+    def test_completeness_none_when_nothing_present(self):
+        """When no sources are present, completeness is 'none'."""
+        import pandas as pd
+        from local_macro import build_local_macro_latest
+        spine_df = pd.DataFrame([{
+            "cbsa_code": "35620", "msa_name": "New York",
+            "state_abbrev": "NY", "state_fips": "36",
+            "county_fips": None, "zip_code": None,
+        }])
+        audit_df = pd.DataFrame(columns=[
+            "target_cbsa_code", "mapping_method", "mapping_weight",
+            "coverage_pct", "quality_flag",
+        ])
+        result = build_local_macro_latest(
+            pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
+            pd.DataFrame(), spine_df, audit_df,
+        )
+        self.assertEqual(result.iloc[0]["macro_data_completeness"], "none")
+        missing = result.iloc[0]["missing_sources"]
+        self.assertIn("gdp", missing)
+        self.assertIn("unemployment", missing)
+        self.assertIn("population", missing)
+
+    def test_api_key_warning_logged(self):
+        """Pipeline logs warning when API keys are missing."""
+        src = open("local_macro.py").read()
+        self.assertIn("Missing API keys", src)
+        self.assertIn("BEA_API_KEY", src)
+        self.assertIn("CENSUS_API_KEY", src)
+
+
 if __name__ == '__main__':
     unittest.main()

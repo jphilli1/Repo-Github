@@ -483,6 +483,7 @@ def generate_kri_bullet_chart(
         return {
             "lo": min(values), "hi": max(values),
             "median": float(np.median(values)),
+            "mean": float(np.mean(values)),
             "min_cert": min_cert, "max_cert": max_cert,
             "count": len(values),
         }
@@ -528,12 +529,12 @@ def generate_kri_bullet_chart(
         if all_range is None:
             av = _val(all_peers_cert, code)
             if pd.notna(av):
-                all_range = {"lo": av, "hi": av, "median": av,
+                all_range = {"lo": av, "hi": av, "median": av, "mean": av,
                              "min_cert": all_peers_cert, "max_cert": all_peers_cert, "count": 1}
         if wealth_range is None:
             wv = _val(wealth_cert, code)
             if pd.notna(wv):
-                wealth_range = {"lo": wv, "hi": wv, "median": wv,
+                wealth_range = {"lo": wv, "hi": wv, "median": wv, "mean": wv,
                                 "min_cert": wealth_cert, "max_cert": wealth_cert, "count": 1}
 
         has_all = all_range is not None
@@ -612,6 +613,26 @@ def generate_kri_bullet_chart(
     ax.scatter(subj_vals, y, s=130, color=_COLOR_MSPBNA, edgecolor="black",
                linewidth=0.8, zorder=6, marker="D", label="MSPBNA")
 
+    # Wealth PB Avg markers (purple triangle-up) — mean of wealth peer members
+    _COLOR_WEALTH_AVG = "#7B2D8E"   # Purple — matches Wealth Peers band
+    _COLOR_ALL_AVG = "#5B9BD5"      # Blue — matches All Peers palette
+    _has_wealth_avg = False
+    _has_all_avg = False
+    for i, row in enumerate(chart_rows):
+        wr = row["wealth_range"]
+        if wr and wr["count"] > 1:
+            ax.scatter([wr["mean"]], [y[i]], s=80, color=_COLOR_WEALTH_AVG,
+                       edgecolor="black", linewidth=0.6, zorder=5, marker="^")
+            _has_wealth_avg = True
+
+    # All Peers Avg markers (blue square) — mean of all peer members
+    for i, row in enumerate(chart_rows):
+        ar = row["all_range"]
+        if ar and ar["count"] > 1:
+            ax.scatter([ar["mean"]], [y[i]], s=70, color=_COLOR_ALL_AVG,
+                       edgecolor="black", linewidth=0.6, zorder=5, marker="s")
+            _has_all_avg = True
+
     # Value annotations next to MSPBNA diamond
     for i, row in enumerate(chart_rows):
         sem = get_semantic(row["code"])
@@ -636,17 +657,27 @@ def generate_kri_bullet_chart(
         ax.spines[sp].set_visible(False)
     ax.grid(True, axis="x", alpha=0.3)
 
-    # Legend
+    # Legend — up to 5 entries depending on data availability
     from matplotlib.patches import Patch
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], marker="D", color="w", markerfacecolor=_COLOR_MSPBNA,
                markeredgecolor="black", markersize=10, label="MSPBNA"),
-        Patch(facecolor=_COLOR_RANGE_ALL, edgecolor="#B0B0B0", alpha=0.5,
-              label="All Peers Range"),
+    ]
+    if _has_wealth_avg:
+        legend_elements.append(
+            Line2D([0], [0], marker="^", color="w", markerfacecolor=_COLOR_WEALTH_AVG,
+                   markeredgecolor="black", markersize=9, label="Wealth PB Avg (Mean)"))
+    if _has_all_avg:
+        legend_elements.append(
+            Line2D([0], [0], marker="s", color="w", markerfacecolor=_COLOR_ALL_AVG,
+                   markeredgecolor="black", markersize=9, label="All Peers Avg (Mean)"))
+    legend_elements.extend([
         Patch(facecolor=_COLOR_RANGE_WEALTH, edgecolor="#9070A0", alpha=0.7,
               label="Wealth Peers Range"),
-    ]
+        Patch(facecolor=_COLOR_RANGE_ALL, edgecolor="#B0B0B0", alpha=0.5,
+              label="All Peers Range"),
+    ])
     ax.legend(handles=legend_elements, loc="lower right", frameon=True, fontsize=9)
 
     plt.tight_layout()

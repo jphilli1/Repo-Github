@@ -71,11 +71,14 @@ SOURCE_CENSUS_POP = "Census_Population"
 SOURCE_HUD_CROSSWALK = "HUD_USPS_Crosswalk"
 
 # ---------------------------------------------------------------------------
-#  Top-50 MSA / CBSA Reference Table
+#  Curated MSA / CBSA Reference Table
 # ---------------------------------------------------------------------------
-# Canonical CBSA codes for major MSAs relevant to MSPBNA reporting.
+# Curated CBSA entries for 20 major MSAs relevant to MSPBNA reporting.
 # Source: OMB Bulletin (February 2023 delineations).
-# This is the authoritative CBSA reference — NOT derived from Case-Shiller.
+# NOT derived from Case-Shiller.
+# NOTE: This is a convenience list for metadata enrichment, NOT the canonical
+# CBSA universe.  The geography spine accepts *any* valid 5-digit CBSA code
+# via _resolve_cbsa() — it is not limited to these 20 entries.
 
 TOP_MSAS: List[Dict[str, str]] = [
     {"cbsa_code": "35620", "msa_name": "New York-Newark-Jersey City",
@@ -120,8 +123,30 @@ TOP_MSAS: List[Dict[str, str]] = [
      "state_abbrev": "MO", "state_fips": "29"},
 ]
 
-# Fast lookup by CBSA code
+# Fast lookup by CBSA code — TOP_MSAS provides curated metadata (name, state)
 _CBSA_LOOKUP: Dict[str, Dict[str, str]] = {m["cbsa_code"]: m for m in TOP_MSAS}
+
+
+def _resolve_cbsa(code: str) -> Optional[Dict[str, str]]:
+    """Resolve a CBSA code to metadata.
+
+    First checks the curated TOP_MSAS reference.  If not found there but the
+    code looks like a valid 5-digit CBSA, returns a minimal metadata dict so
+    that *any* valid CBSA code can flow through Tier 1 resolution — the
+    geography spine is not limited to the 20 curated MSAs.
+    """
+    ref = _CBSA_LOOKUP.get(code)
+    if ref:
+        return ref
+    # Accept any 5-digit numeric string as a valid CBSA code
+    if code and len(code) == 5 and code.isdigit():
+        return {
+            "cbsa_code": code,
+            "msa_name": f"CBSA {code}",
+            "state_abbrev": "",
+            "state_fips": "",
+        }
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +199,11 @@ def build_geography_spine(
     """Build a canonical geography spine from input geographies.
 
     Mapping hierarchy (in priority order):
-      1. Direct CBSA code match against TOP_MSAS reference table
+      1. Direct CBSA code — any valid 5-digit CBSA resolves (not limited to
+         TOP_MSAS).  Curated MSAs get full metadata; others get CBSA code only.
       2. ZIP → CBSA via HUD USPS crosswalk (type=4) when token available
-      3. County FIPS → CBSA via county-CBSA reference
+      3. County FIPS → CBSA via internal reference (partial coverage, ~62
+         counties for 20 curated MSAs; flagged quality='low')
       4. State-level fallback (flagged as low quality)
 
     Returns:
@@ -188,11 +215,11 @@ def build_geography_spine(
     audit_rows: List[Dict[str, Any]] = []
     spine_rows: List[Dict[str, Any]] = []
 
-    # --- 1. Direct CBSA resolution ---
+    # --- 1. Direct CBSA resolution (any valid 5-digit CBSA, not just TOP_MSAS) ---
     if cbsa_codes:
         for code in cbsa_codes:
             code = str(code).strip().zfill(5)
-            ref = _CBSA_LOOKUP.get(code)
+            ref = _resolve_cbsa(code)
             if ref:
                 row = {
                     "cbsa_code": code,
@@ -235,7 +262,7 @@ def build_geography_spine(
             match = zip_cbsa_map.get(zc)
             if match:
                 cbsa = match.get("cbsa_code", "")
-                ref = _CBSA_LOOKUP.get(cbsa, {})
+                ref = _resolve_cbsa(cbsa) or {}
                 row = {
                     "cbsa_code": cbsa,
                     "msa_name": ref.get("msa_name", match.get("msa_name", "")),
@@ -290,7 +317,7 @@ def build_geography_spine(
             fips = str(fips).strip().zfill(5)
             cbsa = county_cbsa_map.get(fips)
             if cbsa:
-                ref = _CBSA_LOOKUP.get(cbsa, {})
+                ref = _resolve_cbsa(cbsa) or {}
                 row = {
                     "cbsa_code": cbsa,
                     "msa_name": ref.get("msa_name", ""),
@@ -308,7 +335,7 @@ def build_geography_spine(
                     "mapping_method": MAP_METHOD_COUNTY_TO_CBSA,
                     "mapping_weight": 1.0,
                     "coverage_pct": 100.0,
-                    "quality_flag": QUALITY_MEDIUM,
+                    "quality_flag": QUALITY_LOW,  # Partial coverage — county table is not exhaustive
                     "load_timestamp": load_ts,
                 })
             else:
@@ -1180,6 +1207,7 @@ BOARD_COLUMNS = [
     "real_gdp_per_100k_yoy_pct", "unemployment_rate", "unemployment_yoy_pp",
     "unemployment_qoq_pp", "hpi_yoy_pct", "hpi_qoq_pct",
     "portfolio_balance", "portfolio_share", "macro_stress_flag",
+    "macro_data_completeness", "missing_sources",
     "data_vintage", "load_timestamp",
 ]
 
@@ -1322,6 +1350,26 @@ def build_local_macro_latest(
         else:
             row["macro_stress_flag"] = "OK"
 
+        # Data completeness flags — which sources contributed data
+        _sources_expected = {"gdp", "unemployment", "population"}
+        _sources_present: set = set()
+        if pd.notna(row.get("real_gdp_level")):
+            _sources_present.add("gdp")
+        if pd.notna(row.get("unemployment_rate")):
+            _sources_present.add("unemployment")
+        if pd.notna(row.get("population")):
+            _sources_present.add("population")
+        _missing = _sources_expected - _sources_present
+        n_present = len(_sources_present)
+        n_total = len(_sources_expected)
+        if n_present == n_total:
+            row["macro_data_completeness"] = "complete"
+        elif n_present == 0:
+            row["macro_data_completeness"] = "none"
+        else:
+            row["macro_data_completeness"] = "partial"
+        row["missing_sources"] = ",".join(sorted(_missing)) if _missing else None
+
         board_rows.append(row)
 
     if board_rows:
@@ -1446,7 +1494,18 @@ def run_local_macro_pipeline(
     resolved_cbsas = spine_df["cbsa_code"].dropna().unique().tolist()
     logging.info(f"[local_macro] Resolved {len(resolved_cbsas)} unique CBSAs")
 
-    # Fetch macro data
+    # Fetch macro data — log API key availability for diagnostics
+    _missing_keys: List[str] = []
+    if not bea_api_key:
+        _missing_keys.append("BEA_API_KEY (GDP data will be unavailable)")
+    if not census_api_key:
+        _missing_keys.append("CENSUS_API_KEY (population data will be unavailable)")
+    if _missing_keys:
+        logging.warning(
+            "[local_macro] Missing API keys — output will be incomplete: %s",
+            "; ".join(_missing_keys),
+        )
+
     logging.info("[local_macro] Fetching BEA GDP...")
     gdp_df = fetch_bea_gdp_metro(resolved_cbsas, bea_api_key=bea_api_key)
 
