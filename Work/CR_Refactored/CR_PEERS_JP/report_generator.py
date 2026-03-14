@@ -4705,8 +4705,8 @@ def _load_local_macro_sheet(
                 df = pd.read_excel(xls, sheet_name=sheet_name)
                 df.columns = [c.strip() for c in df.columns]
                 return df
-    except Exception as e:
-        logging.debug(f"Could not load {sheet_name}: {e}")
+    except Exception:
+        pass  # Sheet not available — caller handles None
     return None
 
 

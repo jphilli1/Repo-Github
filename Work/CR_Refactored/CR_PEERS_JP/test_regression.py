@@ -5845,30 +5845,40 @@ class TestArchitectureReconciliation(unittest.TestCase):
         self.assertIn("separate workflow", content,
                       "rendering_mode.py must note corp overlay is a separate workflow")
 
-    def test_msa_macro_panel_not_produced_by_report_generator(self):
-        """report_generator.py must not call build_msa_macro_panel."""
+    def test_msa_macro_panel_uses_workbook_not_corp_overlay(self):
+        """report_generator.py must use plot_msa_macro_panel (workbook-driven),
+        not build_msa_macro_panel (corp_overlay utility)."""
         content = self._read_file("report_generator.py")
         self.assertNotIn("build_msa_macro_panel", content,
-                         "msa_macro_panel must not be produced by report_generator.py")
+                         "Must use plot_msa_macro_panel, not corp_overlay's build_msa_macro_panel")
+        self.assertIn("plot_msa_macro_panel", content,
+                      "report_generator.py must define/call plot_msa_macro_panel")
 
     def test_msa_macro_panel_still_registered(self):
         """msa_macro_panel must still be registered in the artifact registry."""
         from rendering_mode import ARTIFACT_REGISTRY
         self.assertIn("msa_macro_panel", ARTIFACT_REGISTRY)
 
-    def test_rendering_mode_documents_msa_panel_future(self):
-        """rendering_mode.py must note msa_macro_panel is not yet produced."""
+    def test_rendering_mode_documents_msa_panel_as_produced(self):
+        """rendering_mode.py must document msa_macro_panel as produced (workbook-driven)."""
         content = self._read_file("rendering_mode.py")
-        self.assertIn("NOT yet produced", content,
-                      "rendering_mode.py must document msa_macro_panel as not yet produced")
+        self.assertNotIn("NOT yet produced", content,
+                         "msa_macro_panel is now produced — stale 'NOT yet produced' text")
+        self.assertIn("Produced by", content,
+                      "rendering_mode.py must document msa_macro_panel as produced")
 
     def test_docs_tests_imports_triad_consistent(self):
-        """The three-way contract (docs say standalone, tests enforce it, code obeys it)
-        must be consistent — no file should contradict the others."""
+        """The three-way contract: corp_overlay standalone, local_macro owns data,
+        report_generator consumes workbook sheets only."""
         rg_content = self._read_file("report_generator.py")
         # report_generator must not reference corp_overlay at all
         self.assertNotIn("corp_overlay", rg_content,
                          "Architecture violation: report_generator.py references corp_overlay")
+        # report_generator must not import local_macro directly
+        self.assertNotIn("from local_macro import", rg_content,
+                         "report_generator reads workbook, not local_macro directly")
+        self.assertNotIn("import local_macro", rg_content,
+                         "report_generator reads workbook, not local_macro directly")
 
 
 class TestLocalMacroGeographySpine(unittest.TestCase):

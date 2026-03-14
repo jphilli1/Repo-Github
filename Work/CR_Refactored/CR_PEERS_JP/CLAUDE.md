@@ -867,6 +867,27 @@ the precision available.
 
 ## 7. Changelog / Recent Fixes
 
+### 2026-03-14 — Reconciliation & Hardening Pass (MSA Macro Feature)
+
+**Objective:** Make code, tests, and docs describe the same architecture. Remove all contradictions between the old "not-yet-produced" / "future artifact" state and the current workbook-driven implementation.
+
+**Contradictions removed:**
+1. `test_regression.py::test_rendering_mode_documents_msa_panel_future` — asserted `"NOT yet produced"` in rendering_mode.py, but Prompt 4 already replaced that text with `"Produced by"`. Fixed: test now asserts the current state.
+2. `test_regression.py::test_msa_macro_panel_not_produced_by_report_generator` — asserted `build_msa_macro_panel` absent (still correct) but did not verify `plot_msa_macro_panel` present. Fixed: renamed to `test_msa_macro_panel_uses_workbook_not_corp_overlay`, asserts both.
+3. `test_regression.py::test_docs_tests_imports_triad_consistent` — only checked corp_overlay isolation, not local_macro isolation. Fixed: now also asserts no `from local_macro import` in report_generator.py.
+4. `CLAUDE.md` Section 12: said `local_macro.py` produces "three Excel sheets" — actual count is six. Fixed.
+5. `CLAUDE.md` Section 13 overview: same "three" → "six" fix.
+6. `CLAUDE.md` Known Limitations: said "Census and BEA enrichment hooks are stub implementations" and "API calls are hook points, not yet implemented" — stale since `local_macro.py` has real API implementations. Removed.
+7. `CLAUDE.md` Architecture Reconciliation changelog: described the intermediate state ("not-yet-produced", "future artifact") as if it were the final state. Consolidated into a single entry documenting the full multi-step resolution.
+8. `CLAUDE.md` Chart Package Expansion: said `select_top_msas`/`build_msa_macro_panel` added to corp_overlay without noting they are superseded. Added superseded note.
+
+**Final architecture contract (single source of truth):**
+- `corp_overlay.py` — standalone module, NOT imported by report_generator or MSPBNA
+- `local_macro.py` — owns all local macro data (BEA/BLS/Census APIs, geography spine, crosswalk audit); called by MSPBNA_CR_Normalized.py (Step 1); produces 6 Excel sheets
+- `report_generator.py` — consumes workbook sheets only (`Local_Macro_Latest`, `MSA_Crosswalk_Audit`); never imports local_macro or corp_overlay; `plot_msa_macro_panel()` skips cleanly when sheets absent
+
+**Files changed:** `test_regression.py`, `CLAUDE.md`
+
 ### 2026-03-13 — Fix 3 Post-Fix Regressions (8 → 0 Failed Artifacts)
 
 **Bug A — numpy array truth test in credit charts**: `if idx_to_label` on a numpy array raised `ValueError`. Fixed with `if len(idx_to_label) > 0`. Restored: `standard_credit_chart`, `normalized_credit_chart`.
@@ -1019,31 +1040,17 @@ Step 2 (report_generator.py)
 
 **Objective:** Resolve architecture drift between `report_generator.py`, `corp_overlay.py`, `test_regression.py`, and `CLAUDE.md` regarding ownership of MSA macro panel logic and the corp_overlay standalone contract.
 
-**Problem:** `report_generator.py` imported `corp_overlay` at line 2883 to produce `msa_macro_panel` with synthetic placeholder data, violating three documented contracts:
-1. CLAUDE.md Section 12: "`corp_overlay.py` is a standalone module ... NOT integrated into `report_generator.py`"
-2. `test_regression.py` `test_corp_overlay_not_in_report_generator`: asserts no `corp_overlay` references in `report_generator.py`
-3. `rendering_mode.py`: comments corp overlay artifacts as "separate workflow: `corp_overlay_runner.py`"
+**Problem:** `report_generator.py` originally imported `corp_overlay` to produce `msa_macro_panel` with synthetic placeholder data, violating the standalone contract.
 
-**Architecture decision:** Option A — MSA macro panel will be owned by a future dedicated `local_macro.py` module when real API data is available. The synthetic placeholder path is removed entirely from production.
+**Resolution (multi-step):**
+1. Removed the synthetic import/placeholder path from `report_generator.py`.
+2. Built `local_macro.py` as the canonical macro data source (BEA/BLS/Census APIs, geography spine, MSA crosswalk audit).
+3. Integrated `local_macro.py` into Step 1 (`MSPBNA_CR_Normalized.py`) to write six macro sheets to the dashboard workbook.
+4. Added `plot_msa_macro_panel()` to `report_generator.py` — reads `Local_Macro_Latest` and `MSA_Crosswalk_Audit` from the workbook (no `corp_overlay` or `local_macro` import).
+5. Updated `rendering_mode.py` to document `msa_macro_panel` as produced (workbook-driven).
+6. `TestArchitectureReconciliation` (9 tests) enforces: no corp_overlay import, no synthetic data, workbook-driven panel, triad consistency.
 
-**Changes:**
-
-1. **`report_generator.py`** — Removed the entire `msa_macro_panel` production block (lines 2879-2918) that imported `corp_overlay` and generated synthetic placeholder data. Replaced with a comment documenting the artifact as not-yet-produced. Zero references to `corp_overlay` remain.
-
-2. **`rendering_mode.py`** — Updated comments: corp overlay artifacts section now explicitly states artifacts are produced by `corp_overlay_runner.py`, not `report_generator.py`. Added separate comment block for `msa_macro_panel` documenting it as a future artifact not yet produced by any script.
-
-3. **`test_regression.py`** — Added `TestArchitectureReconciliation` class (9 tests):
-   - `test_report_generator_does_not_import_corp_overlay` — no `from corp_overlay` or `import corp_overlay`
-   - `test_no_synthetic_placeholder_data_in_report_generator` — no `RandomState`, `synth_df`, or `_synth_rows`
-   - `test_mspbna_does_not_import_corp_overlay` — verifies MSPBNA script isolation
-   - `test_claude_md_says_corp_overlay_standalone` — docs must say "standalone" and "NOT"
-   - `test_rendering_mode_documents_corp_overlay_as_separate` — comments must say "separate workflow"
-   - `test_msa_macro_panel_not_produced_by_report_generator` — no `build_msa_macro_panel` call
-   - `test_msa_macro_panel_still_registered` — artifact remains in registry for forward compatibility
-   - `test_rendering_mode_documents_msa_panel_future` — comments document "NOT yet produced"
-   - `test_docs_tests_imports_triad_consistent` — three-way consistency check
-
-4. **`CLAUDE.md`** — Updated Section 12 MSA macro panel documentation: replaced "current wiring with synthetic placeholder data" with "not currently produced by any script" and future `local_macro.py` ownership contract.
+**Final contract:** `corp_overlay.py` standalone · `local_macro.py` owns macro data · `report_generator.py` reads workbook sheets only.
 
 **Files changed:** `report_generator.py`, `rendering_mode.py`, `test_regression.py`, `CLAUDE.md`
 
@@ -1173,7 +1180,7 @@ Step 2 (report_generator.py)
 
 3. **Unit family separation**: Standard KRI metrics split into two charts: `kri_bullet_standard` (5 % rate metrics) and `kri_bullet_standard_coverage` (2 x-multiple metrics). This ensures incompatible units never share a shared axis. Normalized was already split (rates vs composition). Total: 4 KRI football-field artifacts produced via unified `_bullet_specs` loop.
 
-4. **Dynamic MSA macro panel**: Added `select_top_msas()` and `build_msa_macro_panel()` to `corp_overlay.py`. `select_top_msas` ranks MSAs by aggregate loan balance. `build_msa_macro_panel` creates a small-multiple grid: rows = MSAs, columns = Case-Shiller HPI YoY%, GDP YoY%, Unemployment Rate Change (pp). Critical unit rules enforced: house price/GDP in %, unemployment in percentage points (pp). Registered as `msa_macro_panel` artifact.
+4. **Dynamic MSA macro panel**: Added `select_top_msas()` and `build_msa_macro_panel()` to `corp_overlay.py` as utility functions. *(These are now superseded by `report_generator.py::plot_msa_macro_panel()` which reads workbook sheets produced by `local_macro.py`. The corp_overlay utilities are retained for backward compatibility only.)* Critical unit rules enforced: GDP in %, unemployment in percentage points (pp). Registered as `msa_macro_panel` artifact.
 
 5. **Tests and documentation**: Added 3 test classes (29 tests): `TestBookwideGrowthChart` (8 tests), `TestFootballFieldKRI` (12 tests), `TestMSAMacroPanel` (9 tests). Updated `test_registry_covers_known_artifacts` with new artifacts. Updated CLAUDE.md with football-field design, unit family split, MSA panel documentation, output filenames, and changelog.
 
@@ -2792,15 +2799,14 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 
 **Production status:** The MSA macro panel chart (`msa_macro_panel` artifact) is **now produced** by `report_generator.py::plot_msa_macro_panel()`, which reads from the `Local_Macro_Latest` workbook sheet. Data flows through the workbook (Step 1 → Step 2 pattern) — `report_generator.py` does NOT import `local_macro.py` or `corp_overlay.py` directly. Top MSA selection is data-driven (portfolio_balance or GDP level), not hardcoded. The legacy utility functions (`select_top_msas`, `build_msa_macro_panel`) in `corp_overlay.py` are superseded but retained for backward compatibility.
 
-**Local macro data pipeline:** The dedicated `local_macro.py` module now provides the underlying macro data layer. It produces three Excel sheets (`Local_Macro_Raw`, `Local_Macro_Mapped`, `MSA_Crosswalk_Audit`) integrated into the Step 1 dashboard via `MSPBNA_CR_Normalized.py`. See Section 13 for full architecture details.
+**Local macro data pipeline:** The dedicated `local_macro.py` module now provides the underlying macro data layer. It produces six Excel sheets (`Local_Macro_Raw`, `Local_Macro_Derived`, `Local_Macro_Mapped`, `Local_Macro_Latest`, `MSA_Board_Panel`, `MSA_Crosswalk_Audit`) integrated into the Step 1 dashboard via `MSPBNA_CR_Normalized.py`. See Section 13 for full architecture details.
 
 ### Known Limitations
 
-- Census and BEA enrichment hooks are stub implementations — they return no-op results. When API integrations are needed, implement the actual API calls inside `enrich_geography()`.
 - The bridge table extracts composition from `Summary_Dashboard` sheet only. If the dashboard uses a different sheet layout, `load_dashboard_composition()` falls back to `FDIC_Data`.
 - Dashboard auto-discovery uses the same `Bank_Performance_Dashboard_*.xlsx` glob pattern as `report_generator.py`.
 - Loan file must be CSV, TSV, or Excel (.xlsx/.xls). Other formats are rejected.
-- MSA macro panel requires pre-formatted DataFrames from external sources (Case-Shiller, BEA, Census). The data ingestion/API calls are hook points, not yet implemented.
+- MSA macro panel data quality depends on API availability (BEA, BLS, Census, HUD). When APIs are unavailable, the pipeline produces empty DataFrames and a `Local_Macro_Skip_Audit` sheet; the chart is skipped cleanly.
 
 ---
 
@@ -2808,7 +2814,7 @@ python corp_overlay_runner.py data/loans.csv --output-dir custom/output/path
 
 ### Overview
 
-`local_macro.py` is a **dedicated module** that builds a canonical geography spine and fetches MSA-level macroeconomic data from BEA, BLS, and Census APIs. It is called by `MSPBNA_CR_Normalized.py` (Step 1) and produces three Excel sheets in the dashboard output. It is **separate** from the Case-Shiller ZIP mapper (`case_shiller_zip_mapper.py`) and from the corp overlay (`corp_overlay.py`).
+`local_macro.py` is a **dedicated module** that builds a canonical geography spine and fetches MSA-level macroeconomic data from BEA, BLS, and Census APIs. It is called by `MSPBNA_CR_Normalized.py` (Step 1) and produces six Excel sheets in the dashboard output (plus an optional `Local_Macro_Skip_Audit` when APIs are unavailable). It is **separate** from the Case-Shiller ZIP mapper (`case_shiller_zip_mapper.py`) and from the corp overlay (`corp_overlay.py`).
 
 ### Geography Spine
 
