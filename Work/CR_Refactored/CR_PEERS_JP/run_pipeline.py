@@ -81,6 +81,20 @@ def main():
     env = os.environ.copy()
     env["REPORT_MODE"] = args.mode
 
+    # Force UTF-8 on Windows to prevent emoji/Unicode encoding errors in log output
+    env["PYTHONUTF8"] = "1"
+
+    # Build PYTHONPATH so subprocess imports resolve across all src/ subdirectories
+    repo_root = str(Path(__file__).parent.resolve())
+    extra_paths = [
+        repo_root,
+        os.path.join(repo_root, "src", "data_processing"),
+        os.path.join(repo_root, "src", "reporting"),
+        os.path.join(repo_root, "src", "local_macro"),
+    ]
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+
     results = {}
 
     # Step 1: Data Fetch & Processing

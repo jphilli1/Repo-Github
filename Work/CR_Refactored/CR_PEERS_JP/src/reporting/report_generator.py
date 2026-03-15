@@ -30,6 +30,11 @@ import seaborn as sns
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+# Sibling src/ directories for cross-package imports
+for _sub in ("src/data_processing", "src/reporting", "src/local_macro"):
+    _p = os.path.join(_REPO_ROOT, _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 warnings.filterwarnings(
     "ignore",

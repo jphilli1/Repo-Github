@@ -33,10 +33,11 @@ from tqdm.asyncio import tqdm as tqdm_asyncio
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-# local_macro moved to src/local_macro/
-_LOCAL_MACRO_DIR = os.path.join(_REPO_ROOT, "src", "local_macro")
-if _LOCAL_MACRO_DIR not in sys.path:
-    sys.path.insert(0, _LOCAL_MACRO_DIR)
+# Sibling src/ directories for cross-package imports
+for _sub in ("src/reporting", "src/local_macro", "src/data_processing"):
+    _p = os.path.join(_REPO_ROOT, _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # --- Consolidated Data Dictionary (repo root modules) ---
 from master_data_dictionary import MasterDataDictionary, LOCAL_DERIVED_METRICS
@@ -2917,7 +2918,7 @@ class BankMetricsProcessor:
 
         # NDFI NCO: No valid direct CR field exists. Set 0.0.
         # LIMITATION: CR-only NCO mapping unsupported for NDFI.
-        norm_cols['Excl_NDFI_NCO_YTD'] = 0.0
+        norm_cols['Excl_NDFI_NCO_YTD'] = pd.Series(0.0, index=df_processed.index)
 
         # Ag NCO: Agricultural production loans charge-offs (4655) - recoveries (4665)
         # BALANCE-GATED: If Excl_Ag_Balance is zero, force NCO to zero.
@@ -2938,7 +2939,7 @@ class BankMetricsProcessor:
         norm_cols['Excl_CI_NA'] = best_of(df_processed, ['NACI', 'RCON1608', 'RCFD1608']).fillna(0)
         # NDFI NA: J460 removed (not Call Report-consistent). Set 0.0.
         # LIMITATION: Call Report-only NA mapping unsupported for NDFI.
-        norm_cols['Excl_NDFI_NA'] = 0.0
+        norm_cols['Excl_NDFI_NA'] = pd.Series(0.0, index=df_processed.index)
         norm_cols['Excl_ADC_NA'] = best_of(df_processed, ['NARECONS', 'RCON3492', 'RCFD3492']).fillna(0)
         norm_cols['Excl_CC_NA'] = best_of(df_processed, ['RCFDB575', 'RCONB575']).fillna(0)
         norm_cols['Excl_Auto_NA'] = best_of(df_processed, ['RCFDK213', 'RCONK213']).fillna(0)
@@ -2965,8 +2966,8 @@ class BankMetricsProcessor:
         norm_cols['Excl_CI_P9'] = best_of(df_processed, ['P9CI', 'RCON1607', 'RCFD1607']).fillna(0)
         # 2. NDFI — J458/J459 removed (not Call Report-consistent). Set 0.0.
         # LIMITATION: Call Report-only PD mapping unsupported for NDFI.
-        norm_cols['Excl_NDFI_P3'] = 0.0
-        norm_cols['Excl_NDFI_P9'] = 0.0
+        norm_cols['Excl_NDFI_P3'] = pd.Series(0.0, index=df_processed.index)
+        norm_cols['Excl_NDFI_P9'] = pd.Series(0.0, index=df_processed.index)
         # 3. ADC
         norm_cols['Excl_ADC_P3'] = best_of(df_processed, ['P3RECONS', 'RCON2759', 'RCFD2759']).fillna(0)
         norm_cols['Excl_ADC_P9'] = best_of(df_processed, ['P9RECONS', 'RCON2769', 'RCFD2769']).fillna(0)
