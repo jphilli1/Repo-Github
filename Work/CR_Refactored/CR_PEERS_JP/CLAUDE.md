@@ -28,3 +28,4 @@ Automated Credit Risk Performance reporting engine for MSPBNA. See `README.md` f
 - Prefer workbook-driven integration contracts over cross-module runtime imports.
 - `rendering_mode.py` is the single canonical source for all rendering abstractions.
 - Coverage vs Share label rule is non-negotiable (see `06-normalization-and-peer-groups.md`).
+- **Issue Logging:** If you discover a bug, math error, or architectural risk while working on an unrelated task, DO NOT fix it immediately. Append it as a new formatted task under the `## Backlog / Identified Risks` section of `TODO.md` so it can be prioritized later.
