@@ -15,7 +15,12 @@ Quick start::
     report_df = mdd.export_dictionary_report()
 """
 
-from .master_data_dictionary import (
+import sys as _sys, os as _os
+_dp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "src", "data_processing")
+if _dp not in _sys.path:
+    _sys.path.insert(0, _dp)
+
+from master_data_dictionary import (
     LOCAL_DERIVED_METRICS,
     MasterDataDictionary,
 )

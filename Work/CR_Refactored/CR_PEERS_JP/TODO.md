@@ -1,11 +1,11 @@
 # Active Sprint Tasks
 
 ## Priority 1: Core Performance Optimization
-- [ ] **Performance Fix:** In `src/data_processing/MSPBNA_CR_Normalized.py` (lines ~2734+), refactor the continuous `df['col'] = ...` assignments. Store newly derived metrics in a temporary dictionary and append them to the main DataFrame using `pd.concat(axis=1)` to resolve the `PerformanceWarning` fragmentation. Run `python run_pipeline.py` to verify warnings disappear.
+- [x] **Performance Fix:** Refactored continuous `df['col'] = ...` assignments in `MSPBNA_CR_Normalized.py` into temp-dict + batch assign + `.copy()` defragmentation at 3 strategic points (post-TTM-loop, post-totals, snapshot builder). PerformanceWarnings: 27 → 0. Pipeline: both steps OK (~246s). *(2026-03-15)*
 
 ## Priority 2: FRED API Resilience & Fallbacks
-- [ ] **API Resiliency Fix:** In `src/data_processing/MSPBNA_CR_Normalized.py`, implement a 3-attempt exponential backoff mechanism in the FRED fetching function for macro series (DGS3, DGS1) to handle HTTP 429/400 errors.
-- [ ] **Pipeline Stability Fix:** In `src/data_processing/MSPBNA_CR_Normalized.py` inside the FRED export function, check if the observations payload exists. If the fetch fails entirely, generate an empty fallback DataFrame with the expected schema (date, value) to guarantee "FRED expansion sheets" are created so downstream charts do not skip.
+- [x] **API Resiliency Fix:** Refactored `_fetch_single_series()` into a unified retry loop: HTTP 429 and 5xx now retry with exponential backoff (3 attempts, 2^n seconds). HTTP 400 remains no-retry. Connection errors retry as before. Pipeline OK. *(2026-03-15)*
+- [x] **Pipeline Stability Fix:** Added fallback schema guards after FRED fetch: `fred_df`, `fred_desc_df`, `fred_metadata_df` all get empty DataFrames with correct columns if fetch fails entirely. Guarantees FRED_Data, FRED_Descriptions, FRED_Metadata sheets are always created. Pipeline OK. *(2026-03-15)*
 
 ## Priority 3: Fail-Fast & I/O Guardrails
 - [ ] **Env Var Preflight:** In `run_pipeline.py` (~line 43), add a preflight check before invoking Step 1. `sys.exit(1)` with a clear error if `FRED_API_KEY` or `HUD_USER_TOKEN` are missing. Add optional key load logs to `local_macro.py`.

@@ -2090,77 +2090,82 @@ class FREDDataFetcher:
         }
 
         async with self.semaphore:
-            # --- HTTP 400 (bad ID) — no retry ---
-            try:
-                async with session.get(self.BASE_URL, params=params) as response:
-                    if response.status == 400:
-                        body = await response.text()
-                        self.logger.error(
-                            f"FRED returned HTTP 400 for {series_id} — "
-                            f"series ID is invalid or discontinued. Response: {body[:200]}"
-                        )
-                        return series_id, None, self.FAIL_INVALID_ID
-                    response.raise_for_status()
-                    data = await response.json()
+            last_err = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    async with session.get(self.BASE_URL, params=params) as response:
+                        # HTTP 400 — bad/discontinued series ID, never retry
+                        if response.status == 400:
+                            body = await response.text()
+                            self.logger.error(
+                                f"FRED returned HTTP 400 for {series_id} — "
+                                f"series ID is invalid or discontinued. Response: {body[:200]}"
+                            )
+                            return series_id, None, self.FAIL_INVALID_ID
 
-                    if "observations" in data and data["observations"]:
-                        df = pd.DataFrame(data["observations"])
-                        df = df[['date', 'value']]
-                        df['date'] = pd.to_datetime(df['date'])
-                        df['value'] = pd.to_numeric(df['value'], errors='coerce')
-                        df = df.set_index('date').rename(columns={'value': series_id})
-                        return series_id, df, None
-                    else:
-                        self.logger.warning(f"No observations returned for series {series_id}.")
-                        return series_id, None, None
-            except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError,
-                    OSError, asyncio.TimeoutError) as e:
-                # Connection-level failure — retry with backoff
-                last_err = e
-                for attempt in range(1, max_retries + 1):
-                    wait = backoff_base ** attempt
-                    self.logger.warning(
-                        f"Connection error fetching {series_id} (attempt {attempt}/{max_retries}): "
-                        f"{type(e).__name__}: {e}. Retrying in {wait:.0f}s..."
-                    )
-                    await asyncio.sleep(wait)
-                    try:
-                        async with session.get(self.BASE_URL, params=params) as response:
-                            if response.status == 400:
-                                return series_id, None, self.FAIL_INVALID_ID
-                            response.raise_for_status()
-                            data = await response.json()
-                            if "observations" in data and data["observations"]:
-                                df = pd.DataFrame(data["observations"])
-                                df = df[['date', 'value']]
-                                df['date'] = pd.to_datetime(df['date'])
-                                df['value'] = pd.to_numeric(df['value'], errors='coerce')
-                                df = df.set_index('date').rename(columns={'value': series_id})
+                        # HTTP 429 — rate-limited, retry with backoff
+                        if response.status == 429 and attempt < max_retries:
+                            wait = backoff_base ** attempt
+                            self.logger.warning(
+                                f"HTTP 429 (rate-limited) for {series_id} "
+                                f"(attempt {attempt}/{max_retries}). Retrying in {wait:.0f}s..."
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+
+                        # HTTP 5xx — server error, retry with backoff
+                        if response.status >= 500 and attempt < max_retries:
+                            wait = backoff_base ** attempt
+                            self.logger.warning(
+                                f"HTTP {response.status} for {series_id} "
+                                f"(attempt {attempt}/{max_retries}). Retrying in {wait:.0f}s..."
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+
+                        response.raise_for_status()
+                        data = await response.json()
+
+                        if "observations" in data and data["observations"]:
+                            df = pd.DataFrame(data["observations"])
+                            df = df[['date', 'value']]
+                            df['date'] = pd.to_datetime(df['date'])
+                            df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                            df = df.set_index('date').rename(columns={'value': series_id})
+                            if attempt > 1:
                                 self.logger.info(f"Retry succeeded for {series_id} on attempt {attempt}.")
-                                return series_id, df, None
-                            else:
-                                self.logger.warning(f"No observations returned for series {series_id}.")
-                                return series_id, None, None
-                    except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError,
-                            OSError, asyncio.TimeoutError) as retry_e:
-                        last_err = retry_e
+                            return series_id, df, None
+                        else:
+                            self.logger.warning(f"No observations returned for series {series_id}.")
+                            return series_id, None, None
+
+                except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError,
+                        OSError, asyncio.TimeoutError) as e:
+                    last_err = e
+                    if attempt < max_retries:
+                        wait = backoff_base ** attempt
+                        self.logger.warning(
+                            f"Connection error fetching {series_id} (attempt {attempt}/{max_retries}): "
+                            f"{type(e).__name__}: {e}. Retrying in {wait:.0f}s..."
+                        )
+                        await asyncio.sleep(wait)
                         continue
-                    except Exception as retry_e:
-                        last_err = retry_e
-                        break
+                except aiohttp.ClientResponseError as e:
+                    self.logger.error(f"HTTP {e.status} error fetching {series_id}: {e}")
+                    return series_id, None, self.FAIL_INVALID_ID if e.status == 400 else self.FAIL_OTHER
+                except Exception as e:
+                    self.logger.error(f"Unexpected error for {series_id}: {type(e).__name__}: {e}")
+                    return series_id, None, self.FAIL_OTHER
+                finally:
+                    await asyncio.sleep(self.rate_limit_delay)
+
+            # All retries exhausted
+            if last_err:
                 self.logger.error(
                     f"All {max_retries} retries exhausted for {series_id}: "
                     f"{type(last_err).__name__}: {last_err}"
                 )
-                return series_id, None, self.FAIL_CONNECTION
-            except aiohttp.ClientResponseError as e:
-                self.logger.error(f"HTTP {e.status} error fetching {series_id}: {e}")
-                return series_id, None, self.FAIL_INVALID_ID if e.status == 400 else self.FAIL_OTHER
-            except Exception as e:
-                self.logger.error(f"Unexpected error for {series_id}: {type(e).__name__}: {e}")
-                return series_id, None, self.FAIL_OTHER
-            finally:
-                await asyncio.sleep(self.rate_limit_delay)
+            return series_id, None, self.FAIL_CONNECTION
 
     async def fetch_all_series_async(
         self,
@@ -2708,6 +2713,9 @@ class BankMetricsProcessor:
 
         # Note: col.replace('_YTD','_Q') yields 'Provision_Exp_Q', 'Int_Inc_Loans_Q', etc.
 
+        # Defragment before the per-CERT TTM loop to prevent PerformanceWarnings
+        df_processed = df_processed.copy()
+
         temp_ttm_frames = []
         if df_processed.empty:
             logging.warning("df_processed is empty before TTM groupby — skipping TTM computation")
@@ -2737,109 +2745,91 @@ class BankMetricsProcessor:
             temp_ttm_frames.append(group)
 
         if temp_ttm_frames:
-            df_processed = pd.concat(temp_ttm_frames)
+            df_processed = pd.concat(temp_ttm_frames).copy()
         # [3] TOTALS & DENOMINATORS
         # ---------------------------------------------------------
-        df_processed['SBL_Balance'] = best_of(df_processed, ['RCFD1545', 'RCON1545'])
-        df_processed['Fund_Finance_Balance'] = best_of(df_processed, ['RCFDJ454', 'RCONJ454'])
+        # PERF: Collect new columns in a dict, then concat once to avoid
+        # DataFrame fragmentation warnings from repeated single-column inserts.
+        _td = {}  # totals/denominators temp dict
+
+        _td['SBL_Balance'] = best_of(df_processed, ['RCFD1545', 'RCON1545'])
+        _td['Fund_Finance_Balance'] = best_of(df_processed, ['RCFDJ454', 'RCONJ454'])
         # Fund Finance / NDFI credit-quality: J458/J459/J460 removed — not
         # Call Report-consistent for delinquency/nonaccrual mapping.
-        # Set to NaN (coverage gap), not 0.0 — these fields are not separately
-        # reported on core RC-N lines.
-        df_processed['RIC_Fund_Finance_PD30'] = np.nan
-        df_processed['RIC_Fund_Finance_PD90'] = np.nan
-        df_processed['RIC_Fund_Finance_Nonaccrual'] = np.nan
-        df_processed['_NDFI_PD_NA_NotIsolatable'] = True
+        _td['RIC_Fund_Finance_PD30'] = np.nan
+        _td['RIC_Fund_Finance_PD90'] = np.nan
+        _td['RIC_Fund_Finance_Nonaccrual'] = np.nan
+        _td['_NDFI_PD_NA_NotIsolatable'] = True
+        _td['RIC_Fund_Finance_NCO_TTM'] = 0.0
 
-        # NCO for Fund Finance: explicitly assumed 0 in this framework
-        df_processed['RIC_Fund_Finance_NCO_TTM'] = 0.0
-
-
-        # NEW: Other (remaining loan buckets we want visible as a separate segment)
         f162 = df_processed['RCFDF162'] if 'RCFDF162' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
         f163 = df_processed['RCFDF163'] if 'RCFDF163' in df_processed.columns else pd.Series(0.0, index=df_processed.index)
-        df_processed['Other_Balance'] = (
+        _td['Other_Balance'] = (
             best_of(df_processed, ['RCFDJ451', 'RCONJ451']).fillna(0) +
-            f162.fillna(0) +
-            f163.fillna(0)
+            f162.fillna(0) + f163.fillna(0)
         )
 
-        # 1. ADC / Construction (To be excluded from Normalized/WM View)
-        df_processed['ADC_Balance'] = best_of(df_processed, ['LNRECONS']).fillna(0)
-
-
-
-
-        # 2. Pure Investment CRE (Multifamily + Non-Owner Occ Nonfarm) -> KEPT in WM View
-        # Tightened: LNREMULT + LNRENROT only. LNREOTH removed (ambiguous mapping).
-        df_processed['CRE_Investment_Pure_Balance'] = (
+        _td['ADC_Balance'] = best_of(df_processed, ['LNRECONS']).fillna(0)
+        _td['CRE_Investment_Pure_Balance'] = (
             best_of(df_processed, ['LNREMULT']).fillna(0) +
             best_of(df_processed, ['LNRENROT']).fillna(0)
         )
+        _td['CRE_OO_Balance'] = best_of(df_processed, ['LNRENROW']).fillna(0)
 
-        # 3. Owner-Occupied CRE (Business dependent) -> KEPT in WM View
-        df_processed['CRE_OO_Balance'] = best_of(df_processed, ['LNRENROW']).fillna(0)
-        df_processed['RIC_Unalloc_ACL'] = best_of(df_processed, ['RCFDJJ22', 'RCONJJ22'])
-
-        df_processed['RIC_Calculated_ACL'] = (
+        _unalloc_acl = best_of(df_processed, ['RCFDJJ22', 'RCONJJ22'])
+        _td['RIC_Unalloc_ACL'] = _unalloc_acl
+        _td['RIC_Calculated_ACL'] = (
             df_processed['RIC_Constr_ACL'] + df_processed['RIC_CRE_ACL'] + df_processed['RIC_Resi_ACL'] +
             df_processed['RIC_Comm_ACL'] + df_processed['RIC_Card_ACL'] + df_processed['RIC_OthCons_ACL'] +
-            df_processed['RIC_Unalloc_ACL']
+            _unalloc_acl
         )
-        df_processed['RIC_Calculated_Cost'] = (
+        _td['RIC_Calculated_Cost'] = (
             df_processed['RIC_Constr_Cost'] + df_processed['RIC_CRE_Cost'] + df_processed['RIC_Resi_Cost'] +
             df_processed['RIC_Comm_Cost'] + df_processed['RIC_Card_Cost'] + df_processed['RIC_OthCons_Cost']
         )
 
-        df_processed['Total_ACL'] = df_processed.get('LNATRES', 0).fillna(0)
-        df_processed['Total_Reg_ACL'] = df_processed.get('RB2LNRES', 0).fillna(0)
-        df_processed['Gross_Loans'] = df_processed.get('LNLS', 0)
+        _total_acl = df_processed.get('LNATRES', 0).fillna(0)
+        _gross_loans = df_processed.get('LNLS', 0)
+        _td['Total_ACL'] = _total_acl
+        _td['Total_Reg_ACL'] = df_processed.get('RB2LNRES', 0).fillna(0)
+        _td['Gross_Loans'] = _gross_loans
 
-        # Denominators
-        df_processed['RIC_Used_Total_ACL'] = np.where(df_processed['Total_ACL'] > 0, df_processed['Total_ACL'], df_processed['RIC_Calculated_ACL'])
-        df_processed['RIC_Used_Total_Cost'] = np.where(df_processed['Gross_Loans'] > 0, df_processed['Gross_Loans'], df_processed['RIC_Calculated_Cost'])
-        df_processed['RIC_Used_Total_NA'] = df_processed['Total_Nonaccrual']
+        _td['RIC_Used_Total_ACL'] = np.where(_total_acl > 0, _total_acl, _td['RIC_Calculated_ACL'])
+        _td['RIC_Used_Total_Cost'] = np.where(_gross_loans > 0, _gross_loans, _td['RIC_Calculated_Cost'])
+        _td['RIC_Used_Total_NA'] = df_processed['Total_Nonaccrual']
 
-        # ---------------------------------------------------------
-        # [3.6] LIQUIDITY & BALANCE SHEET STRUCTURE (RESTORED)
-        # ---------------------------------------------------------
-        # Cash and liquid assets for liquidity analysis
-        df_processed['Cash_and_Balances'] = best_of(df_processed, ['CHBAL', 'RCFD0010', 'RCON0010']).fillna(0)
-        df_processed['Fed_Funds_Sold'] = best_of(df_processed, ['CHBALNI', 'RCFD0081', 'RCON0081']).fillna(0)
-        df_processed['Securities_HTM'] = best_of(df_processed, ['HTM_Securities']).fillna(0)
-        df_processed['Securities_AFS'] = best_of(df_processed, ['AFS_Securities']).fillna(0)
-        df_processed['Trading_Assets'] = best_of(df_processed, ['TRD', 'RCFD3545', 'RCON3545']).fillna(0)
+        # [3.6] LIQUIDITY & BALANCE SHEET STRUCTURE
+        _cash = best_of(df_processed, ['CHBAL', 'RCFD0010', 'RCON0010']).fillna(0)
+        _ff = best_of(df_processed, ['CHBALNI', 'RCFD0081', 'RCON0081']).fillna(0)
+        _htm = best_of(df_processed, ['HTM_Securities']).fillna(0)
+        _afs = best_of(df_processed, ['AFS_Securities']).fillna(0)
+        _td['Cash_and_Balances'] = _cash
+        _td['Fed_Funds_Sold'] = _ff
+        _td['Securities_HTM'] = _htm
+        _td['Securities_AFS'] = _afs
+        _td['Trading_Assets'] = best_of(df_processed, ['TRD', 'RCFD3545', 'RCON3545']).fillna(0)
+        _td['Liquid_Assets'] = _cash + _ff + _afs
+        _td['HQLA'] = _cash + _ff + _htm + _afs
 
-        # Liquid Assets = Cash + Fed Funds Sold + AFS Securities
-        df_processed['Liquid_Assets'] = (
-            df_processed['Cash_and_Balances'] +
-            df_processed['Fed_Funds_Sold'] +
-            df_processed['Securities_AFS']
-        )
+        _td['Total_Assets_Raw'] = best_of(df_processed, ['ASSET', 'RCFD2170']).fillna(0)
+        _td['Total_Equity_Raw'] = best_of(df_processed, ['EQ', 'RCFD3210']).fillna(0)
+        _td['Total_Deposits_Raw'] = best_of(df_processed, ['DEP', 'RCFD2200']).fillna(0)
+        _td['Net_Income_Raw'] = best_of(df_processed, ['NETINC', 'RIAD4340']).fillna(0)
+        _td['Total_Int_Income_Raw'] = best_of(df_processed, ['INTINC', 'RIAD4107']).fillna(0)
+        _td['Total_Int_Expense_Raw'] = best_of(df_processed, ['INTEXP', 'RIAD4073']).fillna(0)
+        _td['Total_Nonint_Income_Raw'] = best_of(df_processed, ['NONII', 'RIAD4079']).fillna(0)
+        _td['Total_Nonint_Expense_Raw'] = best_of(df_processed, ['NONIX', 'RIAD4093']).fillna(0)
+        _td['Int_Inc_Loans_Raw'] = best_of(df_processed, ['ILNDOM', 'RIAD4010']).fillna(0)
+        _td['Int_Exp_Deposits_Raw'] = best_of(df_processed, ['RIAD4115']).fillna(0)
+        _td['Unused_Commitments'] = best_of(df_processed, ['Unused_Commitments_Total']).fillna(0)
 
-        # High Quality Liquid Assets (more conservative) = Cash + Fed Funds + HTM + AFS
-        df_processed['HQLA'] = (
-            df_processed['Cash_and_Balances'] +
-            df_processed['Fed_Funds_Sold'] +
-            df_processed['Securities_HTM'] +
-            df_processed['Securities_AFS']
-        )
-
-        # Total Assets for ratio
-        df_processed['Total_Assets_Raw'] = best_of(df_processed, ['ASSET', 'RCFD2170']).fillna(0)
-        df_processed['Total_Equity_Raw'] = best_of(df_processed, ['EQ', 'RCFD3210']).fillna(0)
-        df_processed['Total_Deposits_Raw'] = best_of(df_processed, ['DEP', 'RCFD2200']).fillna(0)
-        # Income Statement Raw Metrics (prefer FDIC text aliases)
-        df_processed['Net_Income_Raw'] = best_of(df_processed, ['NETINC', 'RIAD4340']).fillna(0)
-        df_processed['Total_Int_Income_Raw'] = best_of(df_processed, ['INTINC', 'RIAD4107']).fillna(0)
-        df_processed['Total_Int_Expense_Raw'] = best_of(df_processed, ['INTEXP', 'RIAD4073']).fillna(0)
-        df_processed['Total_Nonint_Income_Raw'] = best_of(df_processed, ['NONII', 'RIAD4079']).fillna(0)
-        df_processed['Total_Nonint_Expense_Raw'] = best_of(df_processed, ['NONIX', 'RIAD4093']).fillna(0)
-        df_processed['Int_Inc_Loans_Raw'] = best_of(df_processed, ['ILNDOM', 'RIAD4010']).fillna(0)
-        df_processed['Int_Exp_Deposits_Raw'] = best_of(df_processed, ['RIAD4115']).fillna(0)
-
-        # Unused Commitments (credit pipeline)
-        df_processed['Unused_Commitments'] = best_of(df_processed, ['Unused_Commitments_Total']).fillna(0)
+        # Batch-assign all totals/denominators columns at once.
+        for _k, _v in _td.items():
+            df_processed[_k] = _v
+        del _td
+        # Defragment after the batch insert to eliminate PerformanceWarnings
+        # from downstream single-column assignments.
+        df_processed = df_processed.copy()
 
         # [3.5] NORMALIZATION LOGIC (Ex-Commercial/Ex-Consumer) - OPTIMIZED
         # ---------------------------------------------------------
@@ -3851,38 +3841,32 @@ class BankMetricsProcessor:
             if m in latest.columns:
                 snapshot[m] = latest[m]
 
-        # 3. Dynamic RI-C II Segment Metrics
+        # 3. Dynamic RI-C II Segment Metrics + 4. Growth Metrics
+        # Collect into a dict to avoid per-column fragmentation warnings.
+        _snap = {}
         for col in latest.columns:
-            if not col.startswith('RIC_'): continue
-
-            # EXCLUSION: Do not export intermediate YTD or Q columns
-            if '_YTD' in col or '_Q' in col:
-                continue
-
-            # A. Dollar Columns (Cost, ACL, NCO_TTM) -> Keep raw values
-            if any(x in col for x in ['_Cost', '_ACL', '_NCO_TTM', '_Balance', '_Nonaccrual', '_PD30', '_PD90']):
-                # Ensure we don't accidentally grab rates that contain these strings
-                if '_Rate' not in col and '_Share' not in col and '_Coverage' not in col:
-                    snapshot[col] = latest[col]
+            if col.startswith('RIC_'):
+                if '_YTD' in col or '_Q' in col:
                     continue
+                if any(x in col for x in ['_Cost', '_ACL', '_NCO_TTM', '_Balance', '_Nonaccrual', '_PD30', '_PD90']):
+                    if '_Rate' not in col and '_Share' not in col and '_Coverage' not in col:
+                        _snap[col] = latest[col]
+                        continue
+                if any(x in col for x in ['_Rate', '_Share', '_Coverage', '_Mismatch', '_Pct']):
+                    _snap[col] = latest[col]
+                    continue
+                if '_Years_of_Reserves' in col:
+                    _snap[col] = latest[col]
+                    continue
+                _snap[col] = latest[col]
+            elif '_Growth_TTM' in col:
+                _snap[col] = latest[col]
 
-            # B. Ratios & Rates -> Keep decimal
-            if any(x in col for x in ['_Rate', '_Share', '_Coverage', '_Mismatch', '_Pct']):
-                snapshot[col] = latest[col]
-                continue
-
-            # C. Integers / Years
-            if '_Years_of_Reserves' in col:
-                snapshot[col] = latest[col]
-                continue
-
-            # D. Catch-all (Status flags, etc.)
-            snapshot[col] = latest[col]
-
-        # 4. Growth Metrics
-        for col in latest.columns:
-            if '_Growth_TTM' in col:
-                snapshot[col] = latest[col]
+        if _snap:
+            # Only add columns not already present to avoid duplicates
+            new_cols_only = {k: v for k, v in _snap.items() if k not in snapshot.columns}
+            if new_cols_only:
+                snapshot = pd.concat([snapshot, pd.DataFrame(new_cols_only)], axis=1)
 
         return snapshot.set_index('CERT')
 
@@ -6151,21 +6135,23 @@ class BankPerformanceDashboard:
 
         end_time = time.perf_counter()
         logging.info(f"Asynchronous FRED data fetching completed in {end_time - start_time:.2f} seconds.")
-        # Merge frequency information into descriptions
-        # Merge frequency information into descriptions
-        # === PATCH: enrich FRED metadata with DateBasis & QuarterOffset and apply overrides ===
-        # Enrich FRED metadata with DateBasis / QuarterOffset and merge into descriptions
-        # Defaults if metadata is missing
-        if fred_metadata_df is None or fred_metadata_df.empty:
-            fred_metadata_df = pd.DataFrame(columns=['Series ID','frequency','frequency_short','units','DateBasis','QuarterOffset'])
-        else:
+
+        # --- FALLBACK: ensure FRED DataFrames have correct schemas even on total failure ---
+        # This guarantees downstream Excel sheets (FRED_Data, FRED_Descriptions, FRED_Metadata)
+        # are always created, preventing report_generator.py from skipping macro charts.
+        if fred_df is None or (isinstance(fred_df, pd.DataFrame) and fred_df.empty):
+            logging.warning("FRED data fetch returned empty — using fallback empty DataFrame")
+            fred_df = pd.DataFrame(columns=['date'])
+            fred_df = fred_df.set_index('date')
+        if fred_desc_df is None or (isinstance(fred_desc_df, pd.DataFrame) and fred_desc_df.empty):
+            fred_desc_df = pd.DataFrame(columns=['Series ID', 'Category', 'short', 'long'])
+        # Enrich FRED metadata with DateBasis / QuarterOffset defaults (if data exists)
+        if not fred_metadata_df.empty:
             fred_metadata_df = fred_metadata_df.copy()
-            # Ensure the new columns exist with safe defaults
             if 'DateBasis' not in fred_metadata_df.columns:
                 fred_metadata_df['DateBasis'] = 'period_start'
             else:
                 fred_metadata_df['DateBasis'] = fred_metadata_df['DateBasis'].fillna('period_start')
-
             if 'QuarterOffset' not in fred_metadata_df.columns:
                 fred_metadata_df['QuarterOffset'] = 0
             fred_metadata_df['QuarterOffset'] = pd.to_numeric(fred_metadata_df['QuarterOffset'], errors='coerce').fillna(0).astype(int)

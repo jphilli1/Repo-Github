@@ -28,4 +28,4 @@ Automated Credit Risk Performance reporting engine for MSPBNA. See `README.md` f
 - Prefer workbook-driven integration contracts over cross-module runtime imports.
 - `rendering_mode.py` is the single canonical source for all rendering abstractions.
 - Coverage vs Share label rule is non-negotiable (see `06-normalization-and-peer-groups.md`).
-- **Issue Logging:** If you discover a bug, math error, or architectural risk while working on an unrelated task, DO NOT fix it immediately. Append it as a new formatted task under the `## Backlog / Identified Risks` section of `TODO.md` so it can be prioritized later.
+- **Issue Logging & The Auditor:** If you discover a bug, math error, or architectural risk while working on an unrelated task, DO NOT FIX IT and do not get distracted. Log the specific file and function at the bottom of `TODO.md` under "Backlog / Identified Risks". Then, immediately print a message in the terminal advising the user to run `/auditor [file_path]` so the human operator can generate a formal execution plan.
