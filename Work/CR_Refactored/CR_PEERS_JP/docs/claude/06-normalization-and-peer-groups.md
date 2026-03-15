@@ -11,6 +11,8 @@ There are **4 peer groups** (2 standard + 2 normalized). Composite CERTs are ass
 
 The former MSPBNA+Wealth groups (90002/90005) were removed as duplicate cert membership. `validate_peer_group_uniqueness()` enforces that no two groups sharing the same `use_normalized` flag may have identical sorted cert lists.
 
+**Subject bank excluded from wealth composites**: Core PB composites (90001/90004) average **external peers only** (GS + UBS). MSPBNA is NOT a member of its own peer group — including it would make "Delta vs Wealth Peers" self-inclusive and understate the delta. All Peers composites (90003/90006) similarly exclude MSPBNA (they use MSBNA + G-SIBs).
+
 **Cross-mode duplication by design**: 90001/90004 and 90003/90006 share identical member CERTs. The distinction is `use_normalized`: standard composites NaN-out `Norm_*` columns; normalized composites NaN-out standard rate columns. Hard validation (`validate_peer_group_uniqueness()`) ensures no two groups within the SAME `use_normalized` mode share identical cert lists.
 
 **Peer_Group_Definitions sheet**: An Excel sheet documents all 4 peer group definitions with member CERTs, use cases, and display order.

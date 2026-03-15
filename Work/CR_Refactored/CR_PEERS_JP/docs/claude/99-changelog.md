@@ -4,6 +4,46 @@ All dated entries documenting architectural changes, bug fixes, and feature addi
 
 ---
 
+## 2026-03-15 — Fix HTML Diff-Coloring Precedence for Coverage Metrics
+
+Reversed trend-class logic in `generate_html_email_table_dynamic()`: coverage/ratio semantics (`is_safe`) now checked before adverse keywords (`is_risk`). Previously "Risk-Adj ACL Ratio" triggered `is_risk` because it contains "Risk", coloring higher coverage deltas red (bad) when they should be green (safer). Also narrowed `'Ratio'` to `'ACL Ratio'` to prevent Leverage Ratio from being incorrectly treated as favorable.
+
+**Files changed:** `report_generator.py`
+
+---
+
+## 2026-03-15 — Suppress Inflated Normalized Profitability Stack
+
+Suppressed `Norm_Loan_Yield`, `Norm_Loss_Adj_Yield`, and `Norm_Risk_Adj_Return` from all presentation surfaces: executive summary metric map, `NORMALIZED_COMPARISON_METRICS` list, and `risk_adjusted_return` scatter chart. All three share the same numerator/denominator mismatch (full-book interest income / normalized loans). Metrics remain in the data layer for future use if segment-level interest income becomes available.
+
+**Files changed:** `report_generator.py`, `MSPBNA_CR_Normalized.py`
+
+---
+
+## 2026-03-15 — Suppress Inflated Norm_Loan_Yield from HTML Tables (superseded by above)
+
+Removed `Norm_Loan_Yield` and `Norm_Loss_Adj_Yield` from the normalized executive summary metric map in `report_generator.py`. These metrics have a numerator/denominator mismatch: full-book annualized interest income divided by normalized (ex-C&I/consumer) gross loans. Call Report does not provide segment-level interest income, so the numerator cannot be normalized. GS showed ~26% vs ~7% standard, clearly inflated. Metrics remain in the data layer for potential future use.
+
+**Files changed:** `report_generator.py`
+
+---
+
+## 2026-03-15 — Fix Zero-Denominator NPL Coverage Leaking 0.00x
+
+Changed `RIC_{seg}_Risk_Adj_Coverage` (ACL / Nonaccrual) to return NaN instead of 0 when nonaccrual is zero. Previously `safe_div` returned 0.0, which contaminated composite means (e.g., UBS with zero CRE nonaccrual contributed 0.00x, pulling 90001 composite from ~0.56x to ~0.37x). NaN values are now excluded from composite averages and display as "N/A" in HTML tables. Affects all 6 segment-level Risk_Adj_Coverage metrics.
+
+**Files changed:** `MSPBNA_CR_Normalized.py`
+
+---
+
+## 2026-03-15 — Fix Self-Inclusive Wealth Peer Composite
+
+Removed MSPBNA_CERT (34221) from `Core_Private_Bank` and `Core_Private_Bank_Norm` peer group member lists. Composites 90001/90004 previously averaged MSPBNA+GS+UBS, making "Delta vs Wealth Peers" self-inclusive and mechanically understating the delta. Now composites average GS+UBS only (external peers). All downstream HTML table deltas, KRI chart ranges, and scatter composite dots automatically corrected.
+
+**Files changed:** `MSPBNA_CR_Normalized.py`
+
+---
+
 ## 2026-03-14 — Final Hardening Pass (KRI Legend, Geography, Completeness)
 
 **4 workstreams:**

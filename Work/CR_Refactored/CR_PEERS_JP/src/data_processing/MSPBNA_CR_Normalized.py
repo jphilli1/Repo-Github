@@ -616,7 +616,9 @@ NORMALIZED_COMPARISON_METRICS = [
     "Norm_SBL_Composition", "Norm_Fund_Finance_Composition",
     "Norm_Wealth_Resi_Composition", "Norm_CRE_Investment_Composition",
     "Norm_Exclusion_Pct",
-    "Norm_Loan_Yield", "Norm_Loss_Adj_Yield", "Norm_Risk_Adj_Return",
+    # Norm_Loan_Yield, Norm_Loss_Adj_Yield, Norm_Risk_Adj_Return SUPPRESSED from
+    # presentation: numerator (full-book interest income) is not normalized to match
+    # the denominator (Norm_Gross_Loans). Metrics remain computed in data layer.
     # Intentionally excluded: Norm_Provision_Rate (set to NaN by design)
 ]
 
@@ -641,7 +643,7 @@ PEER_GROUPS = {
         "name": "Core Private Bank Peers",
         "short_name": "Core PB",
         "description": "True private banking comparables - SBL, wealth management, UHNW focus",
-        "certs": [MSPBNA_CERT, 33124, 57565],  # MSPBNA + GS + UBS
+        "certs": [33124, 57565],  # GS + UBS (external peers only — subject bank excluded from its own composite)
         "use_case": "Best for SBL/wealth product comparisons, NCO benchmarking",
         "display_order": 1,
         "use_normalized": False
@@ -663,7 +665,7 @@ PEER_GROUPS = {
         "name": "Core Private Bank (Normalized)",
         "short_name": "Core PB Norm",
         "description": "Core PB peers with normalized metrics - strips C&I, ADC, NDFI, Cards, Auto, Ag",
-        "certs": [MSPBNA_CERT, 33124, 57565],  # Same as CORE_PRIVATE_BANK
+        "certs": [33124, 57565],  # GS + UBS (external peers only — matches CORE_PRIVATE_BANK)
         "use_case": "True private bank comparison excluding mass market and commercial segments",
         "display_order": 4,
         "use_normalized": True
@@ -3543,7 +3545,9 @@ class BankMetricsProcessor:
 
             # Metrics
             new_cols[f'RIC_{seg_name}_ACL_Coverage'] = safe_div(s_acl, s_cost)
-            new_cols[f'RIC_{seg_name}_Risk_Adj_Coverage'] = safe_div(s_acl, s_na)
+            # NPL coverage = ACL / Nonaccrual: NaN when nonaccrual is zero (undefined, not 0.00x).
+            # safe_div returns 0 for zero-denominator which would contaminate composite means.
+            new_cols[f'RIC_{seg_name}_Risk_Adj_Coverage'] = np.where(s_na > 0, s_acl / s_na, np.nan)
 
             # Years of Reserves
             years_res = np.where(s_nco_ttm > 0, s_acl / s_nco_ttm, np.nan)

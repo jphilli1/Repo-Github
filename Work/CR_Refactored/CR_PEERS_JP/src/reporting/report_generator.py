@@ -1083,10 +1083,12 @@ def generate_html_email_table_dynamic(df: pd.DataFrame, report_date: datetime,
                     if abs(num) < 0.001:
                         cls = 'class="neutral-trend"'
                     else:
-                        is_risk = any(k in metric for k in ['Nonaccrual', 'NCO', 'Delinq', 'Risk'])
-                        is_safe = any(k in metric for k in ['Coverage', 'Ratio', 'Equity', 'ROA', 'ROE', 'Yield', 'Margin'])
-                        if is_risk: cls = 'class="bad-trend"' if num > 0 else 'class="good-trend"'
-                        elif is_safe: cls = 'class="good-trend"' if num > 0 else 'class="bad-trend"'
+                        # Coverage/ratio semantics checked FIRST — a higher ACL
+                        # coverage ratio is safer even if the label contains "Risk".
+                        is_safe = any(k in metric for k in ['Coverage', 'ACL Ratio', 'Equity', 'ROA', 'ROE', 'Yield', 'Margin'])
+                        is_risk = not is_safe and any(k in metric for k in ['Nonaccrual', 'NCO', 'Delinq', 'Risk'])
+                        if is_safe: cls = 'class="good-trend"' if num > 0 else 'class="bad-trend"'
+                        elif is_risk: cls = 'class="bad-trend"' if num > 0 else 'class="good-trend"'
                         else: cls = 'class="neutral-trend"'
                 except: pass
 
@@ -1135,8 +1137,11 @@ def generate_credit_metrics_email_table(
             "Norm_CRE_ACL_Share": ("CRE % of ACL*", '%'),
             "Norm_CRE_ACL_Coverage": ("CRE ACL Ratio (%)*", '%'),
             "Norm_Exclusion_Pct": ("Excluded Loans (%)*", '%'),
-            "Norm_Loan_Yield": ("Loan Yield (%)*", '%'),
-            "Norm_Loss_Adj_Yield": ("Loss-Adj Yield (%)*", '%'),
+            # Norm_Loan_Yield SUPPRESSED: numerator is full-book interest income but
+            # denominator is Norm_Gross_Loans (ex-C&I/consumer). This mismatch inflates
+            # the yield (e.g., GS shows ~26% vs ~7% standard). Suppress until the
+            # interest income numerator can be normalized to match the loan denominator.
+            # Norm_Loss_Adj_Yield also suppressed — it inherits the inflated yield.
         }
     else:
         metric_map = {
@@ -2844,9 +2849,12 @@ def generate_reports(
                        plot_growth_vs_deterioration_bookwide, charts_dir,
                        proc_df_with_peers, subject_bank_cert)
 
-        _produce_chart(ctx, "risk_adjusted_return", csv_log,
-                       plot_risk_adjusted_return, charts_dir,
-                       proc_df_with_peers, subject_bank_cert)
+        # risk_adjusted_return SUPPRESSED: both axes (Norm_Loss_Adj_Yield,
+        # Norm_Risk_Adj_Return) inherit the inflated Norm_Loan_Yield numerator/
+        # denominator mismatch. Re-enable when normalized interest income is available.
+        # _produce_chart(ctx, "risk_adjusted_return", csv_log,
+        #                plot_risk_adjusted_return, charts_dir,
+        #                proc_df_with_peers, subject_bank_cert)
 
         _produce_chart(ctx, "concentration_vs_capital", csv_log,
                        plot_concentration_vs_capital, charts_dir,
