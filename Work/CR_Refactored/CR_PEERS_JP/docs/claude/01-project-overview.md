@@ -15,6 +15,9 @@ This repository is an **automated Credit Risk Performance reporting engine** for
 |---|---|
 | `MSPBNA_CR_Normalized.py` | Data fetch, processing, normalization, and Excel dashboard creation |
 | `report_generator.py` | Reads the dashboard Excel and produces charts, scatters, and HTML tables |
+| `chart_config.py` | Shared chart configuration: CHART_PALETTE, composite CERTs, ticker maps, resolve_display_label() |
+| `flow_math.py` | Stateless flow-variable utilities: YTD de-accumulation, annualization, FRED freq inference, HTTP retry |
+| `peer_assembly.py` | Peer group definitions (PeerGroupType enum, PEER_GROUPS dict), uniqueness validation, cert helpers |
 | `metric_registry.py` | Derived metric specs, validation engine, dependency graph |
 | `fred_series_registry.py` | Central FRED series registry (SBL, Resi, CRE, Case-Shiller) |
 | `fred_case_shiller_discovery.py` | Async Case-Shiller release-table discovery |

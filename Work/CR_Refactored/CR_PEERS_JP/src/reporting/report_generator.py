@@ -99,31 +99,20 @@ sns.set_palette("husl")
 
 
 # ==================================================================================
-# CENTRALIZED CHART PALETTE — single color system for all charts
+# CENTRALIZED CHART PALETTE — imported from chart_config.py
 # ==================================================================================
-# All chart functions MUST use these constants. No arbitrary per-chart color choices.
-
-CHART_PALETTE = {
-    "mspbna":         "#F7A81B",   # Gold — subject bank
-    "wealth_peers":   "#7B2D8E",   # Purple — Wealth Peers / Core PB composite
-    "all_peers":      "#5B9BD5",   # Blue — All Peers composite
-    "peer_cloud":     "#8FA8C8",   # Muted blue-gray — individual peer dots
-    "guide":          "#6B7B8D",   # Slate-gray — averages / crosshair guides
-    "range_all":      "#D0D0D0",   # Light gray — range bands (All Peers)
-    "range_wealth":   "#B8A0C8",   # Muted purple-gray — range bands (Wealth Peers)
-    "text":           "#2B2B2B",   # Dark — titles, axis labels
-    "grid":           "#D0D0D0",   # Grid lines
-}
-
-# Convenience aliases used in chart functions
-_C_MSPBNA       = CHART_PALETTE["mspbna"]
-_C_WEALTH       = CHART_PALETTE["wealth_peers"]
-_C_ALL_PEERS    = CHART_PALETTE["all_peers"]
-_C_PEER_CLOUD   = CHART_PALETTE["peer_cloud"]
-_C_GUIDE        = CHART_PALETTE["guide"]
-_C_RANGE_ALL    = CHART_PALETTE["range_all"]
-_C_RANGE_WEALTH = CHART_PALETTE["range_wealth"]
-_C_TEXT         = CHART_PALETTE["text"]
+from chart_config import (
+    CHART_PALETTE,
+    _C_MSPBNA, _C_WEALTH, _C_ALL_PEERS, _C_PEER_CLOUD,
+    _C_GUIDE, _C_RANGE_ALL, _C_RANGE_WEALTH, _C_TEXT,
+    ACTIVE_STANDARD_COMPOSITES, ACTIVE_NORMALIZED_COMPOSITES,
+    INACTIVE_LEGACY_COMPOSITES, ALL_COMPOSITE_CERTS,
+    _STANDARD_COMPOSITES, _NORMALIZED_COMPOSITES,
+    _SUBJECT_BANK_CERT_DEFAULT, _WEALTH_MEMBER_CERTS, _ALL_PEERS_MEMBER_CERTS,
+    _TICKER_MAP, _COMPOSITE_LABELS, _SUBJECT_CERT, _MSBNA_CERT,
+    resolve_display_label,
+    CHART_COLORS, _build_cert_color_map,
+)
 
 
 # ==================================================================================
@@ -342,127 +331,8 @@ def get_diff_class(diff_str: str) -> str:
 # ==================================================================================
 # PREFLIGHT VALIDATION
 # ==================================================================================
-
-# All known composite/alias CERTs — must never appear as peer dots in scatter plots
-ACTIVE_STANDARD_COMPOSITES = {
-    "core_pb": 90001,
-    "all_peers": 90003,
-}
-ACTIVE_NORMALIZED_COMPOSITES = {
-    "core_pb": 90004,
-    "all_peers": 90006,
-}
-INACTIVE_LEGACY_COMPOSITES = {90002, 90005, 99998, 99999}
-
-ALL_COMPOSITE_CERTS = (
-    set(ACTIVE_STANDARD_COMPOSITES.values())
-    | set(ACTIVE_NORMALIZED_COMPOSITES.values())
-    | INACTIVE_LEGACY_COMPOSITES
-    | {88888}
-)
-
-# Plotted peer-average composites by chart path (derived from canonical dicts)
-_STANDARD_COMPOSITES = set(ACTIVE_STANDARD_COMPOSITES.values())
-_NORMALIZED_COMPOSITES = set(ACTIVE_NORMALIZED_COMPOSITES.values())
-
-# Individual member CERTs for football-field peer range computation
-# These match the PEER_GROUPS definitions in MSPBNA_CR_Normalized.py
-_SUBJECT_BANK_CERT_DEFAULT = int(os.getenv("MSPBNA_CERT", "34221"))
-_WEALTH_MEMBER_CERTS = [33124, 57565]             # GS, UBS (excludes subject)
-_ALL_PEERS_MEMBER_CERTS = [32992, 33124, 57565, 628, 3511, 7213, 3510]  # MSBNA + all
-
-
-# ==================================================================================
-# CENTRALIZED DISPLAY LABEL RESOLVER
-# ==================================================================================
-# All charts and tables MUST use this resolver for entity labels.
-# Individual banks → ticker symbols.  Composites → descriptive labels.
-
-# Ticker lookup: bank NAME substring → ticker symbol
-_TICKER_MAP = {
-    "GOLDMAN": "GS",
-    "UBS": "UBS",
-    "JPMORGAN": "JPM",
-    "BANK OF AMERICA": "BAC",
-    "CITIBANK": "C",
-    "CITI ": "C",
-    "WELLS FARGO": "WFC",
-}
-
-# Composite CERT → display label
-_COMPOSITE_LABELS = {
-    90001: "Wealth Peers",
-    90003: "All Peers",
-    90004: "Wealth Peers",
-    90006: "All Peers",
-    88888: "MS Combined",
-}
-
-_SUBJECT_CERT = int(os.getenv("MSPBNA_CERT", "34221"))
-_MSBNA_CERT = int(os.getenv("MSBNA_CERT", "32992"))
-
-
-# ==================================================================================
-# CENTRALIZED CHART COLOR SYSTEM
-# ==================================================================================
-# Single source of truth for all chart entity colors.  Every chart function must
-# reference these constants instead of defining inline hex strings.
-
-CHART_COLORS = {
-    "subject":       CHART_PALETTE["mspbna"],        # MSPBNA — gold
-    "wealth_peers":  CHART_PALETTE["wealth_peers"],   # Wealth Peers (Core PB) — purple
-    "all_peers":     CHART_PALETTE["all_peers"],      # All Peers composite — blue
-    "peer_cloud":    CHART_PALETTE["peer_cloud"],     # Individual peer dots in scatters — muted blue-gray
-    "guide":         CHART_PALETTE["guide"],          # Reference / guide lines — slate-gray
-}
-
-# Convenience aliases keyed by CERT number (for chart functions that iterate entities)
-def _build_cert_color_map(subject_cert: int) -> Dict[int, str]:
-    return {
-        subject_cert: CHART_COLORS["subject"],
-        90001: CHART_COLORS["wealth_peers"],
-        90003: CHART_COLORS["all_peers"],
-        90004: CHART_COLORS["wealth_peers"],
-        90006: CHART_COLORS["all_peers"],
-    }
-
-
-def resolve_display_label(cert: int, name: Optional[str] = None, *,
-                          subject_cert: int = _SUBJECT_CERT) -> str:
-    """
-    Returns standardized display labels for all charts/tables.
-
-    Rules:
-    - subject bank → "MSPBNA"
-    - MSBNA → "MSBNA"
-    - individual peers → ticker symbols (GS, UBS, JPM, BAC, C, WFC)
-    - active composites → descriptive labels (Wealth Peers, All Peers, MS Combined)
-    - unknown individuals → cleaned NAME fallback (not raw CERT)
-    """
-    if cert == subject_cert:
-        return "MSPBNA"
-    if cert == _MSBNA_CERT:
-        return "MSBNA"
-
-    # Composite labels
-    if cert in _COMPOSITE_LABELS:
-        return _COMPOSITE_LABELS[cert]
-
-    # Ticker resolution from NAME
-    if name:
-        name_upper = name.upper()
-        for pattern, ticker in _TICKER_MAP.items():
-            if pattern in name_upper:
-                return ticker
-
-    # Fallback: clean bank name (strip "National Association", "N.A.", etc.)
-    if name:
-        cleaned = str(name).title()
-        for suffix in [" National Association", " N.A.", ", National Association"]:
-            cleaned = cleaned.replace(suffix, "")
-        return cleaned.strip()
-
-    return f"CERT {cert}"
+# Composite CERTs, display labels, chart palette, and formatters are all imported
+# from chart_config.py (see import block above).
 
 
 def validate_composite_cert_regime(proc_df: pd.DataFrame) -> Dict[str, Any]:
@@ -775,6 +645,13 @@ def create_credit_deterioration_chart_v3(
             subject_bank_cert: resolve_display_label(subject_bank_cert, subject_cert=subject_bank_cert),
             90003: resolve_display_label(90003),
         }
+
+    # Column existence checks — required columns for this chart
+    _required_cols = {'CERT', 'REPDTE', 'TTM_NCO_Rate', 'NPL_to_Gross_Loans_Rate'}
+    _missing = _required_cols - set(proc_df_with_peers.columns)
+    if _missing:
+        print(f"Skipped credit deterioration chart: missing columns {_missing}")
+        return None, None
 
     chart_df = proc_df_with_peers[proc_df_with_peers['CERT'].isin(entities_to_plot)].copy()
 
@@ -1739,9 +1616,13 @@ def generate_ratio_components_table(proc_df_with_peers: pd.DataFrame,
         pd90 = pd90 if pd.notna(pd90) else 0
         r['_Total_Past_Due'] = pd30 + pd90
         # CRE delinquency numerator
-        r['_RIC_CRE_Delinq'] = (r.get('RIC_CRE_PD30', 0) or 0) + (r.get('RIC_CRE_PD90', 0) or 0)
+        _cre_pd30 = r.get('RIC_CRE_PD30', 0)
+        _cre_pd90 = r.get('RIC_CRE_PD90', 0)
+        r['_RIC_CRE_Delinq'] = (_cre_pd30 if pd.notna(_cre_pd30) else 0) + (_cre_pd90 if pd.notna(_cre_pd90) else 0)
         # Resi delinquency numerator
-        r['_RIC_Resi_Delinq'] = (r.get('RIC_Resi_PD30', 0) or 0) + (r.get('RIC_Resi_PD90', 0) or 0)
+        _resi_pd30 = r.get('RIC_Resi_PD30', 0)
+        _resi_pd90 = r.get('RIC_Resi_PD90', 0)
+        r['_RIC_Resi_Delinq'] = (_resi_pd30 if pd.notna(_resi_pd30) else 0) + (_resi_pd90 if pd.notna(_resi_pd90) else 0)
         return r
 
     subj = _synth(subj)
@@ -1886,6 +1767,7 @@ def generate_segment_focus_table(
 
     if is_normalized:
         title = f"{segment_name} Segment Analysis (Normalized)"
+        # * = normalized (ex-C&I/consumer); rows without * are standard segment metrics
         common = [
             ("Norm_Gross_Loans", "Total Loans ($B)*", "B", False),
             ("Norm_SBL_Composition", "SBL % of Loans*", "%", False),
@@ -1895,6 +1777,8 @@ def generate_segment_focus_table(
             ("Norm_Nonaccrual_Rate", "Nonaccrual Rate (%)*", "%", False),
             ("Norm_NCO_Rate", "NCO Rate (%)*", "%", False),
             ("Norm_Delinquency_Rate", "Delinquency Rate (%)*", "%", False),
+            # Section separator — segment-specific rows below use standard (non-normalized) fields
+            ("__SEPARATOR__", f"{segment_name} Segment Detail (Standard)", None, None),
         ]
         if segment_name == "CRE":
             metrics = common + [
@@ -1902,19 +1786,19 @@ def generate_segment_focus_table(
                 ("Norm_CRE_ACL_Share", "CRE % of ACL*", "%", False),
                 ("Norm_CRE_ACL_Coverage", "CRE ACL Ratio (%)*", "%", True),
                 ("RIC_CRE_Risk_Adj_Coverage", "CRE NPL Coverage (x)", "x", True),
-                ("RIC_CRE_Nonaccrual_Rate", "% of CRE in Nonaccrual", "%", False),
-                ("RIC_CRE_NCO_Rate", "CRE NCO Rate (TTM)", "%", False),
+                ("RIC_CRE_Nonaccrual_Rate", "CRE Nonaccrual Rate (%)", "%", False),
+                ("RIC_CRE_NCO_Rate", "CRE NCO Rate (TTM %)", "%", False),
                 ("RIC_CRE_Delinquency_Rate", "CRE Delinquency Rate (%)", "%", False),
             ]
         else:
             metrics = common + [
-                ("RIC_Resi_Cost", "Resi Balance ($B)*", "B", False),
+                ("RIC_Resi_Cost", "Resi Balance ($B)", "B", False),
                 ("Norm_Resi_ACL_Share", "Resi % of ACL*", "%", False),
                 ("Norm_Resi_ACL_Coverage", "Resi ACL Ratio (%)*", "%", True),
                 ("RIC_Resi_Risk_Adj_Coverage", "Resi NPL Coverage (x)", "x", True),
-                ("RIC_Resi_Nonaccrual_Rate", "% of Resi in Nonaccrual*", "%", False),
-                ("RIC_Resi_NCO_Rate", "Resi NCO Rate (TTM)*", "%", False),
-                ("RIC_Resi_Delinquency_Rate", "Resi Delinquency Rate (%)*", "%", False),
+                ("RIC_Resi_Nonaccrual_Rate", "Resi Nonaccrual Rate (%)", "%", False),
+                ("RIC_Resi_NCO_Rate", "Resi NCO Rate (TTM %)", "%", False),
+                ("RIC_Resi_Delinquency_Rate", "Resi Delinquency Rate (%)", "%", False),
             ]
     else:
         title = f"{segment_name} Segment Analysis (Standard)"
@@ -1967,6 +1851,7 @@ def generate_segment_focus_table(
         .good-trend {{ color: #388e3c; font-weight: bold; }}
         .bad-trend {{ color: #d32f2f; font-weight: bold; }}
         .neutral-trend {{ color: #795548; font-weight: normal; }}
+        .section-separator td {{ background-color: #f0f0f0; font-weight: bold; color: #555; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 8px; border-top: 2px solid #aaa; }}
     </style></head><body>
     <div class="email-container">
         <h3>{title}</h3>
@@ -1976,7 +1861,12 @@ def generate_segment_focus_table(
         </tr></thead><tbody>
     """
 
+    n_cols = len(col_certs) + 2  # Metric col + bank cols + Delta col
     for code, disp, fmt, higher_is_better in metrics:
+        # Separator row for regime-boundary labels
+        if code == "__SEPARATOR__":
+            html += f'<tr class="section-separator"><td colspan="{n_cols}">{disp}</td></tr>'
+            continue
         vals = {k: row_data[k].get(code, np.nan) for k in col_certs}
         v_subj = vals.get("MSPBNA", np.nan)
         wealth_label = resolve_display_label(wealth_peers_cert)
@@ -2017,7 +1907,10 @@ def generate_segment_focus_table(
                 html += f'<td>{f_v}</td>'
         html += f'<td class="{diff_cls}">{f_diff}</td></tr>'
 
-    html += "</tbody></table></div></body></html>"
+    html += "</tbody></table>"
+    if is_normalized:
+        html += '<p style="font-size:10px;color:#777;margin-top:6px;text-align:left;">* Normalized metrics exclude C&amp;I, Consumer, ADC, OO CRE, Ag, and NDFI balances. Rows without * use standard Call Report segment fields.</p>'
+    html += "</div></body></html>"
     return html
 
 
@@ -2088,6 +1981,21 @@ def _load_fred_tables(xlsx_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         raise ValueError("FRED_Descriptions needs 'Series ID' and 'Short Name' columns.")
     desc = desc.rename(columns={sid_col:"SeriesID", short_col:"ShortName"})
     return fred, desc
+
+
+def _validate_fred_schema(fred_df: pd.DataFrame, required_cols: set[str],
+                          caller: str = "") -> list[str]:
+    """Validate that a FRED DataFrame has the expected columns.
+
+    Returns a list of missing column names (empty if all present).
+    Logs a warning for each missing column so chart functions can
+    decide whether to skip gracefully.
+    """
+    missing = sorted(required_cols - set(fred_df.columns))
+    if missing:
+        ctx = f" ({caller})" if caller else ""
+        logging.warning(f"FRED schema check{ctx}: missing columns {missing}")
+    return missing
 
 
 def build_fred_macro_table(xlsx_path: str, short_names: list[str]) -> tuple[str, pd.DataFrame]:
@@ -3452,6 +3360,9 @@ def plot_scatter_dynamic(
     save_path: Optional[str] = None
 ) -> Tuple[plt.Figure, plt.Axes]:
     if df.empty: raise ValueError("scatter DF is empty")
+    _missing_scatter = {c for c in (x_col, y_col, 'CERT') if c not in df.columns}
+    if _missing_scatter:
+        raise ValueError(f"scatter DF missing required columns: {_missing_scatter}")
     GOLD, PEER, GUIDE = _C_MSPBNA, _C_PEER_CLOUD, _C_GUIDE
     CC = CHART_COLORS
 
@@ -4389,6 +4300,7 @@ def generate_macro_corr_heatmap(
     except Exception as e:
         print(f"  Skipped macro_corr_heatmap: {e}")
         return None
+    _validate_fred_schema(fred_raw, {"SeriesID", "DATE", "VALUE"}, caller="macro_corr_heatmap")
 
     # Build quarterly FRED DataFrame
     fred_q_dict = {}
@@ -4520,9 +4432,12 @@ def generate_macro_corr_heatmap(
     </div></body></html>"""
 
     if save_path:
-        Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
-        with open(save_path, "w", encoding="utf-8") as f:
-            f.write(html)
+        try:
+            Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(html)
+        except OSError as e:
+            print(f"  Warning: failed to write {save_path}: {e}")
     return html
 
 
@@ -4556,6 +4471,7 @@ def plot_macro_overlay_credit_stress(
     except Exception as e:
         print(f"  Skipped macro_overlay_credit_stress: {e}")
         return None
+    _validate_fred_schema(fred_raw, {"SeriesID", "DATE", "VALUE"}, caller="macro_overlay_credit_stress")
 
     # Extract quarterly FRED series — deterministic IDs, no fallback
     hy_oas = _fred_to_quarterly(fred_raw, "BAMLH0A0HYM2")
@@ -4650,6 +4566,7 @@ def plot_macro_overlay_rates_housing(
     except Exception as e:
         print(f"  Skipped macro_overlay_rates_housing: {e}")
         return None
+    _validate_fred_schema(fred_raw, {"SeriesID", "DATE", "VALUE"}, caller="macro_overlay_rates_housing")
 
     # Extract quarterly FRED series — deterministic IDs
     fedfunds = _fred_to_quarterly(fred_raw, "FEDFUNDS")

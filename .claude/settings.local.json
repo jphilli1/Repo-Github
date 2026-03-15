@@ -25,7 +25,8 @@
       "Bash(find:*)",
       "Bash(\"/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe\":*)",
       "Bash(tasklist.exe:*)",
-      "Bash(PYTHONIOENCODING=utf-8 python:*)"
+      "Bash(PYTHONIOENCODING=utf-8 python:*)",
+      "Bash(grep:*)"
     ]
   }
 }

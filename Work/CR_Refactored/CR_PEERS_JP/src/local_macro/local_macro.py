@@ -37,6 +37,64 @@ import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
+#  Module-load diagnostics — log which optional API keys are available
+# ---------------------------------------------------------------------------
+_LOG = logging.getLogger(__name__)
+
+def _log_api_key_availability() -> None:
+    """Log which optional API keys are present at module load time."""
+    keys = {
+        "BEA_API_KEY": bool(os.getenv("BEA_API_KEY") or os.getenv("BEA_USER_ID")),
+        "CENSUS_API_KEY": bool(os.getenv("CENSUS_API_KEY")),
+        "HUD_USER_TOKEN": bool(os.getenv("HUD_USER_TOKEN")),
+    }
+    present = [k for k, v in keys.items() if v]
+    missing = [k for k, v in keys.items() if not v]
+    _LOG.info(
+        "[local_macro] API key status at module load — present: %s; missing: %s",
+        ", ".join(present) if present else "(none)",
+        ", ".join(missing) if missing else "(none)",
+    )
+
+_log_api_key_availability()
+
+
+def _retry_request(method_fn, *args, max_attempts=3, backoff_base=2.0, **kwargs):
+    """Retry an HTTP request with exponential backoff.
+
+    Retries on Timeouts, ConnectionErrors, and HTTP 5xx (including BLS 504
+    Gateway Timeout).  Returns the response on success or re-raises the last
+    exception after all attempts are exhausted.
+    """
+    import requests as _req
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = method_fn(*args, **kwargs)
+            if response.status_code >= 500 and attempt < max_attempts:
+                wait = backoff_base ** attempt
+                _LOG.warning(
+                    "HTTP %d (attempt %d/%d). Retrying in %.0fs...",
+                    response.status_code, attempt, max_attempts, wait,
+                )
+                time.sleep(wait)
+                continue
+            return response
+        except (_req.exceptions.Timeout, _req.exceptions.ConnectionError) as e:
+            last_exc = e
+            if attempt < max_attempts:
+                wait = backoff_base ** attempt
+                _LOG.warning(
+                    "%s (attempt %d/%d). Retrying in %.0fs...",
+                    type(e).__name__, attempt, max_attempts, wait,
+                )
+                time.sleep(wait)
+            else:
+                raise
+    raise last_exc  # pragma: no cover
+
+# ---------------------------------------------------------------------------
 #  Geography Spine — canonical field names
 # ---------------------------------------------------------------------------
 SPINE_COLUMNS = [
@@ -600,7 +658,8 @@ def fetch_bea_gdp_metro(
     for cbsa in cbsa_codes:
         cbsa = str(cbsa).strip()
         try:
-            resp = requests.get(
+            resp = _retry_request(
+                requests.get,
                 "https://apps.bea.gov/api/data/",
                 params={
                     "UserID": bea_api_key,
@@ -682,7 +741,8 @@ def fetch_bls_unemployment_metro(
     rows = []
     try:
         # BLS Public Data API v2 (no key required for small requests)
-        resp = requests.post(
+        resp = _retry_request(
+            requests.post,
             "https://api.bls.gov/publicAPI/v2/timeseries/data/",
             json={
                 "seriesid": series_ids[:50],  # BLS limit: 50 per request
@@ -753,7 +813,8 @@ def fetch_census_population_metro(
     rows = []
     # Census PEP API for metro areas
     try:
-        resp = requests.get(
+        resp = _retry_request(
+            requests.get,
             "https://api.census.gov/data/2023/pep/population",
             params={
                 "get": "POP_2023,NAME",

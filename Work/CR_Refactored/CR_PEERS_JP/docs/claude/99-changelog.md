@@ -4,6 +4,93 @@ All dated entries documenting architectural changes, bug fixes, and feature addi
 
 ---
 
+## 2026-03-15 — Extract Reporting Subsystems (Monolith Reduction Phase 2)
+
+Extracted shared chart configuration from `report_generator.py` (4947→~4830 lines, net -117 lines of inline definitions):
+
+**`chart_config.py`** — Centralized chart configuration:
+- `CHART_PALETTE` and color convenience aliases (`_C_MSPBNA`, etc.)
+- Composite CERT regime (`ACTIVE_STANDARD_COMPOSITES`, `ACTIVE_NORMALIZED_COMPOSITES`, `ALL_COMPOSITE_CERTS`)
+- Member CERTs for football-field computation
+- Ticker/label maps (`_TICKER_MAP`, `_COMPOSITE_LABELS`)
+- `resolve_display_label()` — canonical entity label resolver
+- `CHART_COLORS` and `_build_cert_color_map()`
+
+The monolith now imports all chart config from `chart_config.py`. Workbook-driven integration contract preserved: Step 2 reads from Excel, never imports Step 1 modules.
+
+**Files created:** `src/reporting/chart_config.py`
+**Files changed:** `src/reporting/report_generator.py`, `docs/claude/01-project-overview.md`
+
+---
+
+## 2026-03-15 — Extract Data Processing Subsystems (Monolith Reduction Phase 1)
+
+Extracted two subsystems from `MSPBNA_CR_Normalized.py` (7184→~7050 lines, net -134 lines of inline definitions):
+
+**`flow_math.py`** — Stateless flow-variable utilities:
+- `retry_request()` — HTTP retry with exponential backoff (Timeouts, 5xx)
+- `ytd_to_discrete()` — YTD cumulative → discrete quarterly flows
+- `annualize_ytd()` — YTD → annualized projection (Q1×4, Q2×2, Q3×4/3, Q4×1)
+- `infer_freq_from_index()` — FRED series frequency inference
+
+**`peer_assembly.py`** — Peer group definitions and validation:
+- `PeerGroupType` enum (6 values: 3 standard + 3 normalized)
+- `PEER_GROUPS` dict (4 active groups with cert lists, display_order, use_normalized)
+- `validate_peer_group_uniqueness()` — prevents duplicate cert membership within same normalization mode
+- `get_all_peer_certs()` — union of all peer CERTs
+
+The monolith now imports from these modules with backward-compatible re-exports. Math constraint preserved: income metrics are de-accumulated quarterly (`ytd_to_discrete`) before annualization (`annualize_ytd`).
+
+**Files created:** `src/data_processing/flow_math.py`, `src/data_processing/peer_assembly.py`
+**Files changed:** `src/data_processing/MSPBNA_CR_Normalized.py`, `tests/test_ytd_to_discrete.py`, `docs/claude/01-project-overview.md`
+
+---
+
+## 2026-03-15 — Fix Regime-Mixed Normalized Segment Tables
+
+The normalized CRE and Resi segment analysis HTML tables mixed normalized whole-book rows (`Norm_*`) with standard segment rows (`RIC_CRE_*`, `RIC_Resi_*`), making the table appear fully normalized when only part of it was. Fix: (1) removed false `*` suffixes from standard `RIC_Resi_*` labels, (2) added a visual section separator row between the normalized whole-book section and the standard segment-detail section, (3) relabeled standard rows for clarity, (4) added a footnote explaining the `*` convention. The `RIC_*` segment metrics cannot be truly normalized because the normalization engine subtracts excluded categories from whole-book totals — Call Report has no normalized segment-level MDRM fields.
+
+**Files changed:** `report_generator.py`
+
+---
+
+## 2026-03-15 — Schema & Input Validations (FRED + Metric Dependencies)
+
+Added `_validate_fred_schema()` helper in `report_generator.py` — validates FRED DataFrame has required SeriesID/DATE/VALUE columns before charting. Called from `generate_macro_corr_heatmap()`, `plot_macro_overlay_credit_stress()`, and `plot_macro_overlay_rates_housing()`. Added `validate_metric_inputs()` static method on `CRProcessor` in `MSPBNA_CR_Normalized.py` — checks that dependency columns (NTLNLS_Q, TopHouse_PD30/PD90, LNLS) exist before TTM metric computation, logging warnings for missing deps. Note: `executive_charts.py` and `metric_registry.py` do not exist (referenced modules were never created; imports are guarded by try/except). `master_data_dictionary.py` has no `.drop()` or `.rename()` calls.
+
+**Files changed:** `report_generator.py`, `MSPBNA_CR_Normalized.py`
+
+---
+
+## 2026-03-15 — Reporting Engine Pandas & I/O Guards (report_generator.py)
+
+Added column existence checks to `create_credit_deterioration_chart_v3()` (returns None,None if CERT/REPDTE/TTM_NCO_Rate/NPL_to_Gross_Loans_Rate missing) and `plot_scatter_dynamic()` (raises ValueError if x_col/y_col/CERT missing). Replaced falsy-zero `(r.get(col) or 0)` patterns with explicit `pd.notna()` checks for CRE/Resi delinquency numerator synthesis. Wrapped macro correlation heatmap HTML file write in try/except OSError. Audited all 20 `.iloc[0]` usages — all already guarded.
+
+**Files changed:** `report_generator.py`
+
+---
+
+## 2026-03-15 — API Retry & Backoff for FDIC, FFIEC, and FRED Metadata Fetches
+
+Added `_retry_request()` synchronous helper with 3-attempt exponential backoff (2^n seconds) for Timeouts, ConnectionErrors, and HTTP 5xx responses. Applied to:
+- `FDICDataFetcher.fetch_lnci_separately()` and `fetch_all_banks()` (synchronous `requests` calls)
+- `FFIECBulkLoader` via retry loop in `fetch_quarter_data()` wrapping `_download_strict()` for retryable statuses (TIMEOUT, REQUEST_ERROR, INITIAL_GET_FAILED, DOWNLOAD_HTTP_ERROR, UNKNOWN_ERROR)
+- `FREDDataFetcher._fetch_series_metadata()` (async aiohttp — catches `ClientConnectorError`, `ServerDisconnectedError`, `OSError`, `TimeoutError`, and HTTP 5xx)
+
+Also added structured failure summary to `heal_dataset()`: tracks attempted/succeeded/skipped/failed quarters with per-failure reason logging.
+
+**Files changed:** `MSPBNA_CR_Normalized.py`
+
+---
+
+## 2026-03-15 — Pandas Data Fragility Hardening (MSPBNA_CR_Normalized.py)
+
+Replaced 6 bare `+` exclusion summations (Excluded_Balance, Excluded_NCO_YTD, Excluded_Nonaccrual, excluded_pd30, excluded_pd90, delinquency sums) with `np.nansum()` to prevent NaN propagation when any exclusion category column is NaN. Added 7 empty-DataFrame / column-existence guards: `compute_quarterly_from_ytd()` early return, TTM groupby warning, `Excluded_NCO_Q` column check before `.rolling()`, 8Q averages `available_metrics` filter, LNCI merge guard, locations merge guard, FRED metadata merge guard.
+
+**Files changed:** `MSPBNA_CR_Normalized.py`
+
+---
+
 ## 2026-03-15 — Fix HTML Diff-Coloring Precedence for Coverage Metrics
 
 Reversed trend-class logic in `generate_html_email_table_dynamic()`: coverage/ratio semantics (`is_safe`) now checked before adverse keywords (`is_risk`). Previously "Risk-Adj ACL Ratio" triggered `is_risk` because it contains "Risk", coloring higher coverage deltas red (bad) when they should be green (safer). Also narrowed `'Ratio'` to `'ACL Ratio'` to prevent Leverage Ratio from being incorrectly treated as favorable.

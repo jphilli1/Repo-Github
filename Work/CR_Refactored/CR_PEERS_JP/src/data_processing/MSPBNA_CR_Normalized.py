@@ -50,113 +50,22 @@ script_dir = _REPO_ROOT
 
 
 # ==================================================================================
-#  STOCK vs FLOW MATH UTILITIES
+#  STOCK vs FLOW MATH UTILITIES — imported from flow_math.py
 # ==================================================================================
-# Call Report flow variables (NCO, Income, Provision) are cumulative Year-To-Date.
-# Stock variables (Balances, Delinquency) are point-in-time snapshots.
-#
-# For flows: YTD → discrete quarterly → rolling(4).sum() = TTM
-# For stocks: No TTM prefix. Use point-in-time values directly.
-
-def ytd_to_discrete(df: pd.DataFrame, col_name: str) -> pd.Series:
-    """
-    Convert a YTD cumulative series to discrete quarterly flows.
-
-    Q1: discrete = YTD (accumulation starts fresh each year)
-    Q2: discrete = YTD_Q2 - YTD_Q1
-    Q3: discrete = YTD_Q3 - YTD_Q2
-    Q4: discrete = YTD_Q4 - YTD_Q3
-
-    Groups by CERT to prevent differencing across banks.
-    """
-    if col_name not in df.columns:
-        return pd.Series(0.0, index=df.index)
-
-    q_flows = []
-    for cert, group in df.groupby('CERT'):
-        group = group.sort_values('REPDTE')
-        diffs = group[col_name].diff()
-
-        # Q1: flow IS the YTD value (no prior quarter to subtract)
-        is_q1 = group['REPDTE'].dt.quarter == 1
-        diffs.loc[is_q1] = group.loc[is_q1, col_name]
-
-        # First record fallback (when diff is NaN due to no prior row)
-        diffs = diffs.fillna(group[col_name])
-        q_flows.append(diffs)
-
-    return pd.concat(q_flows).reindex(df.index).fillna(0)
+# Canonical implementations live in flow_math.py.  Re-exported here for
+# backward compatibility with existing callers and tests.
+from flow_math import (
+    retry_request as _retry_request_impl,
+    ytd_to_discrete,
+    annualize_ytd,
+    infer_freq_from_index,
+)
 
 
-def annualize_ytd(df: pd.DataFrame, col_name: str) -> pd.Series:
-    """
-    Annualize a YTD cumulative flow variable: YTD_value * (4.0 / quarter).
-
-    This is the standard banking convention for income-statement items:
-    - Q1: YTD * 4 (project 1 quarter to full year)
-    - Q2: YTD * 2 (project 2 quarters to full year)
-    - Q3: YTD * 4/3
-    - Q4: YTD * 1 (full year, no adjustment)
-
-    Use for Yield and Provision rates. Do NOT use for NCO (use TTM instead).
-    """
-    if col_name not in df.columns:
-        return pd.Series(np.nan, index=df.index)
-
-    quarter = df['REPDTE'].dt.quarter
-    return df[col_name] * (4.0 / quarter)
-
-
-def infer_freq_from_index(idx: pd.DatetimeIndex) -> tuple:
-    """Infer FRED series frequency from a DatetimeIndex.
-
-    Returns a tuple of (frequency_name, frequency_code):
-      - ("daily", "D")
-      - ("monthly", "M")
-      - ("quarterly", "Q")
-
-    Defensive: drops NaT, deduplicates, and wraps all heuristics in
-    try/except so it never crashes the FRED pipeline.  Falls back to
-    ("quarterly", "Q") when inference is uncertain.
-    """
-    try:
-        idx = pd.DatetimeIndex(idx, copy=False)
-        idx = idx.dropna().sort_values().unique()
-        if len(idx) < 3:
-            return ("monthly", "M")  # conservative default
-
-        # Try pandas built-in inference first (most reliable)
-        guess = pd.infer_freq(idx)
-        if guess:
-            g = guess.upper()
-            if g.startswith(("Q", "QS")):
-                return ("quarterly", "Q")
-            if g.startswith(("M", "MS")):
-                return ("monthly", "M")
-            if g.startswith(("D", "B", "C", "W")):
-                return ("daily", "D")
-
-        # Heuristic fallback: median observations per year
-        vc = pd.Series(idx.year).value_counts()
-        med_per_year = float(vc.median()) if not vc.empty else 0.0
-        if med_per_year >= 200:
-            return ("daily", "D")
-        if 6 <= med_per_year <= 15:
-            return ("monthly", "M")
-        if 3 <= med_per_year <= 5:
-            return ("quarterly", "Q")
-
-        # Last resort: count distinct months per year using a DataFrame
-        # (NOT a groupby-lambda on a Series of tuples, which would receive
-        # the integer index label instead of the tuple value).
-        ym = pd.DataFrame({"year": idx.year, "month": idx.month}).drop_duplicates()
-        months_per_year = float(ym.groupby("year")["month"].nunique().median())
-        if months_per_year and months_per_year >= 6:
-            return ("monthly", "M")
-        return ("quarterly", "Q")
-    except Exception:
-        # Absolute last resort — never crash the FRED pipeline
-        return ("quarterly", "Q")
+def _retry_request(session, method, url, max_attempts=3, backoff_base=2.0, **kwargs):
+    """Backward-compatible wrapper — delegates to flow_math.retry_request()."""
+    return _retry_request_impl(session, method, url, max_attempts=max_attempts,
+                                backoff_base=backoff_base, **kwargs)
 
 
 # ==================================================================================
@@ -623,86 +532,15 @@ NORMALIZED_COMPARISON_METRICS = [
 ]
 
 
-from enum import Enum
-
 # =============================================================================
-#  PEER GROUP DEFINITIONS
+#  PEER GROUP DEFINITIONS — imported from peer_assembly.py
 # =============================================================================
-
-class PeerGroupType(str, Enum):
-    CORE_PRIVATE_BANK = "Core_Private_Bank"
-    MS_FAMILY_PLUS = "MS_Family_Plus"
-    ALL_PEERS = "All_Peers"
-    # Normalized Peer Groups (Ex-Commercial/Ex-Consumer view)
-    CORE_PRIVATE_BANK_NORM = "Core_Private_Bank_Norm"
-    MS_FAMILY_PLUS_NORM = "MS_Family_Plus_Norm"
-    ALL_PEERS_NORM = "All_Peers_Norm"
-
-PEER_GROUPS = {
-    PeerGroupType.CORE_PRIVATE_BANK: {
-        "name": "Core Private Bank Peers",
-        "short_name": "Core PB",
-        "description": "True private banking comparables - SBL, wealth management, UHNW focus",
-        "certs": [33124, 57565],  # GS + UBS (external peers only — subject bank excluded from its own composite)
-        "use_case": "Best for SBL/wealth product comparisons, NCO benchmarking",
-        "display_order": 1,
-        "use_normalized": False
-    },
-    # MS_FAMILY_PLUS removed: identical cert set to CORE_PRIVATE_BANK (no distinct membership)
-    PeerGroupType.ALL_PEERS: {
-        "name": "Full Peer Universe",
-        "short_name": "All Peers",
-        "description": "Complete peer set including MSBNA and G-SIBs for size/scale context",
-        "certs": [MSBNA_CERT, 33124, 57565, 628, 3511, 7213, 3510],  # MSBNA + full universe
-        "use_case": "Regulatory comparison, market share analysis, full industry context",
-        "display_order": 3,
-        "use_normalized": False
-    },
-    # ==========================================================================
-    # NORMALIZED PEER GROUPS (Ex-Commercial/Ex-Consumer)
-    # ==========================================================================
-    PeerGroupType.CORE_PRIVATE_BANK_NORM: {
-        "name": "Core Private Bank (Normalized)",
-        "short_name": "Core PB Norm",
-        "description": "Core PB peers with normalized metrics - strips C&I, ADC, NDFI, Cards, Auto, Ag",
-        "certs": [33124, 57565],  # GS + UBS (external peers only — matches CORE_PRIVATE_BANK)
-        "use_case": "True private bank comparison excluding mass market and commercial segments",
-        "display_order": 4,
-        "use_normalized": True
-    },
-    # MS_FAMILY_PLUS_NORM removed: identical cert set to CORE_PRIVATE_BANK_NORM (no distinct membership)
-    PeerGroupType.ALL_PEERS_NORM: {
-        "name": "Full Peer Universe (Normalized)",
-        "short_name": "All Peers Norm",
-        "description": "All peers with normalized metrics for private bank comparable view",
-        "certs": [MSBNA_CERT, 33124, 57565, 628, 3511, 7213, 3510],  # Same as ALL_PEERS
-        "use_case": "Broad comparison on normalized (ex-commercial/ex-consumer) basis",
-        "display_order": 6,
-        "use_normalized": True
-    }
-}
-
-def validate_peer_group_uniqueness(peer_groups):
-    """Raise ValueError if two groups with the same use_normalized flag have identical sorted cert membership."""
-    seen = {}
-    for gk, gv in peer_groups.items():
-        norm_flag = gv.get('use_normalized', False)
-        cert_key = (norm_flag, tuple(sorted(gv['certs'])))
-        if cert_key in seen:
-            raise ValueError(
-                f"Peer group '{gk}' has identical cert membership as '{seen[cert_key]}' "
-                f"(use_normalized={norm_flag}, certs={sorted(gv['certs'])}). "
-                f"Remove the duplicate or provide distinct membership."
-            )
-        seen[cert_key] = gk
-
-
-# Helper to ensure we fetch data for ALL distinct certs mentioned in any group
-def get_all_peer_certs():
-    all_certs = set()
-    for group in PEER_GROUPS.values():
-        all_certs.update(group['certs'])
-    return list(all_certs)
+from peer_assembly import (
+    PeerGroupType,
+    PEER_GROUPS,
+    validate_peer_group_uniqueness,
+    get_all_peer_certs,
+)
 # MSPBNA V6 SEGMENTATION (Adapted for V5 Structure)
 # NOTE: SBL and Fund Finance NCOs are not separately reported in Call Reports.
 # They are lumped into 'NTOTH' (All Other). They are left empty [] here to
@@ -1684,7 +1522,20 @@ class FFIECBulkLoader:
 
         logging.info(f"      [Downloading] FFIEC Bulk Data for {date_fmt}...")
 
-        zip_bytes, status = self._download_strict(date_obj)
+        zip_bytes, status = None, None
+        _retryable_statuses = {'TIMEOUT', 'REQUEST_ERROR', 'INITIAL_GET_FAILED',
+                               'DOWNLOAD_HTTP_ERROR', 'UNKNOWN_ERROR'}
+        for _attempt in range(1, 4):
+            zip_bytes, status = self._download_strict(date_obj)
+            if zip_bytes is not None or status not in _retryable_statuses:
+                break
+            if _attempt < 3:
+                _wait = 2.0 ** _attempt
+                logging.warning(
+                    f"      [FFIEC] {status} for {date_fmt} (attempt {_attempt}/3). "
+                    f"Retrying in {_wait:.0f}s..."
+                )
+                time.sleep(_wait)
 
         if zip_bytes is None:
             logging.warning(f"      [Failed] No FFIEC data for {date_obj.date()} (status: {status})")
@@ -1739,19 +1590,41 @@ class FFIECBulkLoader:
         # already constrains to quarters_back + 4 via the API limit).
         dates = sorted(df_fdic['REPDTE'].unique(), reverse=True)
         ffiec_frames = []
+        _heal_results = {'attempted': 0, 'succeeded': 0, 'skipped': 0, 'failed': []}
 
         for dt in dates:
             dt_obj = pd.to_datetime(dt)
             if not self._quarter_needs_patching(df_fdic, dt_obj):
                 logging.info(f"      [Skip] Data sufficient for {dt_obj.strftime('%Y-%m-%d')}")
+                _heal_results['skipped'] += 1
                 continue
 
+            _heal_results['attempted'] += 1
             df_ffiec_q = self.fetch_quarter_data(dt_obj, peer_certs)
 
             if not df_ffiec_q.empty and 'CERT' in df_ffiec_q.columns:
                 target_cols = [c for c in self.target_fields if c in df_ffiec_q.columns]
                 if target_cols:
                     ffiec_frames.append(df_ffiec_q)
+                    _heal_results['succeeded'] += 1
+                else:
+                    _heal_results['failed'].append(
+                        (dt_obj.strftime('%Y-%m-%d'), 'NO_TARGET_FIELDS'))
+            else:
+                _status = 'EMPTY_RESULT'
+                if 'FFIEC_PATCH_STATUS' in df_ffiec_q.columns:
+                    _status = df_ffiec_q['FFIEC_PATCH_STATUS'].iloc[0] if len(df_ffiec_q) > 0 else _status
+                _heal_results['failed'].append((dt_obj.strftime('%Y-%m-%d'), _status))
+
+        # Structured failure summary
+        logging.info(
+            f"      [Heal Summary] {_heal_results['attempted']} attempted, "
+            f"{_heal_results['succeeded']} succeeded, {_heal_results['skipped']} skipped, "
+            f"{len(_heal_results['failed'])} failed"
+        )
+        if _heal_results['failed']:
+            for _dt_str, _reason in _heal_results['failed']:
+                logging.warning(f"      [Heal Failure] {_dt_str}: {_reason}")
 
         if not ffiec_frames:
             print("      No FFIEC data merged.")
@@ -1890,7 +1763,11 @@ class FDICDataFetcher:
                     "format": "json"
                 }
 
-                response = self.session.get(f"{self.config.fdic_api_base}/financials", params=params, timeout=30)
+                response = _retry_request(
+                    self.session, 'get',
+                    f"{self.config.fdic_api_base}/financials",
+                    params=params, timeout=30,
+                )
                 response.raise_for_status()
 
                 data = [item.get('data', {}) for item in response.json().get('data', []) if item.get('data')]
@@ -1941,7 +1818,11 @@ class FDICDataFetcher:
                     "sort_by": "REPDTE", "sort_order": "DESC",
                     "limit": self.config.quarters_back + 4, "format": "json"
                 }
-                response = self.session.get(f"{self.config.fdic_api_base}/financials", params=params, timeout=30)
+                response = _retry_request(
+                    self.session, 'get',
+                    f"{self.config.fdic_api_base}/financials",
+                    params=params, timeout=30,
+                )
                 response.raise_for_status()
                 data = [item.get('data', {}) for item in response.json().get('data', []) if item.get('data')]
                 if data:
@@ -1987,12 +1868,16 @@ class FDICDataFetcher:
                 logger.info(f"   LNCI key examples: {list(lnci_keys)[:3]}")
 
             # Merge LNCI data
-            combined_df = pd.merge(
-                combined_df,
-                lnci_df,
-                on=['CERT', 'REPDTE'],
-                how='left'
-            )
+            if lnci_df.empty:
+                logging.warning("LNCI DataFrame is empty — skipping merge, setting LNCI to NaN")
+                combined_df['LNCI'] = np.nan
+            else:
+                combined_df = pd.merge(
+                    combined_df,
+                    lnci_df,
+                    on=['CERT', 'REPDTE'],
+                    how='left'
+                )
 
             # POST-MERGE DIAGNOSTIC
             lnci_count = combined_df['LNCI'].notna().sum()
@@ -2131,29 +2016,53 @@ class FREDDataFetcher:
         }
 
         async with self.semaphore:
-            try:
-                async with session.get(
-                    "https://api.stlouisfed.org/fred/series",
-                    params=params
-                ) as response:
-                    response.raise_for_status()
-                    data = await response.json()
+            last_err = None
+            for _attempt in range(1, 4):
+                try:
+                    async with session.get(
+                        "https://api.stlouisfed.org/fred/series",
+                        params=params
+                    ) as response:
+                        if response.status >= 500 and _attempt < 3:
+                            _wait = 2.0 ** _attempt
+                            self.logger.warning(
+                                f"HTTP {response.status} fetching metadata for {series_id} "
+                                f"(attempt {_attempt}/3). Retrying in {_wait:.0f}s..."
+                            )
+                            await asyncio.sleep(_wait)
+                            continue
+                        response.raise_for_status()
+                        data = await response.json()
 
-                    if "seriess" in data and data["seriess"]:
-                        metadata = data["seriess"][0]
-                        return series_id, {
-                            'frequency': metadata.get('frequency', 'Unknown'),
-                            'frequency_short': metadata.get('frequency_short', 'Unknown'),
-                            'units': metadata.get('units', 'Unknown'),
-                            'seasonal_adjustment': metadata.get('seasonal_adjustment', 'Unknown'),
-                            'last_updated': metadata.get('last_updated', 'Unknown')
-                        }
+                        if "seriess" in data and data["seriess"]:
+                            metadata = data["seriess"][0]
+                            return series_id, {
+                                'frequency': metadata.get('frequency', 'Unknown'),
+                                'frequency_short': metadata.get('frequency_short', 'Unknown'),
+                                'units': metadata.get('units', 'Unknown'),
+                                'seasonal_adjustment': metadata.get('seasonal_adjustment', 'Unknown'),
+                                'last_updated': metadata.get('last_updated', 'Unknown')
+                            }
+                        return series_id, None
+                except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError,
+                        OSError, asyncio.TimeoutError) as e:
+                    last_err = e
+                    if _attempt < 3:
+                        _wait = 2.0 ** _attempt
+                        self.logger.warning(
+                            f"{type(e).__name__} fetching metadata for {series_id} "
+                            f"(attempt {_attempt}/3). Retrying in {_wait:.0f}s..."
+                        )
+                        await asyncio.sleep(_wait)
+                        continue
+                except Exception as e:
+                    self.logger.error(f"Error fetching metadata for {series_id}: {e}")
                     return series_id, None
-            except Exception as e:
-                self.logger.error(f"Error fetching metadata for {series_id}: {e}")
-                return series_id, None
-            finally:
-                await asyncio.sleep(self.rate_limit_delay)
+            self.logger.error(
+                f"All 3 retries exhausted for metadata {series_id}: "
+                f"{type(last_err).__name__}: {last_err}"
+            )
+            return series_id, None
 
     # Failure classification constants
     FAIL_INVALID_ID = "invalid_id"        # HTTP 400 — bad or discontinued series ID
@@ -2799,6 +2708,8 @@ class BankMetricsProcessor:
         # Note: col.replace('_YTD','_Q') yields 'Provision_Exp_Q', 'Int_Inc_Loans_Q', etc.
 
         temp_ttm_frames = []
+        if df_processed.empty:
+            logging.warning("df_processed is empty before TTM groupby — skipping TTM computation")
         for cert, group in df_processed.groupby('CERT'):
             group = group.sort_values('REPDTE')
 
@@ -3073,36 +2984,36 @@ class BankMetricsProcessor:
         norm_cols['Excl_Ag_P9'] = best_of(df_processed, ['RCON1597', 'RCFD1597', 'P9AG', 'P9AGR']).fillna(0)
         # --- E. Sum Total Exclusions ---
         #Added Excl_OO_CRE_Balance to ensure Norm_Gross_Loans is pure Wealth/Inv. CRE
-        norm_cols['Excluded_Balance'] = (
-            norm_cols['Excl_CI_Balance'] + norm_cols['Excl_NDFI_Balance'] +
-            norm_cols['Excl_ADC_Balance'] + norm_cols['Excl_CreditCard_Balance'] +
-            norm_cols['Excl_Auto_Balance'] + norm_cols['Excl_Ag_Balance'] +
-            norm_cols['Excl_OO_CRE_Balance']
-        )
+        # Use np.nansum to prevent NaN propagation when any exclusion category is missing
+        _excl_bal_cols = [norm_cols['Excl_CI_Balance'], norm_cols['Excl_NDFI_Balance'],
+                          norm_cols['Excl_ADC_Balance'], norm_cols['Excl_CreditCard_Balance'],
+                          norm_cols['Excl_Auto_Balance'], norm_cols['Excl_Ag_Balance'],
+                          norm_cols['Excl_OO_CRE_Balance']]
+        norm_cols['Excluded_Balance'] = np.nansum(_excl_bal_cols, axis=0)
 
-        norm_cols['Excluded_NCO_YTD'] = (
-            norm_cols['Excl_CI_NCO_YTD'] + norm_cols['Excl_NDFI_NCO_YTD'] +
-            norm_cols['Excl_ADC_NCO_YTD'] + norm_cols['Excl_CC_NCO_YTD'] +
-            norm_cols['Excl_Auto_NCO_YTD'] + norm_cols['Excl_Ag_NCO_YTD'] +
-            norm_cols['Excl_OO_CRE_NCO_YTD']
-        )
+        _excl_nco_cols = [norm_cols['Excl_CI_NCO_YTD'], norm_cols['Excl_NDFI_NCO_YTD'],
+                          norm_cols['Excl_ADC_NCO_YTD'], norm_cols['Excl_CC_NCO_YTD'],
+                          norm_cols['Excl_Auto_NCO_YTD'], norm_cols['Excl_Ag_NCO_YTD'],
+                          norm_cols['Excl_OO_CRE_NCO_YTD']]
+        norm_cols['Excluded_NCO_YTD'] = np.nansum(_excl_nco_cols, axis=0)
 
-        norm_cols['Excluded_Nonaccrual'] = (
-            norm_cols['Excl_CI_NA'] + norm_cols['Excl_NDFI_NA'] +
-            norm_cols['Excl_ADC_NA'] + norm_cols['Excl_CC_NA'] +
-            norm_cols['Excl_Auto_NA'] + norm_cols['Excl_Ag_NA'] +
-            norm_cols['Excl_OO_CRE_NA']
-        )
+        _excl_na_cols = [norm_cols['Excl_CI_NA'], norm_cols['Excl_NDFI_NA'],
+                         norm_cols['Excl_ADC_NA'], norm_cols['Excl_CC_NA'],
+                         norm_cols['Excl_Auto_NA'], norm_cols['Excl_Ag_NA'],
+                         norm_cols['Excl_OO_CRE_NA']]
+        norm_cols['Excluded_Nonaccrual'] = np.nansum(_excl_na_cols, axis=0)
 
-        excluded_pd30 = (norm_cols['Excl_CI_P3'] + norm_cols['Excl_NDFI_P3'] +
-                         norm_cols['Excl_ADC_P3'] + norm_cols['Excl_CC_P3'] +
-                         norm_cols['Excl_Auto_P3'] + norm_cols['Excl_Ag_P3'] +
-                         norm_cols['Excl_OO_CRE_P3'])
+        _excl_p3_cols = [norm_cols['Excl_CI_P3'], norm_cols['Excl_NDFI_P3'],
+                         norm_cols['Excl_ADC_P3'], norm_cols['Excl_CC_P3'],
+                         norm_cols['Excl_Auto_P3'], norm_cols['Excl_Ag_P3'],
+                         norm_cols['Excl_OO_CRE_P3']]
+        excluded_pd30 = np.nansum(_excl_p3_cols, axis=0)
 
-        excluded_pd90 = (norm_cols['Excl_CI_P9'] + norm_cols['Excl_NDFI_P9'] +
-                         norm_cols['Excl_ADC_P9'] + norm_cols['Excl_CC_P9'] +
-                         norm_cols['Excl_Auto_P9'] + norm_cols['Excl_Ag_P9'] +
-                         norm_cols['Excl_OO_CRE_P9'])
+        _excl_p9_cols = [norm_cols['Excl_CI_P9'], norm_cols['Excl_NDFI_P9'],
+                         norm_cols['Excl_ADC_P9'], norm_cols['Excl_CC_P9'],
+                         norm_cols['Excl_Auto_P9'], norm_cols['Excl_Ag_P9'],
+                         norm_cols['Excl_OO_CRE_P9']]
+        excluded_pd90 = np.nansum(_excl_p9_cols, axis=0)
 
         # --- [CRITICAL STEP] MERGE BATCH 1 ---
         df_norm_batch = pd.DataFrame(norm_cols, index=df_processed.index)
@@ -3116,7 +3027,10 @@ class BankMetricsProcessor:
         temp_norm_frames = []
         for cert, group in df_processed.groupby('CERT'):
             group = group.sort_values('REPDTE')
-            group['Excluded_NCO_TTM'] = group['Excluded_NCO_Q'].rolling(window=4, min_periods=1).sum()
+            if 'Excluded_NCO_Q' in group.columns:
+                group['Excluded_NCO_TTM'] = group['Excluded_NCO_Q'].rolling(window=4, min_periods=1).sum()
+            else:
+                group['Excluded_NCO_TTM'] = 0.0
             temp_norm_frames.append(group)
 
         if temp_norm_frames:
@@ -3605,8 +3519,8 @@ class BankMetricsProcessor:
         pd90_ndfi = best_of(df_processed, ['P9NDFI', 'P9DEP']).fillna(0)
 
         # Sum of Excluded Delinquencies
-        excluded_pd30 = pd30_ci + pd30_adc + pd30_card + pd30_auto + pd30_ag + pd30_ndfi
-        excluded_pd90 = pd90_ci + pd90_adc + pd90_card + pd90_auto + pd90_ag + pd90_ndfi
+        excluded_pd30 = np.nansum([pd30_ci, pd30_adc, pd30_card, pd30_auto, pd30_ag, pd30_ndfi], axis=0)
+        excluded_pd90 = np.nansum([pd90_ci, pd90_adc, pd90_card, pd90_auto, pd90_ag, pd90_ndfi], axis=0)
 
         # Normalized Denominators
         norm_total_pd30 = total_pd30 - excluded_pd30
@@ -3726,7 +3640,10 @@ class BankMetricsProcessor:
             # 1. Standard Averages (Baseline)
             # We take the mean of the last 8 periods (or fewer if <8 available)
             # min_periods=1 ensures we get data even for new banks
-            avgs = group[metrics].rolling(window=8, min_periods=1).mean().iloc[-1].to_dict()
+            available_metrics = [m for m in metrics if m in group.columns]
+            if not available_metrics:
+                continue
+            avgs = group[available_metrics].rolling(window=8, min_periods=1).mean().iloc[-1].to_dict()
 
             # 2. OVERRIDE: Peak Stress Logic for Nonaccruals
             # Problem: Averaging quarterly NA rates (often 0%) dilutes signal.
@@ -3764,6 +3681,28 @@ class BankMetricsProcessor:
     # ==================================================================================
     #  UPDATED TTM CALCULATOR (v26: Growth & Top-House Metrics)
     # ==================================================================================
+    @staticmethod
+    def validate_metric_inputs(df: pd.DataFrame, required: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Check that expected dependency columns exist before metric computation.
+
+        Args:
+            df: DataFrame to validate.
+            required: {metric_name: [dependency_col, ...]} mapping.
+
+        Returns:
+            Dict of {metric_name: [missing_cols]} for metrics with missing deps.
+            Empty dict means all dependencies are present.
+        """
+        missing = {}
+        for metric, deps in required.items():
+            absent = [d for d in deps if d not in df.columns]
+            if absent:
+                missing[metric] = absent
+        if missing:
+            logging.warning(f"validate_metric_inputs: {len(missing)} metrics have missing deps: "
+                            + ", ".join(f"{k}({v})" for k, v in missing.items()))
+        return missing
+
     def calculate_ttm_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculates trailing 12-month (TTM) and Year-Over-Year (YoY) Growth metrics.
@@ -3774,6 +3713,12 @@ class BankMetricsProcessor:
         - Calculates 'Past_Due_Rate' (point-in-time delinquency, smoothed 4Q average).
         """
         if df.empty: return df
+
+        # Pre-validate critical metric dependencies
+        self.validate_metric_inputs(df, {
+            'TTM_NCO_Rate': ['NTLNLS_Q', 'LNLS'],
+            'Past_Due_Rate': ['TopHouse_PD30', 'TopHouse_PD90', 'LNLS'],
+        })
 
         all_banks_data = []
 
@@ -6108,8 +6053,11 @@ class BankPerformanceDashboard:
         locations_df = get_bank_locations(all_certs)
         if 'NAME' in locations_df.columns:
             locations_df.drop(columns=['NAME'], inplace=True)
-        fdic_df = pd.merge(fdic_df, locations_df, on='CERT', how='left')
-        logging.info("Location data merged successfully.")
+        if not locations_df.empty:
+            fdic_df = pd.merge(fdic_df, locations_df, on='CERT', how='left')
+            logging.info("Location data merged successfully.")
+        else:
+            logging.warning("Location DataFrame is empty — skipping location merge")
 
         fdic_analysis = self._analyze_fdic_data_availability(fdic_df)
 
@@ -6257,12 +6205,15 @@ class BankPerformanceDashboard:
                 fred_metadata_df.loc[_m, _k] = _v
 
         # Merge the enriched metadata into descriptions
-        fred_desc_df = pd.merge(
-            fred_desc_df,
-            fred_metadata_df[['Series ID','frequency','frequency_short','units','DateBasis','QuarterOffset']],
-            on='Series ID',
-            how='left'
-        )
+        if not fred_metadata_df.empty:
+            fred_desc_df = pd.merge(
+                fred_desc_df,
+                fred_metadata_df[['Series ID','frequency','frequency_short','units','DateBasis','QuarterOffset']],
+                on='Series ID',
+                how='left'
+            )
+        else:
+            logging.warning("fred_metadata_df is empty — skipping metadata merge into descriptions")
 
 
         # Set index and create calculated series
