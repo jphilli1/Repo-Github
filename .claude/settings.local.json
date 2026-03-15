@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(./venv/Scripts/pip.exe list:*)",
+      "Bash(python:*)",
+      "Bash(where python:*)",
+      "Bash(pip list:*)",
+      "Bash(pip install:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(\"C:/Users/jmsph/Documents/Repo-Github/Work/CR_Refactored/CR_PEERS_JP/venv/Scripts/python.exe\":*)",
+      "Bash(\"C:/Users/jmsph/Documents/Repo-Github/Work/CR_Refactored/CR_PEERS_JP/venv/Scripts/pip.exe\" install:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(winget list:*)",
+      "Bash(where cl:*)",
+      "Bash(cmd.exe:*)",
+      "Read(//c/Program Files \\(x86\\)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC//**)",
+      "Read(//c/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/**)",
+      "Read(//c/Program Files \\(x86\\)/Microsoft Visual Studio/**)",
+      "Bash(find:*)",
+      "Bash(\"/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe\":*)",
+      "Bash(tasklist.exe:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python:*)"
+    ]
+  }
+}

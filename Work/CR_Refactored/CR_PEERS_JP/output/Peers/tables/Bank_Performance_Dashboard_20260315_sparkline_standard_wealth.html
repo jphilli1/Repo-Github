@@ -1,0 +1,76 @@
+<html><head><style>
+        body { font-family: Arial, sans-serif; }
+        .spark-container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        h3 { color: #002F6C; text-align: center; margin-bottom: 5px; }
+        p.date { text-align: center; color: #555; font-weight: bold; margin-top: 0; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th { background-color: #002F6C; color: white; padding: 6px; border: 1px solid #1a3a5c;
+              text-align: center; font-size: 10px; }
+        td { padding: 5px 8px; border: 1px solid #e0e0e0; text-align: center; }
+        .metric-name { text-align: left !important; font-weight: 600; color: #2c3e50;
+                        min-width: 150px; white-space: nowrap; }
+        .spark-cell { padding: 2px 4px; }
+        .val { font-variant-numeric: tabular-nums; }
+        .good-trend { color: #388e3c; font-weight: bold; }
+        .bad-trend { color: #d32f2f; font-weight: bold; }
+        .neutral-trend { color: #757575; }
+    </style></head><body>
+    <div class="spark-container">
+        <h3>Credit Risk Dashboard — Trend Summary (Wealth Peers)</h3>
+        <p class="date">December 31, 2025</p>
+        <table>
+        <thead><tr>
+            <th>Metric</th>
+            <th>Trend (8Q)</th>
+            <th>Current</th>
+            <th>YoY</th>
+            <th>vs Wealth Peers</th>
+        </tr></thead>
+        <tbody>
+    <tr>
+            <td class="metric-name">Delinquency Rate (30+)</td>
+            <td class="spark-cell"><svg width="120" height="24" xmlns="http://www.w3.org/2000/svg"><polyline fill="none" stroke="#d32f2f" stroke-width="1.5" points="2.0,22.0 18.6,13.4 35.1,15.5 51.7,14.2 68.3,5.8 84.9,4.1 101.4,2.0 118.0,5.2"/><circle cx="118.0" cy="5.2" r="2.5" fill="#d32f2f"/></svg></td>
+            <td class="val">0.08%</td>
+            <td class="val bad-trend">+1 bps</td>
+            <td class="val good-trend">-15 bps</td>
+        </tr><tr>
+            <td class="metric-name">NCO Rate (TTM)</td>
+            <td class="spark-cell"><svg width="120" height="24" xmlns="http://www.w3.org/2000/svg"><polyline fill="none" stroke="#d32f2f" stroke-width="1.5" points="2.0,22.0 18.6,20.9 35.1,20.4 51.7,7.6 68.3,8.0 84.9,9.4 101.4,2.0 118.0,14.5"/><circle cx="118.0" cy="14.5" r="2.5" fill="#d32f2f"/></svg></td>
+            <td class="val">0.01%</td>
+            <td class="val good-trend">-1 bps</td>
+            <td class="val good-trend">-23 bps</td>
+        </tr><tr>
+            <td class="metric-name">Nonaccrual Rate</td>
+            <td class="spark-cell"><svg width="120" height="24" xmlns="http://www.w3.org/2000/svg"><polyline fill="none" stroke="#388e3c" stroke-width="1.5" points="2.0,11.2 18.6,11.7 35.1,16.1 51.7,2.0 68.3,5.2 84.9,4.1 101.4,14.9 118.0,22.0"/><circle cx="118.0" cy="22.0" r="2.5" fill="#388e3c"/></svg></td>
+            <td class="val">0.25%</td>
+            <td class="val good-trend">-8 bps</td>
+            <td class="val good-trend">-19 bps</td>
+        </tr><tr>
+            <td class="metric-name">CRE ACL Coverage</td>
+            <td class="spark-cell"><svg width="120" height="24" xmlns="http://www.w3.org/2000/svg"><polyline fill="none" stroke="#d32f2f" stroke-width="1.5" points="2.0,9.7 18.6,10.8 35.1,2.4 51.7,11.1 68.3,11.0 84.9,7.5 101.4,2.0 118.0,22.0"/><circle cx="118.0" cy="22.0" r="2.5" fill="#d32f2f"/></svg></td>
+            <td class="val">1.94%</td>
+            <td class="val bad-trend">-25 bps</td>
+            <td class="val bad-trend">-47 bps</td>
+        </tr><tr>
+            <td class="metric-name">Headline ACL Ratio</td>
+            <td class="spark-cell"><svg width="120" height="24" xmlns="http://www.w3.org/2000/svg"><polyline fill="none" stroke="#d32f2f" stroke-width="1.5" points="2.0,20.2 18.6,16.8 35.1,15.9 51.7,14.7 68.3,3.9 84.9,2.0 101.4,8.7 118.0,22.0"/><circle cx="118.0" cy="22.0" r="2.5" fill="#d32f2f"/></svg></td>
+            <td class="val">0.20%</td>
+            <td class="val bad-trend">-2 bps</td>
+            <td class="val bad-trend">-12 bps</td>
+        </tr><tr>
+            <td class="metric-name">Risk-Adj ACL Ratio</td>
+            <td class="spark-cell"><svg width="120" height="24" xmlns="http://www.w3.org/2000/svg"><polyline fill="none" stroke="#388e3c" stroke-width="1.5" points="2.0,22.0 18.6,21.3 35.1,21.1 51.7,7.5 68.3,3.5 84.9,2.0 101.4,3.9 118.0,6.9"/><circle cx="118.0" cy="6.9" r="2.5" fill="#388e3c"/></svg></td>
+            <td class="val">0.41%</td>
+            <td class="val good-trend">+1 bps</td>
+            <td class="val bad-trend">-5 bps</td>
+        </tr><tr>
+            <td class="metric-name">CRE Nonaccrual Rate</td>
+            <td class="spark-cell"><svg width="120" height="24" xmlns="http://www.w3.org/2000/svg"><polyline fill="none" stroke="#388e3c" stroke-width="1.5" points="2.0,2.0 18.6,4.8 35.1,11.1 51.7,7.8 68.3,10.4 84.9,2.5 101.4,12.6 118.0,22.0"/><circle cx="118.0" cy="22.0" r="2.5" fill="#388e3c"/></svg></td>
+            <td class="val">3.15%</td>
+            <td class="val good-trend">-71 bps</td>
+            <td class="val good-trend">-45 bps</td>
+        </tr></tbody></table>
+        <p style="font-size:9px; color:#888; margin-top:8px;">
+            Sparklines show trailing quarters for the subject bank. Color reflects directional trend.
+        </p>
+    </div></body></html>

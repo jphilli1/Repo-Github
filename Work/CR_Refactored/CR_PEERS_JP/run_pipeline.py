@@ -69,7 +69,7 @@ def main():
     if args.step in ("1", "both"):
         rc, elapsed = _run_step(
             "STEP 1: Data Fetch & Processing (MSPBNA_CR_Normalized.py)",
-            [python, "MSPBNA_CR_Normalized.py"],
+            [python, os.path.join("src", "data_processing", "MSPBNA_CR_Normalized.py")],
             env,
         )
         results["Step 1"] = {"exit_code": rc, "elapsed": elapsed}
@@ -83,7 +83,7 @@ def main():
     if args.step in ("2", "both"):
         rc, elapsed = _run_step(
             "STEP 2: Report Generation (report_generator.py)",
-            [python, "report_generator.py", args.mode],
+            [python, os.path.join("src", "reporting", "report_generator.py"), args.mode],
             env,
         )
         results["Step 2"] = {"exit_code": rc, "elapsed": elapsed}

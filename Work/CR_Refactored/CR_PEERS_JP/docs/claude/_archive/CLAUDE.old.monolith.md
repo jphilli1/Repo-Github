@@ -384,12 +384,15 @@ Implemented in `executive_charts.py`, integrated into `report_generator.py` Phas
 - `SPARKLINE_METRICS_STANDARD` (7): TTM_NCO_Rate, Nonaccrual_to_Gross_Loans_Rate, Allowance_to_Gross_Loans_Rate, Risk_Adj_Allowance_Coverage, Past_Due_Rate, RIC_CRE_Nonaccrual_Rate, RIC_CRE_ACL_Coverage
 - `SPARKLINE_METRICS_NORMALIZED` (5): Norm_NCO_Rate, Norm_Nonaccrual_Rate, Norm_ACL_Coverage, Norm_Risk_Adj_Allowance_Coverage, Norm_Delinquency_Rate
 
-**Football-field KRI chart design (nested bands):**
+**Football-field KRI chart design (nested bands + average markers):**
 - **Outer lighter band (light gray #D0D0D0)**: All Peers min–max range across individual member CERTs
 - **Inner darker band (muted purple-gray #B8A0C8)**: Wealth Peers min–max range across member CERTs
 - **Gold diamond (#F7A81B)**: MSPBNA value
+- **Purple triangle-up (#7B2D8E)**: Wealth PB Avg — mean of wealth peer member values (shown when ≥2 members)
+- **Blue square (#5B9BD5)**: All Peers Avg — mean of all peer member values (shown when ≥2 members)
 - **Median markers**: Vertical tick marks at median of each peer group
 - **Edge labels**: Min/max peer tickers annotated at band edges (using `resolve_display_label()`)
+- **Legend**: Up to 5 entries — MSPBNA diamond, Wealth PB Avg (Mean), All Peers Avg (Mean), Wealth Peers Range, All Peers Range. Avg entries are conditional on data availability.
 - Fallback: if member CERTs not provided, falls back to composite CERT values as single-point bands
 
 **Unit family separation (Part 3 — never mix % rates with x-multiples):**
@@ -866,6 +869,37 @@ the precision available.
 ---
 
 ## 7. Changelog / Recent Fixes
+
+### 2026-03-14 — Final Hardening Pass (KRI Legend, Geography, Completeness)
+
+**4 workstreams:**
+
+**A. KRI chart legend refinement** (`executive_charts.py`):
+- Added Wealth PB Avg marker (purple triangle-up `^`, mean of wealth peer member values)
+- Added All Peers Avg marker (blue square `s`, mean of all peer member values)
+- Both markers conditional on ≥2 members having data (`_has_wealth_avg`, `_has_all_avg`)
+- Updated `_range_for_group()` to compute `mean` alongside `median`
+- Legend now shows up to 5 entries: MSPBNA diamond, Wealth PB Avg (Mean), All Peers Avg (Mean), Wealth Peers Range, All Peers Range
+
+**B. Expand geography to all-CBSA universe** (`local_macro.py`):
+- Added `_resolve_cbsa()` — accepts any valid 5-digit CBSA code, not just the 20 curated TOP_MSAS
+- Tier 1 direct CBSA resolution now resolves arbitrary codes with minimal metadata (`CBSA {code}`)
+- TOP_MSAS kept as convenience list for metadata enrichment, not as universe gatekeeper
+- County→CBSA quality flag changed from `medium` to `low` (partial coverage — only ~62 counties mapped)
+- Updated Tier 2/3 lookups to use `_resolve_cbsa()` instead of `_CBSA_LOOKUP.get()`
+
+**C. Completeness flags** (`local_macro.py`):
+- Added `macro_data_completeness` field to BOARD_COLUMNS — values: `complete`, `partial`, `none`
+- Added `missing_sources` field — comma-separated list of missing sources (`gdp`, `unemployment`, `population`)
+- BOARD_COLUMNS expanded from 31 to 33 columns
+- Added API key missing warning in `run_local_macro_pipeline()` when BEA or Census keys absent
+
+**D. Tests** (`test_regression.py` — 20 new tests):
+- `TestKRILegendRefinement` (7): mean in range data, triangle/square markers, legend entries, conditional flags
+- `TestGeographySpineExpansion` (6): _resolve_cbsa exists, curated/arbitrary/invalid codes, Tier 1 any-CBSA, county quality low, TOP_MSAS kept
+- `TestCompletenessFlags` (7): BOARD_COLUMNS includes fields, count=33, complete/partial/none values, API key warning
+
+**Files changed:** `executive_charts.py`, `local_macro.py`, `test_regression.py`, `CLAUDE.md`
 
 ### 2026-03-14 — Reconciliation & Hardening Pass (MSA Macro Feature)
 
@@ -2823,7 +2857,7 @@ The spine is keyed by CBSA code and resolves geographies through a strict 4-tier
 ```
 Input geography
     │
-    ├─ Tier 1: Direct CBSA match (TOP_MSAS lookup)      → quality: high
+    ├─ Tier 1: Direct CBSA match (any valid 5-digit)     → quality: high
     │
     ├─ Tier 2: ZIP → CBSA (HUD USPS Crosswalk type=4)   → quality: medium
     │
@@ -2869,7 +2903,7 @@ All API calls are **optional**. If keys are missing or APIs are unavailable, the
 
 ### Board/Risk Column Specification (`BOARD_COLUMNS`)
 
-The `Local_Macro_Latest` sheet uses a fixed 30-column schema for board/risk consumption:
+The `Local_Macro_Latest` sheet uses a fixed 33-column schema for board/risk consumption:
 
 | Column | Description |
 |---|---|
@@ -2895,6 +2929,8 @@ The `Local_Macro_Latest` sheet uses a fixed 30-column schema for board/risk cons
 | `hpi_yoy_pct`, `hpi_qoq_pct` | House price index changes (when available) |
 | `portfolio_balance`, `portfolio_share` | Loan portfolio context (when available) |
 | `macro_stress_flag` | `OK`, `WATCH`, or `STRESS` based on unemployment + GDP signals |
+| `macro_data_completeness` | `complete`, `partial`, or `none` — which of the 3 macro sources contributed data |
+| `missing_sources` | Comma-separated list of missing sources (e.g., `gdp,population`). Null when complete. |
 | `data_vintage`, `load_timestamp` | Data currency metadata |
 
 ### Source Metadata Policy

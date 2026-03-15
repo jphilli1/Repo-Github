@@ -1,8 +1,9 @@
 # CR_PEERS_JP
 
-See @README.md for the human-readable repo overview.
+Automated Credit Risk Performance reporting engine for MSPBNA. See `README.md` for the human-readable overview.
 
 ## Core memory files
+
 - @docs/claude/01-project-overview.md
 - @docs/claude/02-build-run-config.md
 - @docs/claude/03-output-routing-and-logging.md
@@ -16,8 +17,14 @@ See @README.md for the human-readable repo overview.
 - @docs/claude/99-changelog.md
 
 ## Global rules
-- Preserve import safety.
+
+- **Always update docs/claude/ files** when making architectural changes, adding charts, or changing data pipelines.
+- When logic or architecture changes, you MUST append a dated summary of the change to @docs/claude/99-changelog.md.
+- If a change invalidates existing workflow rules, immediately update the corresponding topic file in @docs/claude/ to reflect the new reality. Do NOT update .claude/skills dynamically.
+- Preserve import safety — no side effects at module level.
 - Never reintroduce synthetic production reporting data.
+- Never hardcode CERT numbers — always use env var / config pattern.
 - Update tests when logic changes.
-- Update docs/change log when architecture changes.
 - Prefer workbook-driven integration contracts over cross-module runtime imports.
+- `rendering_mode.py` is the single canonical source for all rendering abstractions.
+- Coverage vs Share label rule is non-negotiable (see `06-normalization-and-peer-groups.md`).
