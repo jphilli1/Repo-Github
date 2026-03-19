@@ -196,15 +196,19 @@ However, these are **aggregate totals**. The pipeline does **not** disaggregate 
 
 ### 3.2 Missing RC-B CMBS Line Items
 
-| RC-B Line | Description | MDRM (AFS FV) | MDRM (HTM AC) | Captured? |
-|-----------|-------------|----------------|----------------|-----------|
-| Item 4.a(1) | RMBS — Pass-through: Guaranteed by GNMA | RCFD8838 | RCFDA549 | NO |
-| Item 4.a(2) | RMBS — Pass-through: Issued by FNMA/FHLMC | RCFD8839 | RCFDA550 | NO |
-| Item 4.a(3) | RMBS — Pass-through: Other | RCFD8840 | RCFDA551 | NO |
-| Item 4.b(1) | RMBS — CMOs: Issued/guaranteed by GSEs | RCFD8841 | RCFDA552 | NO |
-| Item 4.b(2) | RMBS — CMOs: Other | RCFD8842 | RCFDA553 | NO |
-| **Item 4.c(1)** | **CMBS — Issued/guaranteed by GSEs** | **RCFDK142** | **RCFDK148** | **NO** |
-| **Item 4.c(2)** | **CMBS — Other (Non-agency CMBS)** | **RCFDK143** | **RCFDK149** | **NO** |
+RC-B reports securities in 4 columns: (A) HTM Amortized Cost, (B) HTM Fair Value, (C) AFS Amortized Cost, (D) AFS Fair Value. All use RCFD prefix.
+
+**CMBS — Item 4.c (the codes relevant to CRE securities exposure):**
+
+| RC-B Line | Description | Col A (HTM Cost) | Col B (HTM FV) | Col C (AFS Cost) | Col D (AFS FV) | Captured? |
+|-----------|-------------|:-:|:-:|:-:|:-:|:-:|
+| 4.c.(1)(a) | CMBS pass-through — GNMA | RCFDK142 | RCFDK143 | RCFDK144 | RCFDK145 | NO |
+| 4.c.(1)(b) | CMBS pass-through — Other | RCFDK146 | RCFDK147 | RCFDK148 | RCFDK149 | NO |
+| 4.c.(2)(a) | Other CMBS (CMOs/REMICs) — GNMA | RCFDK150 | RCFDK151 | RCFDK152 | RCFDK153 | NO |
+| 4.c.(2)(b) | Other CMBS (CMOs/REMICs) — FNMA/FHLMC | RCFDK154 | RCFDK155 | RCFDK156 | RCFDK157 | NO |
+| 4.c.(2)(c) | Other CMBS (CMOs/REMICs) — Other issuers | RCFDK158 | RCFDK159 | RCFDK160 | RCFDK161 | NO |
+
+**Note:** CMBS in trading accounts appears on **Schedule RC-D**, not RC-B.
 
 ### 3.3 UBS CMBS Exposure Assessment
 
@@ -308,20 +312,34 @@ The variance is largely explained by:
 
 **MDRM codes to add to `FDIC_FIELDS_TO_FETCH`:**
 ```python
-# Schedule RC-B: CMBS holdings
-"RCFDK142",  # CMBS — GSE-issued (AFS Fair Value)
-"RCFDK143",  # CMBS — Non-agency (AFS Fair Value)
-"RCFDK148",  # CMBS — GSE-issued (HTM Amortized Cost)
-"RCFDK149",  # CMBS — Non-agency (HTM Amortized Cost)
+# Schedule RC-B Item 4.c: CMBS holdings (use Col A=HTM Cost + Col D=AFS FV for carrying value)
+# Pass-through CMBS
+"RCFDK142",  # CMBS pass-through GNMA (HTM Cost)
+"RCFDK145",  # CMBS pass-through GNMA (AFS FV)
+"RCFDK146",  # CMBS pass-through Other (HTM Cost)
+"RCFDK149",  # CMBS pass-through Other (AFS FV)
+# CMO/REMIC CMBS
+"RCFDK150",  # Other CMBS GNMA (HTM Cost)
+"RCFDK153",  # Other CMBS GNMA (AFS FV)
+"RCFDK154",  # Other CMBS FNMA/FHLMC (HTM Cost)
+"RCFDK157",  # Other CMBS FNMA/FHLMC (AFS FV)
+"RCFDK158",  # Other CMBS Other issuers (HTM Cost)
+"RCFDK161",  # Other CMBS Other issuers (AFS FV)
 ```
 
-**Create derived field:**
+**Create derived field (HTM at amortized cost + AFS at fair value):**
 ```python
 df['CMBS_Total'] = (
-    best_of(df, ['RCFDK142']).fillna(0) +
-    best_of(df, ['RCFDK143']).fillna(0) +
-    best_of(df, ['RCFDK148']).fillna(0) +
-    best_of(df, ['RCFDK149']).fillna(0)
+    best_of(df, ['RCFDK142']).fillna(0) +  # PT GNMA HTM
+    best_of(df, ['RCFDK145']).fillna(0) +  # PT GNMA AFS
+    best_of(df, ['RCFDK146']).fillna(0) +  # PT Other HTM
+    best_of(df, ['RCFDK149']).fillna(0) +  # PT Other AFS
+    best_of(df, ['RCFDK150']).fillna(0) +  # CMO GNMA HTM
+    best_of(df, ['RCFDK153']).fillna(0) +  # CMO GNMA AFS
+    best_of(df, ['RCFDK154']).fillna(0) +  # CMO GSE HTM
+    best_of(df, ['RCFDK157']).fillna(0) +  # CMO GSE AFS
+    best_of(df, ['RCFDK158']).fillna(0) +  # CMO Other HTM
+    best_of(df, ['RCFDK161']).fillna(0)    # CMO Other AFS
 )
 ```
 
