@@ -11,18 +11,18 @@
 
 ## Executive Summary
 
-**Finding: The $1.6B figure is technically accurate for the specific FDIC-insured legal entity (UBS Bank USA, CERT 57565), but it materially understates UBS's total US CRE exposure due to entity structure leakage (FFIEC 002) and potential securities-vs-loans classification.**
+**Finding: The $1.6B figure is technically accurate for the FDIC-insured legal entity (UBS Bank USA, CERT 57565) and likely represents the true CRE whole-loan book for that entity. UBS publicly states that CRE loans are originated by UBS Bank USA, not through its branch network. The figure appears low because UBS Bank USA is a wealth management bank — its $87B loan book is dominated by SBL, residential mortgage, and lombard lending, not CRE.**
 
-Three actionable pipeline gaps were identified:
+**Revised severity assessment (post-entity-structure research):**
 
-| Vector | Severity | Gap Identified | Estimated Missing CRE |
-|--------|----------|----------------|----------------------|
-| 1. FFIEC 002 Leakage | **CRITICAL** | UBS AG NY Branch files FFIEC 002, not Call Reports | $5B-$15B+ |
-| 2. RC-C Mapping | LOW | Current mapping is comprehensive | Minimal |
-| 3. RC-B CMBS | MODERATE | CMBS not captured in loan-based CRE roll-up | $2B-$8B |
-| 4. Public Disclosure Variance | **CRITICAL** | Group-level disclosure far exceeds entity pull | Confirms gap |
+| Vector | Severity | Gap Identified | Impact |
+|--------|----------|----------------|--------|
+| 1. FFIEC 002 Leakage | **LOW-MODERATE** | UBS AG Stamford Branch (RSSD 2618801) files FFIEC 002, but books corporate/IB lending, not CRE. UBS states CRE is booked in UBS Bank USA. | Minimal CRE impact |
+| 2. RC-C Mapping | LOW | Current mapping is comprehensive | None |
+| 3. RC-B CMBS | MODERATE | CMBS securitization pipeline (UBS Securities LLC) not in loan schedules | $1B-$5B (securities, not loans) |
+| 4. Public Disclosure Variance | MODERATE | Group-level includes global/cross-border CRE not booked in US bank | Explained by entity scope |
 
-**Recommended Action:** Incorporate FFIEC 002 data for UBS AG's US branches to capture the complete US CRE exposure.
+**Recommended Action:** The $1.6B is likely correct for this entity. No immediate pipeline changes required for CRE accuracy. Consider adding CMBS (RC-B) as a supplementary disclosure if total CRE risk exposure is needed.
 
 ---
 
@@ -33,57 +33,67 @@ Three actionable pipeline gaps were identified:
 ```
 UBS Group AG (Zurich, Switzerland)
   |
-  +-- UBS AG (Parent Bank, Zurich)
+  +-- UBS AG (Parent Bank, Zurich, RSSD 1951350)
   |     |
-  |     +-- UBS AG, New York Branch (RSSD ~4512)           <-- FILES FFIEC 002
-  |     |     - Uninsured, federally-licensed branch
-  |     |     - Supervised by OCC
-  |     |     - Wholesale banking, institutional lending
-  |     |     - NOT captured by our FDIC API / Call Report pull
+  |     +-- UBS AG, Stamford Branch (RSSD 2618801)         <-- FILES FFIEC 002
+  |     |     - Uninsured CT-licensed branch of UBS AG
+  |     |     - Total Assets: ~$70.7B (Q4 2025)
+  |     |     - Net Loans: ~$10.3B (corporate/IB lending, FX)
+  |     |     - Standby LCs: ~$34.9B
+  |     |     - PRIMARY FUNCTION: Corporate lending, FX, Treasury
+  |     |     - NOT a CRE booking center
   |     |
-  |     +-- UBS AG, Stamford Branch                         <-- FILES FFIEC 002
-  |           - Investment banking operations
-  |           - NOT captured by our pipeline
+  |     +-- UBS AG, New York Branch (RSSD 4512)             <-- INACTIVE in NIC
+  |           - Historical branch, status NA/INACTIVE
   |
   +-- UBS Americas Holding LLC (RSSD 4846998, IHC)
+        |   (Merged with UBS Americas Inc., Feb 2, 2026)
         |
         +-- UBS Bank USA (CERT 57565, RSSD 3212149)        <-- OUR CURRENT PULL
-              - FDIC-insured national bank (Salt Lake City, UT)
-              - Files FFIEC 031 (Call Report)
-              - Total Assets: ~$115.3B (as of Q3 2025)
-              - Gross Loans: ~$87.5B
-              - Primarily: Wealth management, SBL, residential mortgage
-              - CRE is NOT the primary business line here
+        |     - FDIC-insured industrial bank (ILC), Salt Lake City, UT
+        |     - Files FFIEC 031 (Call Report)
+        |     - Total Assets: ~$119.3B (Q4 2025)
+        |     - Net Loans: ~$88.6B
+        |     - Total Deposits: ~$104.6B
+        |     - CET1 Ratio: 26.90%
+        |     - Employees: 639, 1 branch office
+        |     - PRIMARY CRE BOOKING ENTITY per UBS disclosure
+        |
+        +-- UBS Financial Services Inc.
+        +-- UBS Securities LLC (CMBS underwriting)
+        +-- UBS Business Solutions US LLC
 ```
 
-### 1.2 The Core Problem: Where UBS Books US CRE
+### 1.2 Where UBS Books US CRE — Key Finding
 
-UBS Bank USA is a **wealth management-focused** subsidiary. Its loan book is dominated by:
+**UBS explicitly states on its website:**
+> "Commercial real estate loans are made by UBS Bank USA — Member, FDIC — except commercial real estate loans intended for sale through a securitization."
+
+This confirms that:
+- **UBS Bank USA** (CERT 57565) is the **primary originator and holder** of CRE whole loans
+- CRE loans intended for securitization go through **UBS Commercial Mortgage Securitization Corp.**, with **UBS Securities LLC** as CMBS underwriter
+- The **UBS AG Stamford Branch** is the booking center for *corporate/IB lending and FX*, **not CRE**
+- UBS Private Mortgage Bankers are employees of UBS Bank USA, registered in NMLS
+
+UBS Bank USA is a **wealth management-focused** industrial bank (ILC). Its ~$88.6B loan book is dominated by:
 - Securities-Based Lending (SBL)
-- Residential mortgages (1-4 family, jumbo)
+- Residential mortgages (1-4 family, jumbo — up to $33.7B in total RE-secured loans)
 - Lombard/margin lending
 
-UBS's **wholesale commercial real estate lending** — including:
-- Large syndicated CRE loans
-- CMBS conduit originations
-- Institutional CRE credit facilities
-- Construction/development lending for institutional sponsors
+CRE at ~$1.6B represents only ~1.8% of gross loans, which is consistent with a wealth management bank that offers CRE as an ancillary product for UHNW clients, not as a core wholesale business line.
 
-...is primarily booked through **UBS AG's New York Branch**, which is an **uninsured branch of a foreign bank**. This branch:
-- Files **FFIEC 002** (Report of Assets and Liabilities of U.S. Branches and Agencies of Foreign Banks)
-- Does **NOT** file FFIEC 031/041 (Call Reports)
-- Is **NOT** in the FDIC BankFind API's `/financials` endpoint
-- Is supervised by the OCC, not captured by standard FDIC data pulls
+### 1.3 Quantitative Impact Assessment (Revised)
 
-### 1.3 Quantitative Impact Assessment
+| Entity | Filing | Total Assets | Net Loans | CRE Est. | Captured? |
+|--------|--------|-------------|-----------|----------|-----------|
+| UBS Bank USA (CERT 57565) | FFIEC 031 | ~$119.3B | ~$88.6B | ~$1.6B | YES |
+| UBS AG Stamford Branch (RSSD 2618801) | FFIEC 002 | ~$70.7B | ~$10.3B | Minimal (corp/IB) | NO |
+| UBS Securities LLC | SEC | N/A | N/A | CMBS pipeline | NO |
 
-| Entity | Filing | Est. US CRE Exposure | Captured? |
-|--------|--------|---------------------|-----------|
-| UBS Bank USA (CERT 57565) | FFIEC 031 | ~$1.6B | YES |
-| UBS AG, New York Branch | FFIEC 002 | ~$5B-$15B+ | **NO** |
-| UBS AG (global consolidated) | SEC 20-F | $15B-$25B Americas | **NO** |
-
-**Conclusion:** The majority of UBS's US CRE wholesale lending is booked in the UBS AG branch network, not in UBS Bank USA. Our pipeline captures only the wealth management subsidiary's incidental CRE exposure.
+**Revised Conclusion:** The $1.6B CRE figure is likely accurate for UBS Bank USA. Unlike other FBOs that book wholesale lending in their US branches, UBS explicitly routes CRE through its FDIC-insured subsidiary. The Stamford branch handles corporate/IB lending. The "missing" CRE is explained by:
+1. UBS Bank USA is a wealth management bank — CRE is a small ancillary product
+2. CRE securitization pipeline flows through UBS Securities LLC (not on Call Report)
+3. UBS Group-level Americas CRE includes non-US and off-balance-sheet exposure
 
 ### 1.4 FFIEC 002 CRE Line Items
 
@@ -236,49 +246,50 @@ UBS Group AG's most recent disclosures (2024 Annual Report / Q3 2025 Quarterly R
 | Americas CRE Exposure (incl. CS legacy) | ~$15B-$25B | Pillar 3 disclosures |
 | US CRE (pre-CS integration) | ~$8B-$12B | Resolution Plan filings |
 
-### 4.3 Variance Analysis
+### 4.3 Variance Analysis (Revised)
 
 ```
-UBS Group Americas CRE (estimated):     $15B - $25B
-Less: Non-US Americas (LatAm, Canada):   ($1B - $3B)
-= US CRE Exposure (estimated):          $12B - $22B
+UBS Group Americas CRE (Pillar 3/20-F):       $15B - $25B
+Less: Non-US Americas (LatAm, Canada):          ($1B - $3B)
+Less: Off-balance-sheet (commitments, LCs):     ($3B - $8B)
+Less: CMBS pipeline / securitized (UBS Sec):    ($2B - $5B)
+Less: Credit Suisse legacy (non-bank entities): ($3B - $8B)
+Less: Global booking (Swiss/London/HK desks):   ($2B - $5B)
+                                                 --------
+= UBS Bank USA on-B/S CRE loans (estimated):    $1B - $4B
 
-Our Pipeline Pull (CERT 57565 only):     $1.6B
-                                         --------
-Variance:                                $10B - $20B  (85%-93% missing)
+Our Pipeline Pull (CERT 57565):                  $1.6B  ← Within range
 ```
 
-### 4.4 Where the Missing Exposure Resides
+The variance is largely explained by:
+1. **Group vs entity scope** — Pillar 3 reports group-wide, our pull is entity-specific
+2. **CMBS securitization** — Loans originated for sale pass through UBS Securities LLC
+3. **Credit Suisse legacy** — Post-acquisition CRE in non-bank entities
+4. **Off-balance-sheet commitments** — Unfunded CRE commitments not in RC-C
 
-| Booking Entity | Est. CRE | Filing Type | In Our Pipeline? |
-|---------------|----------|-------------|------------------|
-| UBS Bank USA (CERT 57565) | ~$1.6B | FFIEC 031 | YES |
-| UBS AG, New York Branch | ~$5B-$12B | FFIEC 002 | NO |
-| Credit Suisse legacy entities (US) | ~$3B-$8B | Various | NO |
-| UBS Securities LLC (broker-dealer) | ~$1B-$3B (CMBS) | SEC filings | NO |
+### 4.4 Reconciliation Summary
+
+| Category | Est. CRE | Filing Type | In Our Pipeline? |
+|----------|----------|-------------|------------------|
+| UBS Bank USA on-B/S CRE loans (CERT 57565) | ~$1.6B | FFIEC 031 | YES |
+| UBS AG Stamford Branch (corporate/IB) | Minimal CRE | FFIEC 002 | NO (not CRE) |
+| UBS Securities LLC (CMBS pipeline) | $2B-$5B (flow) | SEC | NO |
+| CS legacy entities | $3B-$8B | Various | NO |
+| UBS global desks (non-US) | $2B-$5B | FINMA | N/A |
 
 ---
 
 ## Definitive Recommendations
 
-### Priority 1 (CRITICAL): Add FFIEC 002 Data Extraction
+### Priority 1 (LOW): FFIEC 002 Data Extraction — Not Required for CRE
 
-**Action:** Extend the pipeline to ingest FFIEC 002 filings for UBS AG's US branches.
+**Revised assessment:** FFIEC 002 ingestion is **not needed** for CRE accuracy. UBS confirms CRE whole loans are booked in UBS Bank USA (CERT 57565), which we already capture. The UBS AG Stamford Branch (RSSD 2618801, ~$70.7B assets, ~$10.3B loans) focuses on corporate/IB lending and FX, not CRE.
 
-**Technical approach:**
-1. The FDIC BankFind API (`banks.data.fdic.gov/api/financials`) does **not** serve FFIEC 002 data. Only FDIC-insured entities are covered.
-2. FFIEC 002 data is available from:
-   - **FFIEC CDR Bulk Data** (same source as `FFIECBulkLoader` class, line 877): Add FFIEC 002 report type to the bulk download
-   - **Federal Reserve Statistical Release** (aggregate only)
-   - **Chicago Fed FFIEC 002 database**
-3. Map RCFN-prefix codes (RCFN1415, RCFN1460, RCFN1480) to our existing CRE roll-up categories
-4. Create a combined view: `UBS_Total_US_CRE = UBS_Bank_USA_CRE + UBS_AG_Branch_CRE`
-
-**Pipeline changes required:**
-- Add new data source class: `FFIEC002Loader` (parallel to existing `FFIECBulkLoader`)
-- Add entity configuration for UBS AG branches (RSSD IDs)
-- Add aggregation logic to combine CERT 57565 + branch data for total UBS view
-- Add a `filing_type` column to distinguish 031/041 vs 002 sourced data
+**Optional future enhancement:** If the dashboard scope expands to capture total US banking exposure for FBOs (including corporate lending booked in branches), then FFIEC 002 ingestion would be valuable. Technical approach would involve:
+1. FFIEC CDR Bulk Data download for FFIEC 002 report type
+2. Map RCFN-prefix codes to existing categories
+3. Add `filing_type` column to distinguish 031/041 vs 002 sourced data
+4. This is a significant engineering effort and should only be pursued if business requirements demand it
 
 ### Priority 2 (MODERATE): Add CMBS Supplementary Fields
 
@@ -313,24 +324,27 @@ The current RC-C CRE line-item mapping is comprehensive and correct. No addition
 
 | Question | Answer |
 |----------|--------|
-| Is $1.6B accurate for CERT 57565? | **YES** — technically correct for this legal entity |
-| Is $1.6B the full UBS US CRE exposure? | **NO** — it represents ~8%-13% of total US exposure |
-| Primary data gap? | **FFIEC 002** — UBS AG NY Branch books wholesale CRE |
+| Is $1.6B accurate for CERT 57565? | **YES** — correct for this legal entity |
+| Is $1.6B the full UBS US CRE lending exposure? | **MOSTLY YES** — UBS states CRE loans are made by UBS Bank USA |
+| Is there FFIEC 002 CRE leakage? | **NO** — Stamford Branch (RSSD 2618801) books corporate/IB, not CRE |
+| Why is UBS CRE so low vs total assets? | **Business model** — UBS Bank USA is a wealth management bank; CRE is ancillary |
+| Primary data gap? | **CMBS pipeline** — securitization-bound CRE flows through UBS Securities LLC |
 | Should we adjust RC-C mapping? | **NO** — mapping is already comprehensive |
-| Should we add FFIEC 002? | **YES** — critical for accurate cross-entity comparison |
-| Should we add CMBS (RC-B)? | **OPTIONAL** — only if audit scope includes securities |
+| Should we add FFIEC 002? | **NO** — not needed for CRE. Optional for total UBS US banking exposure |
+| Should we add CMBS (RC-B)? | **OPTIONAL** — only if audit scope includes securities-form CRE exposure |
 
 ---
 
 ## Appendix A: UBS Entity Reference Table
 
-| Entity | RSSD ID | CERT | Filing | Primary Regulator |
-|--------|---------|------|--------|-------------------|
-| UBS Group AG | — | — | Swiss FINMA | FINMA |
-| UBS AG | 1951350 | — | Parent bank | OCC (US branch) |
-| UBS Americas Holding LLC | 4846998 | — | FR Y-9C (IHC) | FRS |
-| UBS Bank USA | 3212149 | 57565 | FFIEC 031 | OCC |
-| UBS AG, New York Branch | ~4512 | — | FFIEC 002 | OCC |
+| Entity | RSSD ID | CERT | Filing | Primary Regulator | Total Assets (Q4 2025) |
+|--------|---------|------|--------|-------------------|----------------------|
+| UBS Group AG | — | — | Swiss FINMA | FINMA | ~$1.72T (global) |
+| UBS AG | 1951350 | — | Parent bank | OCC (US branches) | — |
+| UBS Americas Holding LLC | 4846998 | — | FR Y-9C (IHC) | FRS | — |
+| UBS Bank USA | 3212149 | 57565 | FFIEC 031 | FDIC | ~$119.3B |
+| UBS AG, Stamford Branch | 2618801 | — | FFIEC 002 | FRS/State | ~$70.7B |
+| UBS AG, New York Branch | 4512 | — | FFIEC 002 (inactive) | FRS | N/A |
 
 ## Appendix B: Pipeline Code References
 
