@@ -225,26 +225,37 @@ If the audit objective is **total CRE risk exposure** (not just funded lending),
 
 ### 4.1 UBS Bank USA — Call Report Data (CERT 57565)
 
-| Metric | Value (Q3 2025) | Source |
+| Metric | Value (Q4 2025) | Source |
 |--------|----------------|--------|
-| Total Assets | $115.28B | FDIC BankFind |
-| Gross Loans | $87.48B | FDIC BankFind |
-| CRE (our pipeline) | ~$1.6B | Pipeline output |
+| Total Assets | $119.3B | FDIC BankFind / iBankNet |
+| Net Loans & Leases | $88.6B | Call Report |
+| Real Estate Secured Loans (total) | $33.7B | Call Report RC-C |
+| Commercial & Industrial Loans | $712.8M | Call Report RC-C |
+| CRE (our pipeline — investment CRE) | ~$1.6B | Pipeline output |
 | CRE as % of Gross Loans | ~1.8% | Calculated |
-| Equity | $9.37B | FDIC BankFind |
+| CRE as % of Equity | ~16% | Calculated (vs 132% industry avg) |
+| Bank Equity Capital | $9.7B | Call Report |
 | CET1 Ratio | 26.90% | Call Report |
 | Texas Ratio | 2.03% | FDIC BankFind |
+| ROE | 13.85% | FDIC BankFind |
+
+**Loan composition context:** Of the ~$88.6B in total loans, approximately **$53-54B is SBL** (securities-backed lending to HNW/UHNW clients). The $33.7B in "RE-secured loans" is predominantly **residential mortgages** for wealthy clients (low LTV, delinquency rates far below national averages). CRE at ~$1.6B is explicitly described as a secondary/ancillary product per the FDIC resolution plan.
+
+**Industry benchmark:** The FAU CRE screener defines "excessive" CRE exposure as >300% of equity. At $1.6B CRE vs $9.7B equity, UBS Bank USA is at **~16%** — far below the industry aggregate of 132%.
 
 ### 4.2 UBS Group AG — Public CRE Disclosures
 
-UBS Group AG's most recent disclosures (2024 Annual Report / Q3 2025 Quarterly Report) show:
+| Metric | Value | Source |
+|--------|-------|--------|
+| Group-wide CRE exposure (2023) | **$55.09B** | 2023 Annual Report |
+| Group-wide CRE exposure (2022) | $47.1B | 2022 Annual Report |
+| Total group lending assets | $599B | Q4 2024 results |
+| Americas GWM loans | $43.4B | Q1 2025 presentation |
+| Mortgages as % of group loan book | 57% (~$341B) | Q4 2024 results |
+| US/Americas CRE regional breakdown | **Not disclosed** | Noted by Reuters as omission |
+| CRE risk classification | "Top and emerging risk" (first time) | 2023 Annual Report |
 
-| Metric | Approximate Value | Source |
-|--------|------------------|--------|
-| Global Total Assets | ~$1.72T (post-Credit Suisse) | UBS AG Q3 2025 Report |
-| Americas Total Lending | ~$150B-$200B | Pillar 3 / 20-F |
-| Americas CRE Exposure (incl. CS legacy) | ~$15B-$25B | Pillar 3 disclosures |
-| US CRE (pre-CS integration) | ~$8B-$12B | Resolution Plan filings |
+**Key finding:** UBS does **not** publicly break down the $55B group CRE figure by geography. The increase from $47.1B to $55.1B was attributed to the Credit Suisse acquisition. No analyst report was found that isolates UBS's US CRE book size.
 
 ### 4.3 Variance Analysis (Revised)
 
