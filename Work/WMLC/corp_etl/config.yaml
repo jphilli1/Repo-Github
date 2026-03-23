@@ -1,0 +1,61 @@
+# WMLC Pipeline Configuration
+# All file paths are relative to the repo root (parent of corp_etl/)
+# Supports both .xlsx and .csv input files — auto-detected by extension
+
+input_files:
+  base_extract:
+    path: "./proxy_data/loan_extract.csv"
+    # No skip rows — standard CSV/XLSX with headers
+
+  lal_credit:
+    path: "./proxy_data/LAL_Credit.xlsx"
+    skip_rows: 3
+    key_column: "Account Number"
+    key_format: "strip_dash_pad12"  # "001-234567" -> "000001234567"
+
+  loan_reserve_report:
+    path: "./proxy_data/Loan_Reserve_Report.xlsx"
+    skip_rows: 6
+    key_column: "Facility Account Number"
+    key_format: "pad12"
+
+  dar_tracker:
+    path: "./proxy_data/DAR_Tracker.xlsx"
+    skip_rows: 0
+    key_column: "Facility ID"
+    key_format: "pad12"
+
+output:
+  tagged_file: "./output/loan_extract_tagged.csv"
+
+# Column name hints — all normalized to UPPERCASE_UNDERSCORE
+# The pipeline normalizes all column names on read, so hints should
+# use the normalized form. Alternates handle different source naming.
+column_hints:
+  PRODUCT_BUCKET:
+    - "PRODUCT_BUCKET"
+  CREDIT_LII:
+    - "CREDIT_LII"
+    - "COMMITMENT"
+  ACCOUNT_NUMBER:
+    - "ACCOUNT_NUMBER"
+    - "ACCT_NUM"
+  FACILITY_ID:
+    - "FACILITY_ID"
+    - "TL_FACILITY_DIGITS12"
+  FOCUS_LIST:
+    - "FOCUS_LIST"
+  NEW_CAMP_YN:
+    - "NEW_CAMP_YN"
+  IS_LAL_NFP:
+    - "IS_LAL_NFP"
+  TXT_MSTR_FACIL_COLLATERAL_DESC:
+    - "TXT_MSTR_FACIL_COLLATERAL_DESC"
+    - "COLLATERAL_DESC"
+    - "COLLATERAL_DESCRIPTION"
+  CREDIT_LII_COMMITMENT_BUCKET:
+    - "CREDIT_LII_COMMITMENT_BUCKET"
+    - "COMMITMENT_BUCKET"
+  CREDIT_LII_COMMITMENT_FLOOR:
+    - "CREDIT_LII_COMMITMENT_FLOOR"
+    - "COMMITMENT_FLOOR"
