@@ -4,185 +4,116 @@ Option Explicit
 ' View state: 1=Count, 2=Commitment, 3=Count NEW, 4=Commitment NEW
 ' WMLC state: 0=OFF, 1=ON
 ' State stored in _config sheet: A1=ViewState, A2=WMLCState
+'
+' All button handlers call MasterRefresh(reformat:=False) for fast toggle.
+' Threshold shading is static across views — only reapplied on data load.
 
 Public Sub ShowSummaryCount()
     On Error GoTo ErrHandler
     Sheets("_config").Range("A1").Value = 1
-    RefreshDashboard
+    MasterRefresh reformat:=False
     Exit Sub
 ErrHandler:
-    MsgBox "Error in ShowSummaryCount: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MsgBox "Error: " & Err.Description, vbExclamation
 End Sub
 
 Public Sub ShowSummaryCommitment()
     On Error GoTo ErrHandler
     Sheets("_config").Range("A1").Value = 2
-    RefreshDashboard
+    MasterRefresh reformat:=False
     Exit Sub
 ErrHandler:
-    MsgBox "Error in ShowSummaryCommitment: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MsgBox "Error: " & Err.Description, vbExclamation
 End Sub
 
 Public Sub ShowSummaryCountNew()
     On Error GoTo ErrHandler
     Sheets("_config").Range("A1").Value = 3
-    RefreshDashboard
+    MasterRefresh reformat:=False
     Exit Sub
 ErrHandler:
-    MsgBox "Error in ShowSummaryCountNew: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MsgBox "Error: " & Err.Description, vbExclamation
 End Sub
 
 Public Sub ShowSummaryCommitmentNew()
     On Error GoTo ErrHandler
     Sheets("_config").Range("A1").Value = 4
-    RefreshDashboard
+    MasterRefresh reformat:=False
     Exit Sub
 ErrHandler:
-    MsgBox "Error in ShowSummaryCommitmentNew: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MsgBox "Error: " & Err.Description, vbExclamation
 End Sub
 
 Public Sub WMLCOn()
     On Error GoTo ErrHandler
     Sheets("_config").Range("A2").Value = 1
-    RefreshDashboard
+    MasterRefresh reformat:=False
     Exit Sub
 ErrHandler:
-    MsgBox "Error in WMLCOn: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MsgBox "Error: " & Err.Description, vbExclamation
 End Sub
 
 Public Sub WMLCOff()
     On Error GoTo ErrHandler
     Sheets("_config").Range("A2").Value = 0
-    RefreshDashboard
+    MasterRefresh reformat:=False
     Exit Sub
 ErrHandler:
-    MsgBox "Error in WMLCOff: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MsgBox "Error: " & Err.Description, vbExclamation
 End Sub
 
 Public Sub ResetDashboard()
     On Error GoTo ErrHandler
     Sheets("_config").Range("A1").Value = 2
     Sheets("_config").Range("A2").Value = 0
-    RefreshDashboard
+    MasterRefresh reformat:=False
     Exit Sub
 ErrHandler:
-    MsgBox "Error in ResetDashboard: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MsgBox "Error: " & Err.Description, vbExclamation
 End Sub
 
+' DEPRECATED wrapper
 Public Sub RefreshDashboard()
-    On Error GoTo ErrHandler
-
-    Dim viewIdx As Long
-    Dim wmlcIdx As Long
-    Dim sourceSheet As String
-    Dim viewName As String
-    Dim fmt As String
-
-    viewIdx = Sheets("_config").Range("A1").Value
-    wmlcIdx = Sheets("_config").Range("A2").Value
-
-    ' Calculate which hidden sheet to pull from
-    ' _view1..4 are non-WMLC, _view5..8 are WMLC
-    Dim sheetNum As Long
-    sheetNum = viewIdx + (wmlcIdx * 4)
-    sourceSheet = "_view" & sheetNum
-
-    ' View name for display — format string: positive;negative;zero (dash for zero)
-    Select Case viewIdx
-        Case 1: viewName = "Summary Count": fmt = "#,##0;-#,##0;""-"""
-        Case 2: viewName = "Summary Commitment": fmt = "$#,##0;-$#,##0;""-"""
-        Case 3: viewName = "Summary Count NEW": fmt = "#,##0;-#,##0;""-"""
-        Case 4: viewName = "Summary Commitment NEW": fmt = "$#,##0;-$#,##0;""-"""
-    End Select
-
-    Dim wmlcText As String
-    If wmlcIdx = 1 Then wmlcText = "ON" Else wmlcText = "OFF"
-
-    ' Update header (row 3 — date/view indicator)
-    Sheets("Dashboard").Range("A3").Value = "As of: " & Format(Now, "mm/dd/yyyy") & " | View: " & viewName & " | WMLC: " & wmlcText
-
-    ' Copy values from source sheet to Dashboard data area
-    Dim dataRange As Range
-    Set dataRange = Sheets("Dashboard").Range("C7:O30")  ' 24 rows x 13 cols
-
-    Dim sourceRange As Range
-    Set sourceRange = Sheets(sourceSheet).Range("A1:M24")  ' Same dimensions
-
-    dataRange.Value = sourceRange.Value
-
-    ' Update totals (column P and row 31)
-    Dim r As Long, c As Long
-    Dim rowTotal As Double
-    Dim colTotal As Double
-
-    ' Row totals (column P)
-    For r = 7 To 30
-        rowTotal = 0
-        For c = 3 To 15
-            If IsNumeric(Sheets("Dashboard").Cells(r, c).Value) Then
-                rowTotal = rowTotal + Sheets("Dashboard").Cells(r, c).Value
-            End If
-        Next c
-        Sheets("Dashboard").Cells(r, 16).Value = rowTotal
-    Next r
-
-    ' Column totals (row 31)
-    For c = 3 To 16
-        colTotal = 0
-        For r = 7 To 30
-            If IsNumeric(Sheets("Dashboard").Cells(r, c).Value) Then
-                colTotal = colTotal + Sheets("Dashboard").Cells(r, c).Value
-            End If
-        Next r
-        Sheets("Dashboard").Cells(31, c).Value = colTotal
-    Next c
-
-    ' Apply number format to data area and totals
-    dataRange.NumberFormat = fmt
-    Sheets("Dashboard").Range("P7:P30").NumberFormat = fmt
-    Sheets("Dashboard").Range("C31:P31").NumberFormat = fmt
-
-    ' Apply threshold shading and concentration ratios
-    ApplyThresholdFormatting
-    ComputeConcentrationRatios
-
-    Exit Sub
-ErrHandler:
-    MsgBox "Error in RefreshDashboard: " & Err.Description & " (Error " & Err.Number & ")", vbExclamation
+    MasterRefresh reformat:=False
 End Sub
 
+' ============================================================
+' ApplyThresholdFormatting — batch range operations
+' Uses 13 Range.Interior.Color calls + 13 border calls instead of
+' 600+ individual cell operations.
+' ============================================================
 Public Sub ApplyThresholdFormatting()
     On Error GoTo ErrHandler
     Dim ws As Worksheet
     Set ws = Sheets("Dashboard")
 
-    Dim shadeColor As Long
-    shadeColor = RGB(232, 240, 254)   ' Very light blue for threshold zone
+    Dim shadeColor As Long: shadeColor = RGB(232, 240, 254)
+    Dim boldBorderColor As Long: boldBorderColor = RGB(0, 43, 92)
+    Dim iceBlue As Long: iceBlue = RGB(240, 244, 248)
 
-    Dim boldBorderColor As Long
-    boldBorderColor = RGB(0, 43, 92)  ' MS Navy
-
-    Dim iceBlue As Long
-    iceBlue = RGB(240, 244, 248)
-
-    ' Reset data area to alternating rows
-    Dim r As Long, c As Long
+    ' Reset entire data area to alternating rows — batch per row
+    Dim r As Long
     For r = 7 To 30
-        For c = 3 To 15
-            If (r Mod 2) = 0 Then
-                ws.Cells(r, c).Interior.Color = iceBlue
-            Else
-                ws.Cells(r, c).Interior.Color = RGB(255, 255, 255)
-            End If
-            ws.Cells(r, c).Borders(xlEdgeBottom).LineStyle = xlContinuous
-            ws.Cells(r, c).Borders(xlEdgeBottom).Weight = xlThin
-            ws.Cells(r, c).Borders(xlEdgeBottom).Color = RGB(217, 222, 227)
-        Next c
+        If (r Mod 2) = 0 Then
+            ws.Range(ws.Cells(r, 3), ws.Cells(r, 15)).Interior.Color = iceBlue
+        Else
+            ws.Range(ws.Cells(r, 3), ws.Cells(r, 15)).Interior.Color = RGB(255, 255, 255)
+        End If
     Next r
+    ' Reset all borders in one shot
+    Dim dataArea As Range
+    Set dataArea = ws.Range("C7:O30")
+    dataArea.Borders(xlEdgeBottom).LineStyle = xlContinuous
+    dataArea.Borders(xlEdgeBottom).Weight = xlThin
+    dataArea.Borders(xlEdgeBottom).Color = RGB(217, 222, 227)
+    dataArea.Borders(xlInsideHorizontal).LineStyle = xlContinuous
+    dataArea.Borders(xlInsideHorizontal).Weight = xlThin
+    dataArea.Borders(xlInsideHorizontal).Color = RGB(217, 222, 227)
 
-    ' Build header-to-column mapping from Dashboard row 6
+    ' Build header-to-column mapping
     Dim headerMap As Object
     Set headerMap = CreateObject("Scripting.Dictionary")
+    Dim c As Long
     For c = 3 To 15
         headerMap(Trim(CStr(ws.Cells(6, c).Value))) = c
     Next c
@@ -198,19 +129,16 @@ Public Sub ApplyThresholdFormatting()
     pt("TL Other Secured") = 22:     pt("TL Multicollateral") = 22
     pt("RESI") = 29
 
+    ' Apply threshold shading — ONE range call per column (not per cell)
     Dim key As Variant
     For Each key In pt.Keys
         If headerMap.Exists(CStr(key)) Then
             c = headerMap(CStr(key))
             Dim tRow As Long
             tRow = pt(CStr(key))
-
-            ' Shade rows 7 through threshold row
-            For r = 7 To tRow
-                ws.Cells(r, c).Interior.Color = shadeColor
-            Next r
-
-            ' Bold bottom border at threshold row
+            ' Single range shade
+            ws.Range(ws.Cells(7, c), ws.Cells(tRow, c)).Interior.Color = shadeColor
+            ' Single border call
             ws.Cells(tRow, c).Borders(xlEdgeBottom).LineStyle = xlContinuous
             ws.Cells(tRow, c).Borders(xlEdgeBottom).Weight = xlMedium
             ws.Cells(tRow, c).Borders(xlEdgeBottom).Color = boldBorderColor
@@ -227,7 +155,6 @@ Public Sub ComputeConcentrationRatios()
     Dim ws As Worksheet
     Set ws = Sheets("Dashboard")
 
-    ' Row 32 labels
     ws.Cells(32, 1).Value = "WMLC %"
     ws.Cells(32, 1).Font.Bold = True
     ws.Cells(32, 1).Font.Color = RGB(0, 43, 92)
@@ -235,7 +162,6 @@ Public Sub ComputeConcentrationRatios()
     ws.Cells(32, 2).Font.Italic = True
     ws.Cells(32, 2).Font.Color = RGB(108, 117, 125)
 
-    ' Build header map and identify LAL columns
     Dim headerMap As Object
     Set headerMap = CreateObject("Scripting.Dictionary")
     Dim lalColumns As Object
@@ -248,7 +174,6 @@ Public Sub ComputeConcentrationRatios()
         If InStr(hdr, "LAL") > 0 Then lalColumns(hdr) = c
     Next c
 
-    ' Threshold map (same as ApplyThresholdFormatting)
     Dim pt As Object
     Set pt = CreateObject("Scripting.Dictionary")
     pt("LAL Diversified") = 14:      pt("LAL Highly Conc.") = 20
@@ -259,64 +184,72 @@ Public Sub ComputeConcentrationRatios()
     pt("TL Other Secured") = 22:     pt("TL Multicollateral") = 22
     pt("RESI") = 29
 
-    Dim LAL_DENOM_ROW As Long
-    LAL_DENOM_ROW = 29  ' Sum rows 7-29 for LAL denominator ($10MM+)
+    Dim LAL_DENOM_ROW As Long: LAL_DENOM_ROW = 29
 
+    ' Read data area into array for fast computation (no cell-by-cell reads)
+    Dim dataVals As Variant
+    dataVals = ws.Range("C7:O30").Value  ' 24 rows x 13 cols
+
+    Dim ratios(1 To 1, 1 To 14) As Variant
     Dim key As Variant
     For Each key In pt.Keys
         If headerMap.Exists(CStr(key)) Then
             c = headerMap(CStr(key))
-            Dim tRow As Long
-            tRow = pt(CStr(key))
+            Dim colIdx As Long: colIdx = c - 2  ' 1-based index into dataVals
+            Dim tRow As Long: tRow = pt(CStr(key))
+            Dim threshRowIdx As Long: threshRowIdx = tRow - 6  ' convert to array index
 
-            ' Numerator: sum rows 7 through threshold row
-            Dim numerator As Double
-            numerator = 0
+            Dim numerator As Double: numerator = 0
             Dim r As Long
-            For r = 7 To tRow
-                If IsNumeric(ws.Cells(r, c).Value) Then numerator = numerator + CDbl(ws.Cells(r, c).Value)
+            For r = 1 To threshRowIdx
+                If IsNumeric(dataVals(r, colIdx)) Then numerator = numerator + CDbl(dataVals(r, colIdx))
             Next r
 
-            ' Denominator: LAL uses $10MM+ sum, others use Total row
-            Dim denominator As Double
-            denominator = 0
+            Dim denominator As Double: denominator = 0
             If lalColumns.Exists(CStr(key)) Then
-                For r = 7 To LAL_DENOM_ROW
-                    If IsNumeric(ws.Cells(r, c).Value) Then denominator = denominator + CDbl(ws.Cells(r, c).Value)
+                Dim denomRow As Long: denomRow = LAL_DENOM_ROW - 6
+                For r = 1 To denomRow
+                    If IsNumeric(dataVals(r, colIdx)) Then denominator = denominator + CDbl(dataVals(r, colIdx))
                 Next r
             Else
                 If IsNumeric(ws.Cells(31, c).Value) Then denominator = CDbl(ws.Cells(31, c).Value)
             End If
 
             If denominator > 0 Then
-                ws.Cells(32, c).Value = numerator / denominator
+                ratios(1, colIdx) = numerator / denominator
             Else
-                ws.Cells(32, c).Value = 0
+                ratios(1, colIdx) = 0
             End If
         End If
     Next key
 
-    ' Total column (P=16): weighted average
+    ' Weighted average for total column
     Dim totalNum As Double, totalDen As Double
     totalNum = 0: totalDen = 0
-    For c = 3 To 15
-        If IsNumeric(ws.Cells(32, c).Value) And IsNumeric(ws.Cells(31, c).Value) Then
-            totalNum = totalNum + (CDbl(ws.Cells(32, c).Value) * CDbl(ws.Cells(31, c).Value))
-            totalDen = totalDen + CDbl(ws.Cells(31, c).Value)
+    For c = 1 To 13
+        If IsNumeric(ratios(1, c)) And IsNumeric(ws.Cells(31, c + 2).Value) Then
+            Dim colVal As Double: colVal = CDbl(ws.Cells(31, c + 2).Value)
+            totalNum = totalNum + (CDbl(ratios(1, c)) * colVal)
+            totalDen = totalDen + colVal
         End If
     Next c
-    If totalDen > 0 Then ws.Cells(32, 16).Value = totalNum / totalDen
+    If totalDen > 0 Then ratios(1, 14) = totalNum / totalDen Else ratios(1, 14) = 0
+
+    ' Bulk write ratios
+    ws.Range("C32:P32").Value = ratios
 
     ' Format row 32
-    ws.Range(ws.Cells(32, 3), ws.Cells(32, 16)).NumberFormat = "0.0%"
-    ws.Range(ws.Cells(32, 3), ws.Cells(32, 16)).Font.Bold = True
-    ws.Range(ws.Cells(32, 3), ws.Cells(32, 16)).Font.Color = RGB(0, 43, 92)
-    ws.Range(ws.Cells(32, 3), ws.Cells(32, 16)).Interior.Color = RGB(214, 228, 240)
-    ws.Range(ws.Cells(32, 1), ws.Cells(32, 16)).Borders(xlEdgeTop).LineStyle = xlContinuous
-    ws.Range(ws.Cells(32, 1), ws.Cells(32, 16)).Borders(xlEdgeTop).Weight = xlThin
-    ws.Range(ws.Cells(32, 1), ws.Cells(32, 16)).Borders(xlEdgeTop).Color = RGB(0, 43, 92)
+    Dim r32 As Range
+    Set r32 = ws.Range("C32:P32")
+    r32.NumberFormat = "0.0%"
+    r32.Font.Bold = True
+    r32.Font.Color = RGB(0, 43, 92)
+    r32.Interior.Color = RGB(214, 228, 240)
+    ws.Range("A32:P32").Borders(xlEdgeTop).LineStyle = xlContinuous
+    ws.Range("A32:P32").Borders(xlEdgeTop).Weight = xlThin
+    ws.Range("A32:P32").Borders(xlEdgeTop).Color = RGB(0, 43, 92)
 
     Exit Sub
 ErrHandler:
-    ' Silently fail — ratios are informational
+    ' Silently fail
 End Sub

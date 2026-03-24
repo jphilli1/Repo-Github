@@ -25,8 +25,14 @@ input_files:
     key_column: "Facility ID"
     key_format: "pad12"
 
+  wmlc_tracker:
+    path: "./proxy_data/WMLC_Tracker.xlsx"
+    skip_rows: 0
+
 output:
   tagged_file: "./output/loan_extract_tagged.csv"
+  tracker_matched: "./output/wmlc_tracker_matched.xlsx"
+  dashboard: "./output/WMLC_Dashboard.xlsm"
 
 # Column name hints — all normalized to UPPERCASE_UNDERSCORE
 # The pipeline normalizes all column names on read, so hints should

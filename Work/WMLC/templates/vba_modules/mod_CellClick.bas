@@ -13,9 +13,7 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     If Target.Cells.Count > 1 Then Exit Sub
 
     ' Dynamic data area detection
-    ' Find last data row: row before "Total" in column A
-    Dim lastDataRow As Long
-    Dim lastDataCol As Long
+    Dim lastDataRow As Long, lastDataCol As Long
     Dim r As Long
 
     lastDataRow = 0
@@ -31,7 +29,6 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     Next r
     If lastDataRow < 7 Then Exit Sub
 
-    ' Find last data column: last non-empty header in row 6 before "Total"
     lastDataCol = 0
     Dim c As Long
     For c = 3 To Me.Cells(6, Me.Columns.Count).End(xlToLeft).Column
@@ -56,25 +53,28 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     viewIdx = Sheets("_config").Range("A1").Value
     wmlcIdx = Sheets("_config").Range("A2").Value
 
-    ' Switch to loan_detail and apply filters
+    ' Switch to "Loan Detail" (the data sheet) and apply filters directly
     Dim ws As Worksheet
-    Set ws = Sheets("loan_detail")
+    Set ws = Sheets("Loan Detail")
     ws.Activate
 
-    ' Clear existing filters
-    If ws.AutoFilterMode Then
-        If ws.FilterMode Then ws.ShowAllData
+    ' Ensure AutoFilter is on row 1 (header row of _data)
+    If Not ws.AutoFilterMode Then
+        ws.Range("A1").AutoFilter
     End If
 
-    ' Find column positions in loan_detail (row 3 = headers)
+    ' Clear existing filters
+    If ws.FilterMode Then ws.ShowAllData
+
+    ' Find column positions from row 1 headers
     Dim colBucket As Long, colProduct As Long, colWMLC As Long, colNew As Long
     Dim lastCol As Long
     colBucket = 0: colProduct = 0: colWMLC = 0: colNew = 0
-    lastCol = ws.Cells(3, ws.Columns.Count).End(xlToLeft).Column
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
 
     Dim i As Long
     For i = 1 To lastCol
-        Select Case LCase(Trim(ws.Cells(3, i).Value))
+        Select Case LCase(Trim(ws.Cells(1, i).Value))
             Case "credit_lii_commitment_bucket": colBucket = i
             Case "product_bucket": colProduct = i
             Case "wmlc_qualified": colWMLC = i
@@ -82,24 +82,18 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
         End Select
     Next i
 
-    ' Apply product bucket filter
+    ' Apply filters
     If colProduct > 0 Then
-        ws.Range("A3").AutoFilter Field:=colProduct, Criteria1:=productBucket
+        ws.Range("A1").AutoFilter Field:=colProduct, Criteria1:=productBucket
     End If
-
-    ' Apply bucket filter
     If colBucket > 0 Then
-        ws.Range("A3").AutoFilter Field:=colBucket, Criteria1:=bucketLabel
+        ws.Range("A1").AutoFilter Field:=colBucket, Criteria1:=bucketLabel
     End If
-
-    ' WMLC filter (if WMLC ON)
     If wmlcIdx = 1 And colWMLC > 0 Then
-        ws.Range("A3").AutoFilter Field:=colWMLC, Criteria1:="True"
+        ws.Range("A1").AutoFilter Field:=colWMLC, Criteria1:="True"
     End If
-
-    ' NEW filter (views 3 and 4)
     If (viewIdx = 3 Or viewIdx = 4) And colNew > 0 Then
-        ws.Range("A3").AutoFilter Field:=colNew, Criteria1:="Y"
+        ws.Range("A1").AutoFilter Field:=colNew, Criteria1:="Y"
     End If
 
     Exit Sub

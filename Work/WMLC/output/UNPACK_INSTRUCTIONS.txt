@@ -1,0 +1,34 @@
+# ============================================================
+# WMLC Corp ETL — Unpack Instructions
+# ============================================================
+# 1. Save corp_etl_payload.txt somewhere (e.g. Downloads)
+# 2. Open PowerShell and run the block below
+# ============================================================
+
+# --- Set these two paths ---
+$payloadFile = "$env:USERPROFILE\Downloads\corp_etl_payload.txt"
+$targetDir   = "C:\Users\YOUR_USERNAME\WMLC"
+
+# --- Decode base64 (handles line breaks and whitespace) ---
+New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+$raw = Get-Content $payloadFile -Raw
+$cleaned = $raw -replace '\s',''
+$gzPath = "$env:TEMP\corp_etl_package.tar.gz"
+[IO.File]::WriteAllBytes($gzPath, [Convert]::FromBase64String($cleaned))
+tar -xzf $gzPath -C $targetDir
+
+# --- Verify ---
+Write-Host "`n=== Extracted files ===" -ForegroundColor Green
+Get-ChildItem "$targetDir" -Recurse -File | ForEach-Object {
+    $rel = $_.FullName.Replace("$targetDir\", "")
+    Write-Host "  $rel ($([math]::Round($_.Length/1KB, 1)) KB)"
+}
+
+# --- Next steps ---
+Write-Host "`n=== Next steps ===" -ForegroundColor Yellow
+Write-Host "1. Edit: $targetDir\corp_etl\config.yaml"
+Write-Host "2. Run:  cd $targetDir\corp_etl && python main.py"
+Write-Host "3. Run:  python corp_etl\tracker_matcher.py (optional)"
+Write-Host "4. Open: $targetDir\WMLC_Dashboard.xlsm"
+Write-Host "5. Set up Power Query (see POWER_QUERY_SETUP sheet)"
+Write-Host "6. Click Refresh Data on Dashboard"

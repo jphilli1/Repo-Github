@@ -53,7 +53,7 @@ Public Sub RunAllTests()
 
     ' Test 5: All required sheets exist
     Dim requiredSheets As Variant
-    requiredSheets = Array("Dashboard", "loan_detail", "_data", "_config", "_view1", "_view2", "_view3", "_view4", "_view5", "_view6", "_view7", "_view8")
+    requiredSheets = Array("Dashboard", "Loan Detail", "_config", "_view1", "_view2", "_view3", "_view4", "_view5", "_view6", "_view7", "_view8")
     Dim i As Long
     For i = LBound(requiredSheets) To UBound(requiredSheets)
         On Error Resume Next
@@ -70,7 +70,7 @@ Public Sub RunAllTests()
     '         PRODUCT_BUCKET and CREDIT_LII are required; bucket is optional (VBA computes it)
     On Error Resume Next
     Dim wsData As Worksheet
-    Set wsData = Sheets("_data")
+    Set wsData = Sheets("Loan Detail")
     If Not wsData Is Nothing Then
         Dim dataLastCol As Long
         dataLastCol = wsData.Cells(1, wsData.Columns.Count).End(xlToLeft).Column
@@ -84,13 +84,13 @@ Public Sub RunAllTests()
                 Case "credit_lii": foundCreditLii = True
             End Select
         Next col
-        If Not foundProduct Then failures = failures & "FAIL: _data missing 'PRODUCT_BUCKET' column" & vbCrLf
-        If Not foundCreditLii Then failures = failures & "FAIL: _data missing 'CREDIT_LII' column" & vbCrLf
+        If Not foundProduct Then failures = failures & "FAIL: Loan Detail missing 'PRODUCT_BUCKET' column" & vbCrLf
+        If Not foundCreditLii Then failures = failures & "FAIL: Loan Detail missing 'CREDIT_LII' column" & vbCrLf
         ' Bucket column is optional — VBA computes it from CREDIT_LII if missing
         If Not foundBucket Then failures = failures & "NOTE: CREDIT_LII_COMMITMENT_BUCKET missing (will be computed)" & vbCrLf
     End If
     If Err.Number <> 0 Then
-        failures = failures & "FAIL: Error reading _data headers: " & Err.Description & vbCrLf
+        failures = failures & "FAIL: Error reading Loan Detail headers: " & Err.Description & vbCrLf
         Err.Clear
     End If
     On Error GoTo 0
@@ -118,7 +118,7 @@ Public Sub RunAllTests()
     ' Test 9: loan_detail has headers in row 3
     On Error Resume Next
     Dim ldHeader As Variant
-    ldHeader = Sheets("loan_detail").Range("A3").Value
+    ldHeader = Sheets("Loan Detail").Range("A3").Value
     If Err.Number <> 0 Or IsEmpty(ldHeader) Then
         failures = failures & "FAIL: loan_detail row 3 headers missing" & vbCrLf
         Err.Clear
@@ -182,7 +182,7 @@ End Sub
 Public Sub TestRefreshCycle()
     On Error GoTo ErrHandler
     Dim ws As Worksheet
-    Set ws = Sheets("_data")
+    Set ws = Sheets("Loan Detail")
 
     ' Check _data has data
     Dim dataRows As Long
@@ -207,7 +207,7 @@ Public Sub TestRefreshCycle()
 
     ' Verify loan_detail has data
     Dim detailRows As Long
-    detailRows = Sheets("loan_detail").Cells(Sheets("loan_detail").Rows.Count, 1).End(xlUp).Row
+    detailRows = Sheets("Loan Detail").Cells(Sheets("Loan Detail").Rows.Count, 1).End(xlUp).Row
 
     ' Verify _view1 has data
     Dim view1Val As Variant

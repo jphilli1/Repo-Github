@@ -4,7 +4,7 @@ Option Explicit
 Public Sub BackToDashboard()
     On Error GoTo ErrHandler
     Dim ws As Worksheet
-    Set ws = Sheets("loan_detail")
+    Set ws = Sheets("Loan Detail")
     If ws.AutoFilterMode Then
         If ws.FilterMode Then ws.ShowAllData
     End If
@@ -26,7 +26,9 @@ End Sub
 
 Public Sub Auto_Open()
     On Error GoTo ErrHandler
-    ' Run diagnostic tests on workbook open
+    ' Apply all conditional formatting once on open
+    ApplyThresholdFormatting
+    ApplyDistanceConditionalFormatting
     RunAllTests
     Exit Sub
 ErrHandler:

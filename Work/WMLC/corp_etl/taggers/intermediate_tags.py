@@ -83,9 +83,15 @@ def compute_is_ntc(base_df, lal_credit_df, loan_reserve_df):
             "corp", case=False, na=False)
 
         # Condition B: Account Relationship contains ANY entity type (OR, substring, case-insensitive)
-        entity_pattern = "organization|limited liability|corporation|limited partnership"
+        # Expanded to catch guarantor-type and institutional entity variants
+        entity_pattern = (
+            "organization|limited liability|corporation|limited partnership"
+            "|guarantor|trust|estate|joint venture|partnership|association"
+        )
         entity_mask = loan_reserve_df.get("ACCOUNT_RELATIONSHIP_CODE_DESCRIPTION", pd.Series(dtype=str)).astype(str).str.contains(
             entity_pattern, case=False, na=False, regex=True)
+        logger.info(f"Loan Reserve Report: entity pattern matches {entity_mask.sum()} rows "
+                    f"(expanded to include guarantor/trust/estate variants)")
 
         ntc_mask = purpose_mask & entity_mask
         ntc_facilities = set(loan_reserve_df.loc[ntc_mask, "ACCOUNT_NUMBER_KEY"].dropna())

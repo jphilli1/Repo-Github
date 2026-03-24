@@ -21,6 +21,16 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.chart import BarChart, Reference, DoughnutChart
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import DataPoint
+from openpyxl.chart.legend import Legend
+from openpyxl.chart.text import RichText
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.drawing.text import (
+    Paragraph as DrawParagraph, ParagraphProperties as DrawParagraphProperties,
+    CharacterProperties, Font as DrawingFont,
+)
 
 # -- paths ------------------------------------------------------------------
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -290,7 +300,7 @@ def build_pq_setup_sheet(wb):
         (4, "Step 2: Click 'New Source' > 'Blank Query', then open the Advanced Editor"),
         (5, "Step 3: Paste the M code shown below into the Advanced Editor and click 'Done'"),
         (6, "Step 4: Name the query 'tbl_LoanData' and click 'Close & Load To...'"),
-        (7, "        Choose 'Table' and load to the '_data' sheet cell A1"),
+        (7, "Step 5: Select 'Existing worksheet' > click the Loan Detail sheet > cell A1 > click OK"),
     ]
     for row_num, text in steps:
         cell = ws.cell(row=row_num, column=1, value=text)
@@ -319,8 +329,8 @@ def build_pq_setup_sheet(wb):
     post_code_row = 10 + len(m_lines) + 2
 
     post_steps = [
-        (post_code_row, "Step 5: After loading, the _data sheet will be populated with loan data"),
-        (post_code_row + 1, "Step 6: Click 'Refresh Data' button on Dashboard to recompute all views"),
+        (post_code_row, "Step 6: After loading, the Loan Detail sheet will be populated with loan data"),
+        (post_code_row + 1, "Step 7: Click 'Refresh Data' button on Dashboard to recompute all views"),
         (post_code_row + 2, ""),
         (post_code_row + 3, "AFTER SETUP:"),
         (post_code_row + 4, "- To refresh data: click 'Refresh Data' on Dashboard (uses Power Query)"),
@@ -328,6 +338,7 @@ def build_pq_setup_sheet(wb):
         (post_code_row + 6, "- Update the CSV path in _config sheet cell A3 if the file location changes"),
         (post_code_row + 7, ""),
         (post_code_row + 8, "NOTE: The DataSourcePath named range in _config!A3 must point to a valid CSV file."),
+        (post_code_row + 9, "      Power Query loads into the Loan Detail sheet (not _data)."),
     ]
     for row_num, text in post_steps:
         cell = ws.cell(row=row_num, column=1, value=text)
@@ -340,6 +351,526 @@ def build_pq_setup_sheet(wb):
     ws.column_dimensions["A"].width = 120
 
     return ws
+
+
+# -- WMLC threshold row mapping (0-indexed into the 24-row matrix) ----------
+# Row index in data area (0-23) where WMLC threshold falls for each bucket.
+# "Threshold row" = first row AT or ABOVE the WMLC threshold.
+# E.g. LAL Diversified threshold is $300MM → row index 7 ($300MM bucket)
+WMLC_THRESHOLD_ROW_IDX = {
+    "LAL Diversified":    7,   # $300MM
+    "LAL Highly Conc.":  13,   # $100MM
+    "LAL NFPs":          13,   # $100MM
+    "TL SBL Diversified": 7,   # $300MM
+    "TL SBL Highly Conc.":13,  # $100MM
+    "TL Life Insurance": 13,   # $100MM
+    "TL CRE":           14,    # $75MM
+    "TL Unsecured":      17,   # $35MM
+    "TL Aircraft":       15,   # $50MM
+    "TL PHA":            17,   # $35MM
+    "TL Other Secured":  15,   # $50MM
+    "TL Multicollateral":15,   # $50MM
+    "RESI":              22,   # $10MM
+}
+
+
+# VBA-matching absolute Excel row numbers for threshold borders
+# (data area rows 7-30; these must match mod_ViewToggle.bas pt() values)
+WMLC_THRESHOLD_EXCEL_ROW = {
+    "LAL Diversified":    14,
+    "LAL Highly Conc.":   20,
+    "LAL NFPs":           22,
+    "TL SBL Diversified": 14,
+    "TL SBL Highly Conc.":20,
+    "TL Life Insurance":  20,
+    "TL CRE":             21,
+    "TL Unsecured":       24,
+    "TL Aircraft":        22,
+    "TL PHA":             24,
+    "TL Other Secured":   22,
+    "TL Multicollateral": 22,
+    "RESI":               29,
+}
+
+# Shade fill for threshold zone (matches VBA RGB(232, 240, 254))
+THRESHOLD_SHADE_FILL = PatternFill(start_color="E8F0FE", end_color="E8F0FE", fill_type="solid")
+# Medium navy bottom border for threshold row
+MEDIUM_NAVY_BOTTOM = Border(
+    left=THIN_GRAY, right=THIN_GRAY, top=THIN_GRAY,
+    bottom=Side(style="medium", color=MS_COLORS['navy'])
+)
+
+
+def apply_threshold_formatting(ws_dash):
+    """Apply per-column threshold shading and bold borders.
+
+    Replicates VBA ApplyThresholdFormatting so the static workbook
+    looks correct before the first macro run.
+    """
+    # Build header → column mapping from row 6
+    header_col = {}
+    for ci in range(3, 16):
+        hdr = ws_dash.cell(row=6, column=ci).value
+        if hdr:
+            header_col[str(hdr).strip()] = ci
+
+    for pb, thresh_row in WMLC_THRESHOLD_EXCEL_ROW.items():
+        col = header_col.get(pb)
+        if col is None:
+            continue
+        # Shade rows 7 through threshold row
+        for r in range(7, thresh_row + 1):
+            ws_dash.cell(row=r, column=col).fill = THRESHOLD_SHADE_FILL
+        # Bold medium navy bottom border at threshold row
+        ws_dash.cell(row=thresh_row, column=col).border = MEDIUM_NAVY_BOTTOM
+
+
+def build_wmlc_pct_row(ws_dash, pivots):
+    """Build row 32: WMLC % concentration for each product bucket.
+
+    Formula: sum(rows from bucket_idx 0..threshold) / sum(all rows) for
+    the initial Commitment view (pivot 2).
+    """
+    ws_dash.cell(row=32, column=1, value="WMLC %").font = TOTAL_FONT
+    ws_dash.cell(row=32, column=1).fill = LIGHT_BLUE_FILL
+    ws_dash.cell(row=32, column=1).border = THIN_GRAY_BORDER
+    ws_dash.cell(row=32, column=1).alignment = Alignment(horizontal="right")
+    ws_dash.cell(row=32, column=2, value="").fill = LIGHT_BLUE_FILL
+    ws_dash.cell(row=32, column=2).border = THIN_GRAY_BORDER
+
+    matrix = pivots[2]  # Summary Commitment
+    weighted_num = 0.0
+    weighted_den = 0.0
+
+    for ci, pb in enumerate(PRODUCT_BUCKETS):
+        col_idx = ci + 3
+        col_total = sum(matrix[ri][ci] for ri in range(24))
+        thresh_idx = WMLC_THRESHOLD_ROW_IDX.get(pb, 23)
+        above_thresh = sum(matrix[ri][ci] for ri in range(thresh_idx + 1))
+        pct = above_thresh / col_total if col_total > 0 else 0.0
+
+        cell = ws_dash.cell(row=32, column=col_idx, value=pct)
+        cell.number_format = '0.0%'
+        cell.font = TOTAL_FONT
+        cell.fill = LIGHT_BLUE_FILL
+        cell.border = THIN_GRAY_BORDER
+        cell.alignment = Alignment(horizontal="right")
+
+        weighted_num += above_thresh
+        weighted_den += col_total
+
+    # Col P -- weighted average
+    avg_pct = weighted_num / weighted_den if weighted_den > 0 else 0.0
+    cell_p = ws_dash.cell(row=32, column=16, value=avg_pct)
+    cell_p.number_format = '0.0%'
+    cell_p.font = TOTAL_FONT
+    cell_p.fill = LIGHT_BLUE_FILL
+    cell_p.border = THIN_GRAY_BORDER
+    cell_p.alignment = Alignment(horizontal="right")
+
+
+# -- Threshold $ values per product (used for chart data + distance table) --
+WMLC_THRESHOLDS_DOLLARS = {
+    "LAL Diversified": 300_000_000, "LAL Highly Conc.": 100_000_000,
+    "LAL NFPs": 50_000_000, "TL SBL Diversified": 300_000_000,
+    "TL SBL Highly Conc.": 100_000_000, "TL Life Insurance": 100_000_000,
+    "TL CRE": 75_000_000, "TL Unsecured": 35_000_000,
+    "TL Aircraft": 50_000_000, "TL PHA": 35_000_000,
+    "TL Other Secured": 50_000_000, "TL Multicollateral": 50_000_000,
+    "RESI": 10_000_000,
+}
+
+_CHART_W = 38
+_CHART_H = 14
+
+
+def build_chart_data_sheet(wb, df, pivots):
+    """Build _chart_data with all pre-computed visualization data.
+
+    Sections:
+      Rows 1-13:   Stacked bar (product × below80/approaching/above)
+      Rows 41-42:  Donut split (WMLC qualified $ vs non-WMLC $)
+      Rows 45-56:  Flag breakdown by type (flag name, count, commitment sum)
+      Rows 58-70:  Threshold proximity counts (product, <80%, 80-99%, >=100%)
+    """
+    ws = wb.create_sheet("_chart_data")
+    credit_lii = df["CREDIT_LII"]
+    wmlc_mask = df["WMLC_QUALIFIED"]
+
+    # ── Rows 1-13: Stacked bar data ──────────────────────────────────────
+    for i, pb in enumerate(PRODUCT_BUCKETS):
+        thresh = WMLC_THRESHOLDS_DOLLARS.get(pb, 999_999_999_999)
+        mask = df["PRODUCT_BUCKET"] == pb
+        lii = credit_lii[mask]
+        below = float(lii[lii < thresh * 0.8].sum())
+        approaching = float(lii[(lii >= thresh * 0.8) & (lii < thresh)].sum())
+        at_above = float(lii[lii >= thresh].sum())
+
+        row = i + 1
+        ws.cell(row=row, column=1, value=pb)
+        ws.cell(row=row, column=2, value=below)
+        ws.cell(row=row, column=3, value=approaching)
+        ws.cell(row=row, column=4, value=at_above)
+
+    # ── Rows 41-42: Donut split ──────────────────────────────────────────
+    wmlc_sum = float(credit_lii[wmlc_mask].sum())
+    non_wmlc_sum = float(credit_lii[~wmlc_mask].sum())
+    ws.cell(row=41, column=1, value="WMLC Qualified")
+    ws.cell(row=41, column=2, value=wmlc_sum)
+    ws.cell(row=42, column=1, value="Non-WMLC")
+    ws.cell(row=42, column=2, value=non_wmlc_sum)
+
+    # ── Rows 45-56: Flag breakdown by type ───────────────────────────────
+    flag_col = "WMLC_FLAGS"
+    flag_counts = {}
+    flag_sums = {}
+    for _, row in df.iterrows():
+        flags_str = row.get(flag_col, "")
+        if not flags_str or str(flags_str).lower() == "nan":
+            continue
+        lii_val = float(row.get("CREDIT_LII", 0))
+        for f in str(flags_str).split("|"):
+            f = f.strip()
+            if f:
+                flag_counts[f] = flag_counts.get(f, 0) + 1
+                flag_sums[f] = flag_sums.get(f, 0) + lii_val
+
+    sorted_flags = sorted(flag_counts.keys(), key=lambda x: flag_counts[x], reverse=True)
+    for i, flag_name in enumerate(sorted_flags[:12]):
+        row_num = 45 + i
+        ws.cell(row=row_num, column=1, value=flag_name)
+        ws.cell(row=row_num, column=2, value=flag_counts[flag_name])
+        ws.cell(row=row_num, column=3, value=flag_sums.get(flag_name, 0))
+
+    # ── Rows 58-70: Threshold proximity counts ───────────────────────────
+    for i, pb in enumerate(PRODUCT_BUCKETS):
+        thresh = WMLC_THRESHOLDS_DOLLARS.get(pb, 999_999_999_999)
+        mask = df["PRODUCT_BUCKET"] == pb
+        lii = credit_lii[mask]
+        n_below = int((lii < thresh * 0.8).sum())
+        n_approach = int(((lii >= thresh * 0.8) & (lii < thresh)).sum())
+        n_above = int((lii >= thresh).sum())
+
+        row_num = 58 + i
+        ws.cell(row=row_num, column=1, value=pb)
+        ws.cell(row=row_num, column=2, value=n_below)
+        ws.cell(row=row_num, column=3, value=n_approach)
+        ws.cell(row=row_num, column=4, value=n_above)
+
+    ws.sheet_state = "hidden"
+    return ws
+
+
+def _style_chart(chart, title_text):
+    """Apply MS styling: navy title, no gridlines, transparent background."""
+    chart.title = title_text
+    chart.title.txPr = RichText(p=[DrawParagraph(
+        pPr=DrawParagraphProperties(defRPr=CharacterProperties(
+            sz=1100, b=True,
+            solidFill=MS_COLORS['navy'],
+            latin=DrawingFont(typeface="Calibri"),
+        ))
+    )])
+    chart.y_axis.majorGridlines = None
+    chart.y_axis.minorGridlines = None
+    chart.x_axis.majorGridlines = None
+    chart.x_axis.minorGridlines = None
+    axis_font = CharacterProperties(
+        sz=800, solidFill=MS_COLORS['text_gray'],
+        latin=DrawingFont(typeface="Calibri"),
+    )
+    chart.y_axis.txPr = RichText(p=[DrawParagraph(
+        pPr=DrawParagraphProperties(defRPr=axis_font))])
+    chart.x_axis.txPr = RichText(p=[DrawParagraph(
+        pPr=DrawParagraphProperties(defRPr=axis_font))])
+    chart.plot_area.graphicalProperties = GraphicalProperties()
+    chart.plot_area.graphicalProperties.noFill = True
+    chart.plot_area.graphicalProperties.line.noFill = True
+    chart.graphical_properties = GraphicalProperties()
+    chart.graphical_properties.noFill = True
+    chart.graphical_properties.line.noFill = True
+    return chart
+
+
+def build_dashboard_visuals(ws_dash, wb, df):
+    """Build all 3 WMLC visualizations + Top 10 below the matrix.
+
+    Layout:
+        Row 33:      Navy divider
+        Rows 34-50:  VIZ 1 — Threshold Utilization Stacked Bar (chart)
+        Row 51:      Navy divider
+        Row 52:      Viz 2 header
+        Row 53:      Viz 2 column headers
+        Rows 54-83:  VIZ 2 — Threshold Distance table (30 rows)
+        Row 84:      Navy divider
+        Row 85:      Viz 3 header
+        Row 86:      Viz 3 column headers (flag names — VBA fills)
+        Rows 87-102: VIZ 3 — Flag Overlap Heatmap (VBA fills data)
+        Row 103:     Navy divider
+        Row 104:     Top 10 header
+        Row 105:     Top 10 column headers
+        Rows 106-115: Top 10 data
+    """
+    ws_cd = wb["_chart_data"]
+    NUM_PRODUCTS = 13
+
+    # ========== VIZ 1: Threshold Utilization Stacked Bar ==========
+    from openpyxl.chart.series import SeriesLabel
+
+    chart = BarChart()
+    chart.type = "bar"
+    chart.grouping = "stacked"
+    chart.gapWidth = 60
+    chart.width = _CHART_W
+    chart.height = _CHART_H
+
+    # Series 1: Below 80% (gray)
+    s1 = Reference(ws_cd, min_col=2, min_row=1, max_row=NUM_PRODUCTS)
+    chart.add_data(s1, titles_from_data=False)
+    chart.series[0].graphicalProperties.solidFill = "D9DEE3"
+    chart.series[0].graphicalProperties.line.solidFill = "D9DEE3"
+    chart.series[0].title = SeriesLabel(v="Below 80%")
+
+    # Series 2: Approaching 80-99% (amber)
+    s2 = Reference(ws_cd, min_col=3, min_row=1, max_row=NUM_PRODUCTS)
+    chart.add_data(s2, titles_from_data=False)
+    chart.series[1].graphicalProperties.solidFill = "D4A017"
+    chart.series[1].graphicalProperties.line.solidFill = "D4A017"
+    chart.series[1].title = SeriesLabel(v="Approaching (80-99%)")
+
+    # Series 3: WMLC Qualified >= threshold (navy)
+    s3 = Reference(ws_cd, min_col=4, min_row=1, max_row=NUM_PRODUCTS)
+    chart.add_data(s3, titles_from_data=False)
+    chart.series[2].graphicalProperties.solidFill = "002B5C"
+    chart.series[2].graphicalProperties.line.solidFill = "002B5C"
+    chart.series[2].title = SeriesLabel(v="WMLC Qualified")
+
+    cats = Reference(ws_cd, min_col=1, min_row=1, max_row=NUM_PRODUCTS)
+    chart.set_categories(cats)
+    _style_chart(chart, "Threshold Utilization by Product ($)")
+    chart.legend = Legend()
+    chart.legend.position = "b"
+    chart.y_axis.scaling.orientation = "maxMin"
+    chart.x_axis.numFmt = '$#,##0,,"M"'
+
+    ws_dash.add_chart(chart, "A34")
+
+    # ========== VIZ 2: Threshold Distance Table (static from proxy) ==========
+    # Header
+    ws_dash.merge_cells("A52:P52")
+    ws_dash["A52"].value = "Threshold Distance \u2014 Top 30 Loans Near WMLC Boundary"
+    ws_dash["A52"].font = Font(name="Calibri", bold=True, size=12, color=MS_COLORS['white'])
+    ws_dash["A52"].fill = NAVY_FILL
+    ws_dash["A52"].alignment = Alignment(vertical="center")
+    ws_dash.row_dimensions[52].height = 28
+
+    # Column headers
+    dist_headers = ["#", "Borrower", "Product", "Commitment ($)", "Threshold ($)",
+                    "Distance ($)", "% of Threshold"]
+    for ci, hdr in enumerate(dist_headers, 1):
+        cell = ws_dash.cell(row=53, column=ci, value=hdr)
+        cell.font = Font(name="Calibri", bold=True, size=9, color=MS_COLORS['white'])
+        cell.fill = BLUE_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    # Merged visual bar header
+    ws_dash.merge_cells("H53:P53")
+    ws_dash["H53"].value = "Threshold Utilization"
+    ws_dash["H53"].font = Font(name="Calibri", bold=True, size=9, color=MS_COLORS['white'])
+    ws_dash["H53"].fill = BLUE_FILL
+    ws_dash["H53"].alignment = Alignment(horizontal="center", vertical="center")
+    ws_dash.row_dimensions[53].height = 22
+
+    # Pre-populate from proxy data — loans between 70% and 300% of threshold
+    credit_lii = df["CREDIT_LII"]
+    candidates = []
+    for _, row in df.iterrows():
+        pb = row.get("PRODUCT_BUCKET", "")
+        thresh = WMLC_THRESHOLDS_DOLLARS.get(pb)
+        if thresh is None or thresh == 0:
+            continue
+        lii = float(row.get("CREDIT_LII", 0))
+        pct = lii / thresh
+        if 0.7 <= pct <= 3.0:
+            candidates.append({
+                "borrower": row.get("BORROWER", ""),
+                "product": pb,
+                "lii": lii,
+                "thresh": thresh,
+                "pct": pct,
+            })
+    # Sort by distance from 100% (closest to boundary first)
+    candidates.sort(key=lambda x: abs(x["pct"] - 1.0))
+    candidates = candidates[:30]
+
+    AMBER = PatternFill("solid", fgColor="D4A017")
+    LIGHT_AMBER = PatternFill("solid", fgColor="FFF3CD")
+    GREEN_FONT = Font(name="Calibri", size=9, color="007A33")
+    AMBER_FONT = Font(name="Calibri", size=9, color="D4A017")
+
+    for i, c in enumerate(candidates):
+        r = 54 + i
+        ws_dash.row_dimensions[r].height = 18
+        is_alt = (i % 2 == 1)
+        row_fill = ICE_BLUE_FILL if is_alt else WHITE_FILL
+
+        ws_dash.cell(row=r, column=1, value=i + 1).alignment = Alignment(horizontal="center")
+        ws_dash.cell(row=r, column=2, value=c["borrower"])
+        ws_dash.cell(row=r, column=3, value=c["product"])
+        ws_dash.cell(row=r, column=4, value=c["lii"]).number_format = "$#,##0"
+        ws_dash.cell(row=r, column=5, value=c["thresh"]).number_format = "$#,##0"
+        dist = c["lii"] - c["thresh"]
+        dist_cell = ws_dash.cell(row=r, column=6, value=dist)
+        dist_cell.number_format = "$#,##0"
+        pct_cell = ws_dash.cell(row=r, column=7, value=c["pct"])
+        pct_cell.number_format = "0.0%"
+
+        # Color coding
+        if dist >= 0:
+            dist_cell.font = GREEN_FONT
+            pct_cell.fill = NAVY_FILL
+            pct_cell.font = Font(name="Calibri", size=9, color=MS_COLORS['white'])
+        elif c["pct"] >= 0.9:
+            dist_cell.font = AMBER_FONT
+            pct_cell.fill = AMBER
+            pct_cell.font = Font(name="Calibri", size=9, color=MS_COLORS['white'])
+        elif c["pct"] >= 0.8:
+            dist_cell.font = AMBER_FONT
+            pct_cell.fill = LIGHT_AMBER
+
+        # Base formatting for all cells in row (H:P bars removed — VBA data bar on G)
+        for ci in range(1, 17):
+            cell = ws_dash.cell(row=r, column=ci)
+            if cell.fill == PatternFill():  # unfilled
+                cell.fill = row_fill
+            cell.border = THIN_GRAY_BORDER
+            if cell.font == Font():  # default font
+                cell.font = DATA_FONT
+
+    # Fill remaining empty rows (if < 30 candidates)
+    for r in range(54 + len(candidates), 84):
+        ws_dash.row_dimensions[r].height = 18
+        for ci in range(1, 17):
+            cell = ws_dash.cell(row=r, column=ci)
+            cell.fill = ICE_BLUE_FILL if (r % 2 == 1) else WHITE_FILL
+            cell.border = THIN_GRAY_BORDER
+
+    # ========== VIZ 3: Flag Overlap Heatmap (headers only — VBA fills data) ==========
+    ws_dash.merge_cells("A85:P85")
+    ws_dash["A85"].value = "WMLC Flag Overlap Matrix"
+    ws_dash["A85"].font = Font(name="Calibri", bold=True, size=12, color=MS_COLORS['white'])
+    ws_dash["A85"].fill = NAVY_FILL
+    ws_dash["A85"].alignment = Alignment(vertical="center")
+    ws_dash.row_dimensions[85].height = 28
+    ws_dash.row_dimensions[86].height = 60  # Tall for rotated text (VBA sets)
+    for r in range(87, 103):
+        ws_dash.row_dimensions[r].height = 20
+
+    # Pre-populate heatmap from proxy data
+    # Collect unique flags
+    flag_set = set()
+    for flags_str in df["WMLC_FLAGS"].dropna():
+        if flags_str and str(flags_str).lower() != "nan":
+            for f in str(flags_str).split("|"):
+                f = f.strip()
+                if f:
+                    flag_set.add(f)
+    flag_list = sorted(flag_set)[:16]
+    num_flags = len(flag_list)
+    flag_idx = {f: i for i, f in enumerate(flag_list)}
+
+    # Build co-occurrence matrix
+    overlap = [[0] * num_flags for _ in range(num_flags)]
+    for flags_str in df["WMLC_FLAGS"].dropna():
+        if not flags_str or str(flags_str).lower() == "nan":
+            continue
+        row_flags = [f.strip() for f in str(flags_str).split("|") if f.strip() in flag_idx]
+        for fi in row_flags:
+            for fj in row_flags:
+                overlap[flag_idx[fi]][flag_idx[fj]] += 1
+
+    max_val = max((overlap[i][j] for i in range(num_flags) for j in range(num_flags)), default=1)
+    if max_val == 0:
+        max_val = 1
+
+    # Column headers (row 86)
+    for fi in range(num_flags):
+        cell = ws_dash.cell(row=86, column=fi + 2, value=flag_list[fi][:15])
+        cell.font = Font(name="Calibri", size=7, bold=True, color=MS_COLORS['white'])
+        cell.fill = BLUE_FILL
+        cell.alignment = Alignment(textRotation=90, horizontal="center")
+
+    # Row labels + matrix data
+    for fi in range(num_flags):
+        r = 87 + fi
+        ws_dash.cell(row=r, column=1, value=flag_list[fi][:20]).font = Font(
+            name="Calibri", size=8, bold=True)
+        for fj in range(num_flags):
+            val = overlap[fi][fj]
+            cell = ws_dash.cell(row=r, column=fj + 2, value=val)
+            cell.number_format = "#,##0"
+            cell.alignment = Alignment(horizontal="center")
+            cell.font = Font(name="Calibri", size=8)
+            # Color scale: white → navy
+            intensity = val / max_val
+            rr = int(255 - intensity * 255)
+            gg = int(255 - intensity * (255 - 43))
+            bb = int(255 - intensity * (255 - 92))
+            cell.fill = PatternFill("solid", fgColor=f"{rr:02X}{gg:02X}{bb:02X}")
+            if intensity > 0.5:
+                cell.font = Font(name="Calibri", size=8, color=MS_COLORS['white'])
+            else:
+                cell.font = Font(name="Calibri", size=8, color=MS_COLORS['navy'])
+            if fi == fj:
+                cell.font = Font(name="Calibri", size=8, bold=True,
+                                 color=MS_COLORS['white'] if intensity > 0.5 else MS_COLORS['navy'])
+            cell.border = Border(
+                left=Side(style="hair", color="C8C8C8"),
+                right=Side(style="hair", color="C8C8C8"),
+                top=Side(style="hair", color="C8C8C8"),
+                bottom=Side(style="hair", color="C8C8C8"),
+            )
+
+    # ========== TOP 10 BORROWERS ==========
+    TITLE_ROW = 104
+    HDR_ROW = 105
+    DATA_START = 106
+
+    ws_dash.merge_cells(f"A{TITLE_ROW}:E{TITLE_ROW}")
+    cell = ws_dash.cell(row=TITLE_ROW, column=1, value="Top 10 Exposures")
+    cell.font = Font(name="Calibri", bold=True, size=13, color=MS_COLORS['white'])
+    cell.fill = NAVY_FILL
+    cell.alignment = Alignment(vertical="center")
+    ws_dash.row_dimensions[TITLE_ROW].height = 28
+
+    top10_headers = ["Rank", "Borrower", "Product", "Commitment", "WMLC Flags"]
+    for ci, hdr in enumerate(top10_headers, 1):
+        cell = ws_dash.cell(row=HDR_ROW, column=ci, value=hdr)
+        cell.font = Font(name="Calibri", bold=True, size=10, color=MS_COLORS['white'])
+        cell.fill = BLUE_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws_dash.row_dimensions[HDR_ROW].height = 22
+
+    top10 = df.nlargest(10, "CREDIT_LII")
+    for rank, (_, row) in enumerate(top10.iterrows(), 1):
+        data_row = DATA_START + rank - 1
+        is_alt = (rank % 2 == 0)
+        row_fill = ICE_BLUE_FILL if is_alt else WHITE_FILL
+        cells_data = [
+            rank,
+            row.get("BORROWER", ""),
+            row.get("PRODUCT_BUCKET", ""),
+            row.get("CREDIT_LII", 0),
+            row.get("WMLC_FLAGS", ""),
+        ]
+        for ci, val in enumerate(cells_data, 1):
+            cell = ws_dash.cell(row=data_row, column=ci, value=val)
+            cell.fill = row_fill
+            cell.border = THIN_GRAY_BORDER
+            cell.font = DATA_FONT
+            if ci == 4:
+                cell.number_format = '$#,##0'
+            if ci == 1:
+                cell.alignment = Alignment(horizontal="center")
 
 
 # -- COM post-processing: inject VBA + create buttons -----------------------
@@ -454,21 +985,39 @@ def inject_vba_and_buttons(xlsx_path, xlsm_path, vba_dir):
         print("  Creating Dashboard buttons ...")
         dash = wb.Sheets("Dashboard")
 
-        # Row 4 area (y ~57px): view toggle buttons
-        row4_buttons = [
-            ("btnSummaryCount",      "Summary Count",       420, 57, 120, 24, "ShowSummaryCount"),
-            ("btnSummaryCommitment", "Summary Commitment",  545, 57, 140, 24, "ShowSummaryCommitment"),
-            ("btnCountNew",          "Count NEW",           690, 57, 120, 24, "ShowSummaryCountNew"),
-            ("btnCommitmentNew",     "Commitment NEW",      815, 57, 140, 24, "ShowSummaryCommitmentNew"),
-        ]
-        # Row 5 area (y ~87px): WMLC / Reset / Refresh buttons
-        row5_buttons = [
-            ("btnWMLCOn",            "WMLC ON",             420, 87,  90, 24, "WMLCOn"),
-            ("btnWMLCOff",           "WMLC OFF",            515, 87,  90, 24, "WMLCOff"),
-            ("btnReset",             "Reset",               610, 87,  80, 24, "ResetDashboard"),
-            ("btnRefreshData",       "Refresh Data",        695, 87, 110, 24, "RefreshData"),
-            ("btnDiagnostics",       "Run Diagnostics",     810, 87, 130, 24, "TestRefreshCycle"),
-        ]
+        # Button layout: 110w, 22h, 12px gap between each
+        # Row 4 starts at left=10, top calculated from row position
+        BTN_W = 110
+        BTN_H = 22
+        GAP = 12
+        ROW4_TOP = 60   # approximate pixel top for row 4
+        ROW5_TOP = 92   # approximate pixel top for row 5
+
+        def _btn_positions(names_macros, top):
+            """Generate (name, text, left, top, w, h, macro) tuples with gaps."""
+            result = []
+            left = 10
+            for name, text, macro in names_macros:
+                # Wider for "Summary Commitment"
+                w = 130 if len(text) > 13 else BTN_W
+                result.append((name, text, left, top, w, BTN_H, macro))
+                left += w + GAP
+            return result
+
+        row4_buttons = _btn_positions([
+            ("btnSummaryCount",      "Summary Count",       "ShowSummaryCount"),
+            ("btnSummaryCommitment", "Summary Commitment",  "ShowSummaryCommitment"),
+            ("btnCountNew",          "Count NEW",           "ShowSummaryCountNew"),
+            ("btnCommitmentNew",     "Commitment NEW",      "ShowSummaryCommitmentNew"),
+        ], ROW4_TOP)
+
+        row5_buttons = _btn_positions([
+            ("btnWMLCOn",            "WMLC ON",             "WMLCOn"),
+            ("btnWMLCOff",           "WMLC OFF",            "WMLCOff"),
+            ("btnReset",             "Reset",               "ResetDashboard"),
+            ("btnRefreshData",       "Refresh Data",        "RefreshData"),
+            ("btnDiagnostics",       "Run Diagnostics",     "TestRefreshCycle"),
+        ], ROW5_TOP)
 
         all_dash_buttons = row4_buttons + row5_buttons
         for name, text, left, top, width, height, macro in all_dash_buttons:
@@ -490,9 +1039,9 @@ def inject_vba_and_buttons(xlsx_path, xlsm_path, vba_dir):
         except Exception:
             pass
 
-        # --- Create buttons on loan_detail ---
-        print("  Creating loan_detail buttons ...")
-        detail = wb.Sheets("loan_detail")
+        # --- Create buttons on Loan Detail ---
+        print("  Creating Loan Detail buttons ...")
+        detail = wb.Sheets("Loan Detail")
 
         for name, text, left, top, width, height, macro in [
             ("btnBack",         "\u2190 Back to Dashboard", 5, 18, 160, 24, "BackToDashboard"),
@@ -626,25 +1175,15 @@ def main():
 
     wb = Workbook()
 
-    # == _data sheet (hidden) ================================================
-    print("Building _data sheet ...")
+    # == "Loan Detail" sheet — BLANK landing zone for Power Query ===========
+    # Power Query loads data here. No pre-populated data, no Table object.
+    # VBA MasterRefresh reads from this sheet once PQ populates it.
+    print("Building Loan Detail sheet (blank — PQ landing zone) ...")
     ws_data = wb.active
-    ws_data.title = "_data"
-    cols = list(df.columns)
-    ws_data.append(cols)
-    for _, row in df.iterrows():
-        ws_data.append([row[c] for c in cols])
-
-    # Create table
-    last_col_letter = get_column_letter(len(cols))
-    table_ref = f"A1:{last_col_letter}{len(df)+1}"
-    tbl = Table(displayName="tbl_LoanData", ref=table_ref)
-    tbl.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium9", showFirstColumn=False,
-        showLastColumn=False, showRowStripes=True, showColumnStripes=False
-    )
-    ws_data.add_table(tbl)
-    ws_data.sheet_state = "hidden"
+    ws_data.title = "Loan Detail"
+    ws_data["A1"].value = "\u2190 Power Query loads data here. See POWER_QUERY_SETUP sheet."
+    ws_data["A1"].font = Font(italic=True, size=9, color="999999", name="Calibri")
+    ws_data.freeze_panes = "A2"
 
     # == Dashboard sheet =====================================================
     print("Building Dashboard sheet ...")
@@ -677,9 +1216,9 @@ def main():
     c3.alignment = Alignment(horizontal="center", vertical="center")
     ws_dash.row_dimensions[3].height = 22
 
-    # Rows 4-5 -- button area (light gray fill, height 30)
+    # Rows 4-5 -- button area (light gray fill)
     for row_num in [4, 5]:
-        ws_dash.row_dimensions[row_num].height = 30
+        ws_dash.row_dimensions[row_num].height = 32
         for ci in range(1, 17):
             cell = ws_dash.cell(row=row_num, column=ci)
             cell.fill = BUTTON_GRAY_FILL
@@ -752,6 +1291,14 @@ def main():
         cell.border = DOUBLE_NAVY_TOP
         cell.alignment = Alignment(horizontal="right")
 
+    # Row 32 -- WMLC % concentration
+    print("Building WMLC % concentration row ...")
+    build_wmlc_pct_row(ws_dash, pivots)
+
+    # Threshold shading + bold borders (match VBA ApplyThresholdFormatting)
+    print("Applying threshold formatting ...")
+    apply_threshold_formatting(ws_dash)
+
     # Column widths
     ws_dash.column_dimensions["A"].width = 18
     ws_dash.column_dimensions["B"].width = 28
@@ -759,8 +1306,36 @@ def main():
         ws_dash.column_dimensions[get_column_letter(ci)].width = 14
     ws_dash.column_dimensions["P"].width = 14
 
+    # Data row heights
+    for r in range(7, 31):
+        ws_dash.row_dimensions[r].height = 16
+    ws_dash.row_dimensions[31].height = 20  # Total
+    ws_dash.row_dimensions[32].height = 20  # WMLC %
+
     # Freeze panes at A7
     ws_dash.freeze_panes = "A7"
+
+    # == _chart_data sheet (hidden) ==========================================
+    print("Building _chart_data sheet ...")
+    build_chart_data_sheet(wb, df, pivots)
+
+    # == Layout for visualization zones ======================================
+    print("Setting visualization layout ...")
+    DIVIDER_FILL = PatternFill("solid", fgColor=MS_COLORS['navy'])
+
+    # Navy divider rows
+    for dr in [33, 51, 84, 103]:
+        ws_dash.row_dimensions[dr].height = 4
+        for ci in range(1, 17):
+            ws_dash.cell(row=dr, column=ci).fill = DIVIDER_FILL
+
+    # Viz 1 chart zone: rows 34-50 (25px each for chart room)
+    for r in range(34, 51):
+        ws_dash.row_dimensions[r].height = 25
+
+    # == Build all 3 visualizations + Top 10 =================================
+    print("Building WMLC visualizations ...")
+    build_dashboard_visuals(ws_dash, wb, df)
 
     # == 8 hidden view sheets ================================================
     print("Building 8 hidden view sheets ...")
@@ -772,52 +1347,8 @@ def main():
                 ws_v.cell(row=ri + 1, column=ci + 1, value=val)
         ws_v.sheet_state = "hidden"
 
-    # == loan_detail sheet ===================================================
-    print("Building loan_detail sheet ...")
-    ws_detail = wb.create_sheet("loan_detail")
-
-    # Row 1 -- title (navy bg, white text)
-    ws_detail.merge_cells("A1:H1")
-    ws_detail["A1"].value = "Loan Detail"
-    ws_detail["A1"].font = DETAIL_TITLE_FONT
-    ws_detail["A1"].fill = NAVY_FILL
-    ws_detail["A1"].alignment = Alignment(vertical="center")
-    ws_detail.row_dimensions[1].height = 30
-
-    # Row 2 -- button placeholder (light gray fill)
-    for ci in range(1, len(cols) + 1):
-        ws_detail.cell(row=2, column=ci).fill = BUTTON_GRAY_FILL
-    ws_detail.row_dimensions[2].height = 30
-
-    # Row 3 -- headers (navy bg, white text, bold 10pt, center)
-    for ci, col_name in enumerate(cols, 1):
-        cell = ws_detail.cell(row=3, column=ci, value=col_name)
-        cell.font = DETAIL_HEADER_FONT
-        cell.fill = NAVY_FILL
-        cell.border = THIN_WHITE_BORDER
-        cell.alignment = Alignment(horizontal="center", wrap_text=True)
-
-    # Row 4+ -- data (alternating white/ice_blue)
-    for idx, (_, row) in enumerate(df.iterrows()):
-        row_num = idx + 4
-        is_alt = (idx % 2 == 1)
-        row_fill = ICE_BLUE_FILL if is_alt else WHITE_FILL
-        for ci, col_name in enumerate(cols, 1):
-            cell = ws_detail.cell(row=row_num, column=ci, value=row[col_name])
-            cell.fill = row_fill
-            cell.border = THIN_GRAY_BORDER
-            cell.font = DATA_FONT
-
-    # AutoFilter
-    last_detail_col = get_column_letter(len(cols))
-    ws_detail.auto_filter.ref = f"A3:{last_detail_col}{len(df)+3}"
-
-    # Freeze panes
-    ws_detail.freeze_panes = "A4"
-
-    # Column widths
-    for ci in range(1, len(cols) + 1):
-        ws_detail.column_dimensions[get_column_letter(ci)].width = 16
+    # == loan_detail removed — "Loan Detail" sheet IS the data sheet now ======
+    # No 50K row copy needed. Drill-down filters "Loan Detail" directly.
 
     # == Summary sheet =======================================================
     print("Building Summary sheet ...")
@@ -826,6 +1357,12 @@ def main():
     # == POWER_QUERY_SETUP sheet =============================================
     print("Building POWER_QUERY_SETUP sheet ...")
     build_pq_setup_sheet(wb)
+
+    # == Tracker Analytics sheet ================================================
+    print("Building Tracker Analytics sheet ...")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from build_tracker_analytics import build_tracker_analytics_sheet
+    build_tracker_analytics_sheet(wb)
 
     # == _config sheet (hidden) ==============================================
     print("Building _config sheet ...")
@@ -860,11 +1397,12 @@ def main():
     sheets = wb.sheetnames
     print(f"  Sheets: {sheets}")
     assert "Dashboard" in sheets
-    assert "loan_detail" in sheets
-    assert "_data" in sheets
+    assert "Loan Detail" in sheets
     assert "_config" in sheets
+    assert "_chart_data" in sheets
     assert "Summary" in sheets
     assert "POWER_QUERY_SETUP" in sheets
+    assert "Tracker Analytics" in sheets
     for i in range(1, 9):
         assert f"_view{i}" in sheets
 
